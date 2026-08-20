@@ -1,0 +1,18 @@
+[tool.pytest.ini_options]
+testpaths = ["backend/tests"]
+pythonpath = ["backend"]
+norecursedirs = [
+  ".deploy",
+  ".git",
+  ".pytest_cache",
+  ".tmp",
+  ".venv",
+  "backups",
+  "data",
+  "deliverables",
+  "dist",
+  "node_modules",
+  "pytest-cache-files-*",
+  "storage",
+]
+addopts = "--strict-markers -p no:cacheprovider"

@@ -1,0 +1,1 @@
+"""SkillGo API application."""

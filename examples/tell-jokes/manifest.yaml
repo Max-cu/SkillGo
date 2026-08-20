@@ -1,0 +1,76 @@
+apiVersion: skillgo.io/v1alpha1
+kind: Skill
+
+metadata:
+  name: tell-jokes
+  version: 1.0.0
+  displayName: 自动讲笑话
+
+spec:
+  type: instruction
+  inputSchema:
+    type: object
+    additionalProperties: false
+    properties:
+      topic:
+        type: string
+        maxLength: 100
+        description: 笑话主题；不填时使用日常生活
+      style:
+        type: string
+        enum: [随机, 冷笑话, 谐音梗, 观察型, 程序员, 亲子]
+        default: 随机
+      audience:
+        type: string
+        enum: [大众, 儿童, 朋友聚会, 职场, 程序员]
+        default: 大众
+      count:
+        type: integer
+        minimum: 1
+        maximum: 5
+        default: 1
+      language:
+        type: string
+        minLength: 2
+        maxLength: 20
+        default: zh-CN
+  outputSchema:
+    type: object
+    additionalProperties: false
+    required: [jokes, meta]
+    properties:
+      jokes:
+        type: array
+        minItems: 1
+        maxItems: 5
+        items:
+          type: object
+          additionalProperties: false
+          required: [title, setup, punchline, tags]
+          properties:
+            title:
+              type: string
+            setup:
+              type: string
+            punchline:
+              type: string
+            tags:
+              type: array
+              minItems: 1
+              maxItems: 3
+              items:
+                type: string
+      meta:
+        type: object
+        additionalProperties: false
+        required: [language, count]
+        properties:
+          language:
+            type: string
+          count:
+            type: integer
+            minimum: 1
+            maximum: 5
+  permissions:
+    tools: []
+    network: []

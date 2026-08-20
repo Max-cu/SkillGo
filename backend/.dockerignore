@@ -1,0 +1,9 @@
+.env
+.pytest_cache
+.test-data
+__pycache__
+data
+storage
+tests
+*.py[cod]
+*.log

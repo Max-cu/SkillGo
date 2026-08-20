@@ -1,0 +1,57 @@
+apiVersion: skillgo.io/v1alpha1
+kind: Skill
+
+metadata:
+  name: phase0-echo
+  version: 0.1.0
+  displayName: Phase 0 Echo
+  description: Deterministic fixed-entry Skill for sandbox acceptance testing.
+
+spec:
+  execution:
+    mode: fixed
+    runtimeProfile: python-3.12
+    entrypoint:
+      - python
+      - -I
+      - /skill/src/main.py
+      - --contract
+      - /run/skill/input.json
+
+  inputs:
+    - name: message
+      type: string
+      required: true
+      maxLength: 1024
+
+  outputs:
+    - name: result
+      type: file
+      path: /output/result.json
+      required: true
+      mediaType: application/json
+      maxBytes: 1048576
+
+  resources:
+    cpu: "500m"
+    memory: 256Mi
+    memorySwap: disabled
+    pids: 128
+    timeoutSeconds: 30
+    maxLogBytes: 1048576
+
+  permissions:
+    network:
+      mode: none
+    filesystem:
+      root: read-only
+      skill: read-only
+      input: read-only
+      output: read-write
+      workspace: ephemeral-read-write
+    process:
+      shell: false
+      dependencyInstall: false
+
+  result:
+    successExitCodes: [0]

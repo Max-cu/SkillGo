@@ -1,0 +1,4 @@
+interface:
+  display_name: "自动讲笑话"
+  short_description: "根据主题、风格和目标受众生成安全、轻松且结构清晰的中文笑话"
+  default_prompt: "使用 $tell-jokes 生成一个适合朋友聚会的轻松中文笑话。"

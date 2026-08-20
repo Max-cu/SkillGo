@@ -1,0 +1,61 @@
+# Phase 0 runtime artifacts
+poc/results/*
+!poc/results/.gitkeep
+
+# Local configuration and secrets
+.env
+.env.*
+*.env
+!.env.example
+!**/.env.example
+
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+pytest-cache-files-*/
+*.egg-info/
+.coverage
+.coverage.*
+htmlcov/
+
+# JavaScript and build output
+*.tsbuildinfo
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+.vite/
+
+# Runtime state and private operational material
+/.deploy/
+/.tmp/
+/backups/
+/data/
+/deliverables/
+/storage/
+deploy/ecs.env
+backend/data/
+backend/storage/
+backend/.test-data/
+
+# Local archives and logs
+/*.zip
+/*.tar
+/*.tar.gz
+*.log
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+*.dump
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Editors and operating systems
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

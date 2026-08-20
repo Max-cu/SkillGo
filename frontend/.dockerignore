@@ -1,0 +1,6 @@
+.env
+.vite
+dist
+node_modules
+*.log
+*.tsbuildinfo

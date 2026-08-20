@@ -1,0 +1,13 @@
+fastapi>=0.115,<1
+uvicorn[standard]>=0.34,<1
+sqlalchemy>=2.0,<3
+psycopg[binary]>=3.2,<4
+pydantic>=2.10,<3
+pyjwt>=2.10,<3
+argon2-cffi>=23.1,<26
+python-multipart>=0.0.20,<1
+pyyaml>=6.0,<7
+email-validator>=2.2,<3
+httpx>=0.28,<1
+docker>=7.1,<8
+jsonschema>=4.23,<5

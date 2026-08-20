@@ -1,0 +1,171 @@
+name: skillgo
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-skillgo}
+      POSTGRES_USER: ${POSTGRES_USER:-skillgo}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+    volumes:
+      - skillgo-postgres:/var/lib/postgresql/data
+    networks:
+      - backend
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+    mem_limit: 512m
+    cpus: 0.5
+
+  api:
+    build:
+      context: ./backend
+    environment:
+      SKILLGO_ENVIRONMENT: production
+      SKILLGO_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-skillgo}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-skillgo}
+      SKILLGO_STORAGE_ROOT: /var/lib/skillgo/storage
+      SKILLGO_JWT_SECRET: ${SKILLGO_JWT_SECRET:?set SKILLGO_JWT_SECRET}
+      SKILLGO_BOOTSTRAP_EMAIL: ${SKILLGO_BOOTSTRAP_EMAIL:?set SKILLGO_BOOTSTRAP_EMAIL}
+      SKILLGO_BOOTSTRAP_PASSWORD: ${SKILLGO_BOOTSTRAP_PASSWORD:?set SKILLGO_BOOTSTRAP_PASSWORD}
+      SKILLGO_BOOTSTRAP_NAME: ${SKILLGO_BOOTSTRAP_NAME:-SkillGo Owner}
+      SKILLGO_MODEL_BASE_URL: ${SKILLGO_MODEL_BASE_URL:-}
+      SKILLGO_MODEL_API_KEY: ${SKILLGO_MODEL_API_KEY:-}
+      SKILLGO_MODEL_NAME: ${SKILLGO_MODEL_NAME:-}
+      SKILLGO_MODEL_TIMEOUT_SECONDS: ${SKILLGO_MODEL_TIMEOUT_SECONDS:-120}
+      SKILLGO_MODEL_TEMPERATURE: ${SKILLGO_MODEL_TEMPERATURE:-0.2}
+      SKILLGO_MODEL_JSON_MODE: ${SKILLGO_MODEL_JSON_MODE:-true}
+      SKILLGO_MODEL_NATIVE_TOOLS: ${SKILLGO_MODEL_NATIVE_TOOLS:-true}
+      SKILLGO_MODEL_TLS_VERIFY: ${SKILLGO_MODEL_TLS_VERIFY:-true}
+      SKILLGO_SANDBOX_WORKER_ENABLED: ${SKILLGO_SANDBOX_WORKER_ENABLED:-false}
+      SKILLGO_PLATFORM_DOCUMENT_TOOLS_ENABLED: ${SKILLGO_PLATFORM_DOCUMENT_TOOLS_ENABLED:-false}
+      SKILLGO_AGENT_RUN_SUCCESS_DETAIL_DAYS: ${SKILLGO_AGENT_RUN_SUCCESS_DETAIL_DAYS:-7}
+      SKILLGO_AGENT_RUN_FAILURE_DETAIL_DAYS: ${SKILLGO_AGENT_RUN_FAILURE_DETAIL_DAYS:-30}
+      SKILLGO_AGENT_RUN_CLEANUP_INTERVAL_SECONDS: ${SKILLGO_AGENT_RUN_CLEANUP_INTERVAL_SECONDS:-3600}
+      SKILLGO_CONTEXT_MAX_MESSAGES: ${SKILLGO_CONTEXT_MAX_MESSAGES:-20}
+      SKILLGO_CONTEXT_MAX_CHARS: ${SKILLGO_CONTEXT_MAX_CHARS:-30000}
+      SKILLGO_CONVERSATION_LOCK_SECONDS: ${SKILLGO_CONVERSATION_LOCK_SECONDS:-180}
+      SKILLGO_WORKSPACE_MAX_FILE_BYTES: ${SKILLGO_WORKSPACE_MAX_FILE_BYTES:-10485760}
+      SKILLGO_WORKSPACE_MAX_FILES: ${SKILLGO_WORKSPACE_MAX_FILES:-30}
+      SKILLGO_WORKSPACE_EXTRACT_MAX_CHARS: ${SKILLGO_WORKSPACE_EXTRACT_MAX_CHARS:-200000}
+      SKILLGO_WORKSPACE_CONTEXT_MAX_CHARS: ${SKILLGO_WORKSPACE_CONTEXT_MAX_CHARS:-40000}
+      SKILLGO_CORS_ORIGINS: ${SKILLGO_CORS_ORIGINS:-http://localhost:8080}
+    volumes:
+      - skillgo-storage:/var/lib/skillgo/storage
+    networks:
+      - backend
+      - model-egress
+    depends_on:
+      db:
+        condition: service_healthy
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    read_only: true
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,noexec,size=64m
+    pids_limit: 256
+    mem_limit: 768m
+    cpus: 1.0
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=2)"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  worker:
+    build:
+      context: ./backend
+    command: ["python", "-m", "app.sandbox_worker"]
+    user: "10001:10001"
+    group_add:
+      - "${SKILLGO_DOCKER_GID:-999}"
+    environment:
+      SKILLGO_ENVIRONMENT: production
+      SKILLGO_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-skillgo}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-skillgo}
+      SKILLGO_STORAGE_ROOT: /var/lib/skillgo/storage
+      SKILLGO_JWT_SECRET: ${SKILLGO_JWT_SECRET:?set SKILLGO_JWT_SECRET}
+      SKILLGO_MODEL_BASE_URL: ${SKILLGO_MODEL_BASE_URL:-}
+      SKILLGO_MODEL_API_KEY: ${SKILLGO_MODEL_API_KEY:-}
+      SKILLGO_MODEL_NAME: ${SKILLGO_MODEL_NAME:-}
+      SKILLGO_MODEL_TIMEOUT_SECONDS: ${SKILLGO_MODEL_TIMEOUT_SECONDS:-120}
+      SKILLGO_MODEL_TEMPERATURE: ${SKILLGO_MODEL_TEMPERATURE:-0.2}
+      SKILLGO_MODEL_JSON_MODE: ${SKILLGO_MODEL_JSON_MODE:-true}
+      SKILLGO_MODEL_NATIVE_TOOLS: ${SKILLGO_MODEL_NATIVE_TOOLS:-true}
+      SKILLGO_MODEL_TLS_VERIFY: ${SKILLGO_MODEL_TLS_VERIFY:-true}
+      SKILLGO_SANDBOX_WORKER_ENABLED: ${SKILLGO_SANDBOX_WORKER_ENABLED:-false}
+      SKILLGO_SANDBOX_RUNTIME: ${SKILLGO_SANDBOX_RUNTIME:-runsc}
+      SKILLGO_SANDBOX_IMAGE: ${SKILLGO_SANDBOX_IMAGE:-skillgo/sandbox-runtime:local}
+      SKILLGO_SANDBOX_POLL_SECONDS: ${SKILLGO_SANDBOX_POLL_SECONDS:-1}
+      SKILLGO_SANDBOX_WORKER_LEASE_SECONDS: ${SKILLGO_SANDBOX_WORKER_LEASE_SECONDS:-90}
+      SKILLGO_SANDBOX_WORKER_HEARTBEAT_SECONDS: ${SKILLGO_SANDBOX_WORKER_HEARTBEAT_SECONDS:-15}
+      SKILLGO_SANDBOX_WORKER_MAX_ATTEMPTS: ${SKILLGO_SANDBOX_WORKER_MAX_ATTEMPTS:-3}
+      SKILLGO_SANDBOX_JOB_TIMEOUT_SECONDS: ${SKILLGO_SANDBOX_JOB_TIMEOUT_SECONDS:-1800}
+      SKILLGO_SANDBOX_COMMAND_TIMEOUT_SECONDS: ${SKILLGO_SANDBOX_COMMAND_TIMEOUT_SECONDS:-120}
+      SKILLGO_SANDBOX_MAX_AGENT_TURNS: ${SKILLGO_SANDBOX_MAX_AGENT_TURNS:-40}
+      SKILLGO_SANDBOX_MAX_AGENT_TOOL_CALLS: ${SKILLGO_SANDBOX_MAX_AGENT_TOOL_CALLS:-160}
+      SKILLGO_SANDBOX_MEMORY: ${SKILLGO_SANDBOX_MEMORY:-768m}
+      SKILLGO_SANDBOX_NANO_CPUS: ${SKILLGO_SANDBOX_NANO_CPUS:-1000000000}
+      SKILLGO_SANDBOX_PIDS_LIMIT: ${SKILLGO_SANDBOX_PIDS_LIMIT:-128}
+      SKILLGO_SANDBOX_MAX_ARTIFACT_BYTES: ${SKILLGO_SANDBOX_MAX_ARTIFACT_BYTES:-52428800}
+    volumes:
+      - skillgo-storage:/var/lib/skillgo/storage
+      - /var/run/docker.sock:/var/run/docker.sock
+    networks:
+      - backend
+      - model-egress
+    depends_on:
+      db:
+        condition: service_healthy
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    read_only: true
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,noexec,size=64m
+    pids_limit: 128
+    mem_limit: 512m
+    cpus: 0.5
+    restart: unless-stopped
+    profiles: ["sandbox"]
+
+  sandbox-runtime:
+    image: ${SKILLGO_SANDBOX_IMAGE:-skillgo/sandbox-runtime:local}
+    build:
+      context: ./sandbox-runtime
+    profiles: ["build-only"]
+
+  web:
+    build:
+      context: ./frontend
+    ports:
+      - "${SKILLGO_WEB_BIND:-127.0.0.1}:${SKILLGO_WEB_PORT:-8080}:8080"
+    networks:
+      - public
+      - backend
+    depends_on:
+      api:
+        condition: service_healthy
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    read_only: true
+    tmpfs:
+      - /var/cache/nginx:rw,nosuid,nodev,noexec,size=32m,uid=101,gid=101,mode=0750
+      - /var/run:rw,nosuid,nodev,noexec,size=4m,uid=101,gid=101,mode=0750
+    pids_limit: 128
+    mem_limit: 128m
+    cpus: 0.5
+    restart: unless-stopped
+
+networks:
+  public:
+  backend:
+    internal: true
+  model-egress:
+    # Control-plane egress for the configured private model. Skill runtime
+    # sandboxes must not inherit this network.
+
+volumes:
+  skillgo-postgres:
+  skillgo-storage:

@@ -1,0 +1,88 @@
+name: skillgo-poc
+
+services:
+  opensandbox-server:
+    image: ${OPENSANDBOX_SERVER_IMAGE}
+    container_name: skillgo-poc-opensandbox
+    environment:
+      OPENSANDBOX_SERVER_API_KEY: ${OPENSANDBOX_API_KEY:?set OPENSANDBOX_API_KEY}
+      SANDBOX_CONFIG_PATH: /etc/opensandbox/config.toml
+    extra_hosts:
+      - host.docker.internal:host-gateway
+    ports:
+      - "127.0.0.1:18080:8080"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ${OPENSANDBOX_CONFIG_FILE:-./opensandbox.local.toml}:/etc/opensandbox/config.toml:ro
+      - opensandbox-state:/root/.opensandbox
+    networks:
+      - control
+      # The Docker backend publishes per-sandbox control ports on the host.
+      # Only the trusted server needs this route to perform readiness checks.
+      - runtime-access
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 256
+    mem_limit: 512m
+    cpus: 1.0
+    restart: unless-stopped
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=2)"
+      interval: 3s
+      timeout: 3s
+      retries: 30
+      start_period: 10s
+
+  poc-runner:
+    image: ${POC_RUNNER_IMAGE}
+    build:
+      context: ./runner
+    environment:
+      OPEN_SANDBOX_DOMAIN: opensandbox-server:8080
+      OPEN_SANDBOX_PROTOCOL: http
+      OPEN_SANDBOX_API_KEY: ${OPENSANDBOX_API_KEY:?set OPENSANDBOX_API_KEY}
+      POC_SKILL_IMAGE: ${POC_SKILL_IMAGE}
+      POC_EXPECTED_RUNTIME: ${POC_EXPECTED_RUNTIME:-runc}
+      POC_RESULTS_DIR: /results
+    volumes:
+      - ./results:/results
+    networks:
+      - control
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,noexec,size=64m
+    pids_limit: 128
+    mem_limit: 256m
+    cpus: 0.5
+    depends_on:
+      opensandbox-server:
+        condition: service_healthy
+    profiles:
+      - tools
+
+  poc-skill:
+    image: ${POC_SKILL_IMAGE}
+    build:
+      context: ./sample-skill
+    profiles:
+      - build-only
+
+networks:
+  control:
+    driver: bridge
+    internal: true
+  runtime-access:
+    driver: bridge
+
+volumes:
+  opensandbox-state:
