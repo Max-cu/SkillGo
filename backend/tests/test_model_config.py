@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from app.model_gateway import OpenAICompatibleGateway, get_model_gateway
-from conftest import make_credential
+from conftest import login, make_credential, make_email, make_password
 
 
 def model_payload(**overrides):
@@ -51,6 +51,37 @@ def test_model_config_is_editable_without_exposing_secret(
         json=model_payload(),
     )
     assert forbidden.status_code == 403
+
+
+def test_approved_admin_can_manage_models(client, owner_headers, user_headers):
+    admin_email = make_email("model-admin")
+    admin_password = make_password("model-admin")
+    registered = client.post(
+        "/api/v1/auth/register",
+        json={
+            "email": admin_email,
+            "display_name": "Model Admin",
+            "password": admin_password,
+            "identity": "admin",
+        },
+    )
+    assert registered.status_code == 201, registered.text
+    approved = client.post(
+        f"/api/v1/super-admin/users/{registered.json()['user']['id']}/approve-admin",
+        headers=owner_headers,
+    )
+    assert approved.status_code == 200, approved.text
+    admin_headers = login(client, admin_email, admin_password)
+
+    catalog = client.get("/api/v1/super-admin/models", headers=admin_headers)
+    assert catalog.status_code == 200, catalog.text
+    created = client.post(
+        "/api/v1/super-admin/models",
+        headers=admin_headers,
+        json=connection_payload("admin-model", "https://admin.example.com/v1", is_default=True),
+    )
+    assert created.status_code == 201, created.text
+    assert client.get("/api/v1/super-admin/models", headers=user_headers).status_code == 403
 
 
 def test_model_connection_can_be_tested_before_saving(

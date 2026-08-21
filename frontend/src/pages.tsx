@@ -5,6 +5,7 @@ import {
   BookOpen,
   Boxes,
   Check,
+  ChevronDown,
   ChevronRight,
   Clock3,
   CloudUpload,
@@ -14,7 +15,9 @@ import {
   FileCheck2,
   FileText,
   Filter,
+  Github,
   Heart,
+  CircleHelp,
   KeyRound,
   LockKeyhole,
   MessageSquareText,
@@ -25,7 +28,6 @@ import {
   Power,
   PowerOff,
   RotateCw,
-  Search,
   Save,
   SendHorizontal,
   ShieldCheck,
@@ -40,11 +42,15 @@ import {
 } from "lucide-react";
 import { FormEvent, useEffect, useRef, useState, type ChangeEvent, type PointerEvent as ReactPointerEvent } from "react";
 import { createPortal } from "react-dom";
+import { useGSAP } from "@gsap/react";
+import { gsap } from "gsap";
 import { api, apiBlob, ApiError } from "./api";
 import { useAuth } from "./auth";
-import { Breadcrumbs, categoryLabel, EmptyState, PageTitle, PublicHeader, roleLabels, SkillCard, skillTypeLabels, StatusBadge, visibilityLabels } from "./components";
+import { Breadcrumbs, categoryLabel, EmptyState, PageTitle, PublicHeader, roleLabels, SkillCard, skillTypeLabels, StatusBadge, TiltSurface, visibilityLabels } from "./components";
 import { Link, Navigate, useNavigate, useParams } from "./router";
 import type { AvailableModels, Conversation, ConversationDetail, ConversationMessage, Endpoint, EndpointCreated, ModelConnectionItem, ModelConnectionList, ModelConnectionTestResult, Role, RunStatus, Skill, SkillPackageAnalysis, SkillRun, SkillVersion, User, Visibility, WorkflowArtifact, WorkflowJob, WorkflowJobStatus, WorkspaceFile } from "./types";
+
+gsap.registerPlugin(useGSAP);
 
 function useLoad<T>(path: string, initial: T) {
   const [data, setData] = useState<T>(initial);
@@ -167,15 +173,11 @@ function InteractiveSkillCore() {
     const y = Math.min(1, Math.max(0, (event.clientY - bounds.top) / bounds.height));
     event.currentTarget.style.setProperty("--cube-rx", `${((0.5 - y) * 15).toFixed(2)}deg`);
     event.currentTarget.style.setProperty("--cube-ry", `${((x - 0.5) * 20).toFixed(2)}deg`);
-    event.currentTarget.style.setProperty("--cube-mx", `${(x * 100).toFixed(1)}%`);
-    event.currentTarget.style.setProperty("--cube-my", `${(y * 100).toFixed(1)}%`);
   }
 
   function reset(event: ReactPointerEvent<HTMLDivElement>) {
     event.currentTarget.style.setProperty("--cube-rx", "-3deg");
     event.currentTarget.style.setProperty("--cube-ry", "4deg");
-    event.currentTarget.style.setProperty("--cube-mx", "50%");
-    event.currentTarget.style.setProperty("--cube-my", "42%");
   }
 
   return <div className="hero-visual interactive-fluent-cube" onPointerMove={move} onPointerLeave={reset} onPointerCancel={reset}>
@@ -206,50 +208,71 @@ function InteractiveSkillCore() {
     <i className="cube-particle cube-particle-one" />
     <i className="cube-particle cube-particle-two" />
     <i className="cube-particle cube-particle-three" />
-    <div className="fluent-cube-caption"><span><i />上下文独立运行</span><b>MOVE IN · CLICK TO ENTER</b></div>
   </div>;
 }
 
 export function MarketplacePage() {
-  const [query, setQuery] = useState("");
-  const [submittedQuery, setSubmittedQuery] = useState("");
+  const pageRef = useRef<HTMLDivElement>(null);
   const [category, setCategory] = useState("");
   const params = new URLSearchParams();
-  if (submittedQuery) params.set("query", submittedQuery);
   if (category) params.set("category", category);
   const path = `/community/skills${params.size ? `?${params.toString()}` : ""}`;
   const { data: skills, loading } = useLoad<Skill[]>(path, []);
+
+  useGSAP(() => {
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+    const entrance = gsap.timeline({ defaults: { duration: 0.48, ease: "power3.out" } });
+    entrance
+      .from(".public-header", { y: -12, autoAlpha: 0, duration: 0.36 }, 0)
+      .from(".hero-copy h1 > span", { y: 28, autoAlpha: 0, stagger: 0.07 }, 0.08)
+      .from(".hero-visual", { x: 24, scale: 0.985, autoAlpha: 0, duration: 0.68 }, 0.12)
+      .from(".hero-capability-step", { y: 15, autoAlpha: 0, stagger: 0.06 }, 0.26)
+      .from(".hero-description", { y: 12, autoAlpha: 0 }, 0.35);
+    gsap.to(".market-ambient-orb-one", { x: 70, y: 34, scale: 1.08, duration: 13, repeat: -1, yoyo: true, ease: "sine.inOut" });
+    gsap.to(".market-ambient-orb-two", { x: -54, y: -26, scale: 1.12, duration: 16, repeat: -1, yoyo: true, ease: "sine.inOut" });
+  }, { scope: pageRef });
+
+  useGSAP(() => {
+    if (loading || window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+    const cards = pageRef.current
+      ? Array.from(pageRef.current.querySelectorAll<HTMLElement>(".market-section .skill-card"))
+      : [];
+    if (!cards.length) return;
+    gsap.fromTo(cards, { y: 20, autoAlpha: 0 }, {
+      y: 0,
+      autoAlpha: 1,
+      duration: 0.48,
+      ease: "power2.out",
+      stagger: 0.07,
+      clearProps: "transform,opacity,visibility",
+    });
+  }, { scope: pageRef, dependencies: [loading, skills.length], revertOnUpdate: true });
+
   return (
-    <div className="public-page">
+    <div className="public-page home-marketplace" ref={pageRef}>
+      <div className="market-ambient" aria-hidden="true"><i className="market-ambient-orb market-ambient-orb-one" /><i className="market-ambient-orb market-ambient-orb-two" /><i className="market-ambient-grid" /></div>
       <PublicHeader />
       <section className="hero">
         <div className="hero-copy">
-          <span className="hero-kicker"><Sparkles size={15} /> Skill workflow, ready for API</span>
-          <h1><span>把好用的 Skill，</span><em>变成每个人的能力。</em></h1>
-          <p>发现、上传和分享 Skill。一次定义完整工作流，既能在网页运行，也能发布成可调用 API。</p>
-          <form className="hero-search" onSubmit={(event) => { event.preventDefault(); setSubmittedQuery(query); }}>
-            <Search size={20} />
-            <input aria-label="搜索 Skill" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索文档、研发、营销、数据处理 Skill…" />
-            <button type="submit">搜索</button>
-          </form>
-          <div className="hero-trust"><span><Check />版本可追溯</span><span><Check />权限透明</span><span><Check />私有化部署</span></div>
+          <h1><span>把好用的 Skill，</span><span><em>变成每个人</em>的能力。</span></h1>
+          <div className="hero-capability-path" aria-label="SkillGo 核心能力">
+            <article className="hero-capability-step"><span>01</span><div><strong>社区管理</strong><small>发布 · 审核 · 分享</small></div></article>
+            <article className="hero-capability-step"><span>02</span><div><strong>独立运行</strong><small>每个任务一套沙箱</small></div></article>
+            <article className="hero-capability-step"><span>03</span><div><strong>连接业务</strong><small>网页运行 · API 调用</small></div></article>
+          </div>
+          <p className="hero-description">发布封装好的 Skill 到社区，在独立沙箱中运行，并且支持外部 API 调用。</p>
         </div>
         <InteractiveSkillCore />
       </section>
       <section className="market-section">
-        <div className="section-heading"><div><span className="eyebrow">COMMUNITY</span><h2>{submittedQuery ? `“${submittedQuery}” 的搜索结果` : "社区精选 Skill"}</h2></div><label className="filter-button"><Filter size={16} /><select aria-label="按分类筛选" value={category} onChange={(event) => setCategory(event.target.value)}><option value="">全部分类</option><option value="productivity">效率工具</option><option value="writing">内容写作</option><option value="document">文档处理</option><option value="development">研发工程</option><option value="data">数据分析</option><option value="other">其他</option></select></label></div>
+        <div className="section-heading"><div><span className="eyebrow">COMMUNITY</span><h2>社区精选 Skill</h2></div><label className="filter-button"><Filter size={16} /><select aria-label="按分类筛选" value={category} onChange={(event) => setCategory(event.target.value)}><option value="">全部分类</option><option value="productivity">效率工具</option><option value="writing">内容写作</option><option value="document">文档处理</option><option value="development">研发工程</option><option value="data">数据分析</option><option value="other">其他</option></select></label></div>
         {loading ? <div className="card-grid loading-grid"><i /><i /><i /></div> : skills.length ? (
           <div className="card-grid">{skills.map((skill) => <SkillCard key={skill.id} skill={skill} />)}</div>
         ) : (
           <EmptyState icon={Boxes} title="社区正在等待第一个 Skill" description="登录后上传一个 Skill，提交审核并发布到社区。" action={<Link className="button primary" to="/register">成为首位创作者</Link>} />
         )}
       </section>
-      <section className="feature-strip">
-        <article><UploadCloud /><div><h3>一次上传</h3><p>自动校验包结构、版本、Schema 与权限声明。</p></div></article>
-        <article><Workflow /><div><h3>完整执行</h3><p>模型、工具、脚本和产物都进入统一 Run 记录。</p></div></article>
-        <article><Code2 /><div><h3>同步 API</h3><p>发布 Endpoint，通过独立密钥调用并生成可追踪的 Run。</p></div></article>
-      </section>
-      <footer className="public-footer"><BrandFooter /><span>私有化 Skill 工作流平台</span></footer>
+      <footer className="public-footer"><BrandFooter /><span>私有化 Skill 工作平台</span><div className="public-footer-tools"><details><summary aria-label="帮助与文档"><CircleHelp /></summary><div><a href="/api/docs"><BookOpen />API 文档</a></div></details><a href="https://github.com/Max-cu/SkillGo" target="_blank" rel="noreferrer" aria-label="在 GitHub 查看 SkillGo"><Github /></a></div></footer>
     </div>
   );
 }
@@ -351,7 +374,7 @@ export function AuthPage({ mode }: { mode: "login" | "register" }) {
 
 export function MySkillsPage() {
   const { data: skills, loading } = useLoad<Skill[]>("/skills/mine", []);
-  return <><Breadcrumbs items={[{ label: "工作台", to: "/app" }, { label: "我的 Skill" }]} /><PageTitle eyebrow="REGISTRY" title="我的 Skill" description="管理草稿、不可变版本、可见性和发布状态。" action={<Link className="button primary" to="/app/skills/new"><UploadCloud size={17} />上传 Skill</Link>} />{loading ? <div className="workspace-grid loading-grid"><i /><i /></div> : skills.length ? <div className="workspace-grid">{skills.map((skill) => <Link className="workspace-skill" to={`/app/skills/${skill.id}`} key={skill.id}><div className="workspace-skill-head"><span className="skill-icon"><Workflow /></span><StatusBadge status={skill.latest_status} /></div><h3>{skill.name}</h3><p>{skill.summary}</p><footer><span>{visibilityLabels[skill.visibility]}</span><span>{skill.latest_version ? `v${skill.latest_version}` : "等待上传版本"}</span></footer></Link>)}</div> : <EmptyState title="开始创建你的 Skill" description="选择一个 Skill ZIP，平台会解析内容并自动生成社区资料。" action={<Link className="button primary" to="/app/skills/new">上传 Skill</Link>} />}</>;
+  return <><Breadcrumbs items={[{ label: "工作台", to: "/app" }, { label: "我的 Skill" }]} /><div className="workspace-section-head"><h1>我的 Skill</h1><Link className="button primary compact" to="/app/skills/new"><UploadCloud size={16} />上传 Skill</Link></div>{loading ? <div className="workspace-grid compact loading-grid"><i /><i /><i /></div> : skills.length ? <div className="workspace-grid compact">{skills.map((skill) => <TiltSurface className="workspace-skill-tilt" key={skill.id}><Link className="workspace-skill" to={`/app/skills/${skill.id}`}><div className="workspace-skill-head"><span className="skill-icon"><Workflow /></span><StatusBadge status={skill.latest_status} /></div><h3>{skill.name}</h3><p>{skill.summary}</p><footer><span>{visibilityLabels[skill.visibility]}</span><span>{skill.latest_version ? `v${skill.latest_version}` : "等待上传版本"}</span></footer></Link></TiltSurface>)}</div> : <EmptyState title="开始创建你的 Skill" description="选择一个 Skill ZIP，平台会解析内容并自动生成社区资料。" action={<Link className="button primary" to="/app/skills/new">上传 Skill</Link>} />}</>;
 }
 
 export function NewSkillPage() {
@@ -562,14 +585,14 @@ export function WorkflowJobsPage() {
   return <>
     <Breadcrumbs items={[{ label: "工作台", to: "/app" }, { label: "任务" }]} />
     <PageTitle eyebrow="TASK CENTER" title="任务" description="集中查看 Skill 任务、API 调用、执行状态和真实产物；底层运行细节仅在需要时展开。" action={<Link className="button primary" to="/app"><Plus size={16} />开始新任务</Link>} />
-    <section className="task-center-section">
-      <header><div><h2>Skill 任务</h2><p>从对话发起的单 Skill 与多 Skill 沙箱任务</p></div><span>{jobs.length}</span></header>
-      {loading ? <div className="detail-loading" /> : jobs.length ? <div className="workflow-job-list">{jobs.map((job) => <Link key={job.id} to={`/app/skills/${job.skill_id}/workflow?version=${job.skill_version_id}&job=${job.id}`}><span className={`workflow-job-icon ${job.status}`}><Workflow /></span><div><strong>{workflowJobSkillLabel(job)}</strong><p>{job.instruction.slice(0, 48) || job.input_files[0]?.filename || "Skill 任务"} · {workflowJobSkills(job).map((item) => `v${item.version}`).join(" + ")}</p></div><span className={`workflow-status ${job.status}`}>{workflowStatusLabels[job.status]}</span><time>{new Date(job.created_at).toLocaleString("zh-CN")}</time><ChevronRight /></Link>)}</div> : <EmptyState title="还没有 Skill 任务" description="在工作台对话中插入一个或多个 Skill，发送后任务会出现在这里。" action={<Link className="button primary" to="/app">开始任务</Link>} />}
-    </section>
-    {(serviceCallsLoading || serviceCalls.length > 0) && <section className="task-center-section service-calls">
-      <header><div><h2>服务调用</h2><p>网页快捷运行与 API Endpoint 的轻量调用</p></div><span>{serviceCalls.length}</span></header>
-      {serviceCallsLoading ? <div className="detail-loading compact" /> : <div className="runs-list">{serviceCalls.map((run) => <article className="panel run-row" key={run.id}><div className="run-row-main"><span className="skill-icon small"><Zap /></span><div><strong>{run.skill_name} <small>v{run.version}</small></strong><span>{run.invocation_type === "api" ? `API 调用${run.endpoint_slug ? ` · ${run.endpoint_slug}` : ""}` : "网页快捷运行"}</span></div></div><RunBadge status={run.status} /><div className="run-row-meta"><span>{new Date(run.created_at).toLocaleString("zh-CN")}</span><b>{run.latency_ms === null ? "—" : `${run.latency_ms}ms`}</b></div>{run.error_message && <p className="review-note">{run.error_code}：{run.error_message}</p>}</article>)}</div>}
-    </section>}
+    <details className="task-center-section collapsible-section">
+      <summary><div><h2>Skill 任务</h2><p>从对话发起的沙箱任务</p></div><span>{jobs.length}</span><ChevronDown /></summary>
+      <div className="task-center-body">{loading ? <div className="detail-loading" /> : jobs.length ? <div className="workflow-job-list">{jobs.map((job) => <Link key={job.id} to={`/app/skills/${job.skill_id}/workflow?version=${job.skill_version_id}&job=${job.id}`}><span className={`workflow-job-icon ${job.status}`}><Workflow /></span><div><strong>{workflowJobSkillLabel(job)}</strong><p>{job.instruction.slice(0, 48) || job.input_files[0]?.filename || "Skill 任务"} · {workflowJobSkills(job).map((item) => `v${item.version}`).join(" + ")}</p></div><span className={`workflow-status ${job.status}`}>{workflowStatusLabels[job.status]}</span><time>{new Date(job.created_at).toLocaleString("zh-CN")}</time><ChevronRight /></Link>)}</div> : <EmptyState title="还没有 Skill 任务" description="在工作台对话中插入 Skill，发送后任务会出现在这里。" action={<Link className="button primary" to="/app">开始任务</Link>} />}</div>
+    </details>
+    <details className="task-center-section collapsible-section service-calls">
+      <summary><div><h2>服务调用</h2><p>网页运行与 API Endpoint 调用</p></div><span>{serviceCalls.length}</span><ChevronDown /></summary>
+      <div className="task-center-body">{serviceCallsLoading ? <div className="detail-loading compact" /> : serviceCalls.length ? <div className="runs-list">{serviceCalls.map((run) => <article className="panel run-row" key={run.id}><div className="run-row-main"><span className="skill-icon small"><Zap /></span><div><strong>{run.skill_name} <small>v{run.version}</small></strong><span>{run.invocation_type === "api" ? `API 调用${run.endpoint_slug ? ` · ${run.endpoint_slug}` : ""}` : "网页快捷运行"}</span></div></div><RunBadge status={run.status} /><div className="run-row-meta"><span>{new Date(run.created_at).toLocaleString("zh-CN")}</span><b>{run.latency_ms === null ? "—" : `${run.latency_ms}ms`}</b></div>{run.error_message && <p className="review-note">{run.error_code}：{run.error_message}</p>}</article>)}</div> : <EmptyState title="还没有服务调用" description="网页快捷运行或 API 调用后，记录会出现在这里。" />}</div>
+    </details>
   </>;
 }
 
@@ -1311,24 +1334,21 @@ export function EndpointsPage() {
   }
   return <>
     <Breadcrumbs items={[{ label: "工作台", to: "/app" }, { label: "API Endpoint" }]} />
-    <PageTitle eyebrow="SKILL AS AN API" title="API Endpoint" description="指令型 Skill 同步返回结果；沙箱工作流异步创建任务，并提供状态、取消和产物下载接口。" />
+    <div className="workspace-section-head"><h1>API Endpoint</h1></div>
     {secret && <section className="secret-banner"><div><span className="eyebrow">新密钥 · 仅显示一次</span><strong>{secret.name}</strong><code>{secret.api_key}</code></div><button className={`button secondary ${copyFeedback?.key === "secret" && copyFeedback.tone === "success" ? "copied" : ""}`} onClick={() => void copyText("secret", "API Key", secret.api_key)}>{copyFeedback?.key === "secret" && copyFeedback.tone === "success" ? <Check size={16} /> : <Copy size={16} />}{copyFeedback?.key === "secret" && copyFeedback.tone === "success" ? "已复制" : "复制密钥"}</button></section>}
     {loading ? <div className="panel detail-loading" /> : endpoints.length ? <div className="endpoint-grid">{endpoints.map((endpoint) => {
       const path = endpointInvokePath(endpoint);
-      const asyncMode = endpoint.invocation_mode === "async";
       const curl = endpointCurlExample(endpoint).replaceAll("\n+", "\n");
       const urlCopyKey = `url-${endpoint.id}`;
       const curlCopyKey = `curl-${endpoint.id}`;
       const urlCopied = copyFeedback?.key === urlCopyKey && copyFeedback.tone === "success";
       const curlCopied = copyFeedback?.key === curlCopyKey && copyFeedback.tone === "success";
-      return <article className="panel endpoint-card" key={endpoint.id}>
-        <header><span className="skill-icon"><Zap /></span><div><h3>{endpoint.name}</h3><p>{endpoint.skill_name} · v{endpoint.version}</p></div><span className={endpoint.is_active ? "endpoint-live" : "endpoint-off"}>{endpoint.is_active ? "运行中" : "已停用"}</span></header>
-        <div className="endpoint-mode-row"><span className={`endpoint-mode ${asyncMode ? "async" : "sync"}`}>{asyncMode ? "异步沙箱工作流" : "同步 JSON"}</span><span>{asyncMode ? "上传文件后返回任务 ID" : "一次请求直接返回结果"}</span></div>
+      return <TiltSurface className="endpoint-card-tilt" key={endpoint.id}><article className="panel endpoint-card">
+        <header><div><h3>{endpoint.name}</h3><p>{endpoint.skill_name} · v{endpoint.version}</p></div><span className={endpoint.is_active ? "endpoint-live" : "endpoint-off"}>{endpoint.is_active ? "运行中" : "已停用"}</span></header>
         <div className="endpoint-url"><code>POST {path}</code><button className={urlCopied ? "copied" : ""} type="button" title={urlCopied ? "调用地址已复制" : "复制调用地址"} aria-label={urlCopied ? "调用地址已复制" : "复制调用地址"} onClick={() => void copyText(urlCopyKey, "调用地址", `${window.location.origin}${path}`)}>{urlCopied ? <Check size={14} /> : <Copy size={14} />}</button></div>
-        <dl><div><dt>认证请求头</dt><dd>X-SkillGo-Key</dd></div><div><dt>密钥前缀</dt><dd><code>{endpoint.api_key_prefix}…</code></dd></div>{asyncMode && <div><dt>任务查询</dt><dd>GET {path}/&#123;job_id&#125;</dd></div>}{asyncMode && <div><dt>防止重复提交</dt><dd>Idempotency-Key</dd></div>}</dl>
-        <details className="endpoint-guide"><summary><Code2 size={14} />查看 cURL 调用示例</summary><div><pre><code>{curl}</code></pre><button className={`button ghost compact ${curlCopied ? "copied" : ""}`} type="button" onClick={() => void copyText(curlCopyKey, "cURL 示例", curl)}>{curlCopied ? <Check size={14} /> : <Copy size={14} />}{curlCopied ? "已复制" : "复制示例"}</button>{asyncMode && <p>任务完成后读取 <code>artifacts</code>，再调用对应的 <code>/download</code> 地址下载文件。</p>}</div></details>
+        <details className="endpoint-guide"><summary><Code2 size={14} />查看 cURL 调用示例</summary><div><pre><code>{curl}</code></pre><button className={`button ghost compact ${curlCopied ? "copied" : ""}`} type="button" onClick={() => void copyText(curlCopyKey, "cURL 示例", curl)}>{curlCopied ? <Check size={14} /> : <Copy size={14} />}{curlCopied ? "已复制" : "复制示例"}</button></div></details>
         <footer><button className="button ghost compact" onClick={() => rotate(endpoint)}><RotateCw size={14} />轮换密钥</button><button className={`button compact ${endpoint.is_active ? "danger" : "secondary"}`} onClick={() => toggle(endpoint)}>{endpoint.is_active ? <PowerOff size={14} /> : <Power size={14} />}{endpoint.is_active ? "停用" : "启用"}</button></footer>
-      </article>;
+      </article></TiltSurface>;
     })}</div> : <EmptyState icon={Zap} title="还没有 Endpoint" description="进入一个已发布且当前可运行的 Skill 版本，点击“发布为 API”。" />}
     {copyFeedback && <div className={`copy-toast ${copyFeedback.tone}`} role={copyFeedback.tone === "error" ? "alert" : "status"} aria-live="polite">{copyFeedback.tone === "success" ? <Check size={17} /> : <AlertTriangle size={17} />}<span>{copyFeedback.message}</span></div>}
   </>;
@@ -1374,9 +1394,8 @@ export function AdminUsersPage() {
   const [busyUserId, setBusyUserId] = useState("");
   const [deleteBusy, setDeleteBusy] = useState(false);
   const [userMessage, setUserMessage] = useState("");
-  const selectableUsers = users.filter((user) => user.id !== actor?.id);
-  const pendingAdmins = users.filter((user) => user.role === "admin" && !user.is_active);
-  const allSelected = selectableUsers.length > 0 && selectableUsers.every((user) => selectedUserIds.includes(user.id));
+  const memberUsers = users.filter((user) => user.role === "user");
+  const administratorUsers = users.filter((user) => user.role !== "user");
 
   async function toggle(user: User) {
     setBusyUserId(user.id); setUserMessage("");
@@ -1411,12 +1430,27 @@ export function AdminUsersPage() {
     } catch (reason) { setUserMessage(reason instanceof Error ? reason.message : "账号删除失败"); setDeleteOpen(false); }
     finally { setDeleteBusy(false); }
   }
+  function renderManagedUser(user: User) {
+    const awaitingApproval = user.role === "admin" && !user.is_active;
+    const isSuperAdmin = user.role === "super_admin";
+    const canToggle = user.id !== actor?.id && (user.role === "user" || actor?.role === "super_admin");
+    return <article className={`user-management-row${isSuperAdmin ? " super-admin" : ""}${selectedUserIds.includes(user.id) ? " selected" : ""}`} key={user.id}>
+      <span className="user-select-slot">{actor?.role === "super_admin" && <input type="checkbox" aria-label={`选择账号 ${user.display_name}`} disabled={user.id === actor.id} checked={selectedUserIds.includes(user.id)} onChange={(event) => selectUser(user.id, event.target.checked)} />}</span>
+      <span className="user-cell"><i>{user.display_name.slice(0, 1).toUpperCase()}</i><span><strong>{user.display_name}</strong><small>{user.email}</small></span></span>
+      <span className="user-role-slot">{actor?.role === "super_admin" && user.id !== actor.id && !isSuperAdmin ? <select disabled={busyUserId === user.id} value={user.role} aria-label={`修改 ${user.display_name} 的角色`} onChange={(event) => void role(user, event.target.value as Role)}><option value="user">成员</option><option value="admin">管理员</option></select> : <b className={`role-pill${isSuperAdmin ? " super-admin" : ""}`}>{roleLabels[user.role]}</b>}</span>
+      <span className={`user-account-status${awaitingApproval ? " pending-account" : ""}`}><i className={user.is_active ? "dot active" : "dot"} />{awaitingApproval ? "待审核" : user.is_active ? "正常" : "已停用"}</span>
+      <span className="user-joined-at">{new Date(user.created_at).toLocaleDateString("zh-CN")}</span>
+      <span className="user-row-actions">{awaitingApproval ? actor?.role === "super_admin" ? <button className="text-button" disabled={busyUserId === user.id} onClick={() => void approveAdmin(user)}>{busyUserId === user.id ? "处理中…" : "批准"}</button> : <small className="approval-waiting">等待超级管理员</small> : canToggle ? <button className="text-button" disabled={busyUserId === user.id} onClick={() => void toggle(user)}>{busyUserId === user.id ? "处理中…" : user.is_active ? "停用" : "启用"}</button> : null}</span>
+    </article>;
+  }
   return <>
     <Breadcrumbs items={[{ label: "工作台", to: "/app" }, { label: "用户管理" }]} />
     <PageTitle eyebrow="ADMINISTRATION" title="用户管理" description="成员注册后直接启用；管理员申请由唯一的超级管理员审核。" action={actor?.role === "super_admin" ? <button className="button danger" type="button" disabled={!selectedUserIds.length} onClick={() => setDeleteOpen(true)}><Trash2 size={16} />删除所选账号{selectedUserIds.length ? `（${selectedUserIds.length}）` : ""}</button> : undefined} />
     {userMessage && <div className="user-admin-message" role="status">{userMessage}</div>}
-    {actor?.role === "super_admin" && pendingAdmins.length > 0 && <section className="admin-approval-panel"><header><span><UserRoundCheck /></span><div><h2>管理员申请</h2><p>{pendingAdmins.length} 个账号正在等待你的审核</p></div></header><div>{pendingAdmins.map((user) => <article key={user.id}><i>{user.display_name.slice(0, 1).toUpperCase()}</i><span><strong>{user.display_name}</strong><small>{user.email} · {new Date(user.created_at).toLocaleDateString("zh-CN")}</small></span><button className="button primary compact" disabled={busyUserId === user.id} onClick={() => void approveAdmin(user)}>{busyUserId === user.id ? "处理中…" : "批准管理员"}</button></article>)}</div></section>}
-    <section className="panel table-panel"><div className="user-table selectable"><div className="table-row table-head"><span>{actor?.role === "super_admin" && <input type="checkbox" aria-label="选择全部可删除账号" checked={allSelected} onChange={(event) => setSelectedUserIds(event.target.checked ? selectableUsers.map((user) => user.id) : [])} />}</span><span>用户</span><span>角色</span><span>状态</span><span>加入时间</span><span>操作</span></div>{users.map((user) => { const awaitingApproval = user.role === "admin" && !user.is_active; return <div className={`table-row${selectedUserIds.includes(user.id) ? " selected" : ""}`} key={user.id}><span>{actor?.role === "super_admin" && <input type="checkbox" aria-label={`选择账号 ${user.display_name}`} disabled={user.id === actor.id} checked={selectedUserIds.includes(user.id)} onChange={(event) => selectUser(user.id, event.target.checked)} />}</span><span className="user-cell"><i>{user.display_name.slice(0, 1).toUpperCase()}</i><span><strong>{user.display_name}</strong><small>{user.email}</small></span></span><span>{actor?.role === "super_admin" && user.id !== actor.id ? <select disabled={busyUserId === user.id} value={user.role} aria-label={`修改 ${user.display_name} 的角色`} onChange={(event) => void role(user, event.target.value as Role)}><option value="user">成员</option><option value="admin">管理员</option></select> : <b className="role-pill">{roleLabels[user.role]}</b>}</span><span className={awaitingApproval ? "pending-account" : ""}><i className={user.is_active ? "dot active" : "dot"} />{awaitingApproval ? "待审核" : user.is_active ? "正常" : "已停用"}</span><span>{new Date(user.created_at).toLocaleDateString("zh-CN")}</span><span>{awaitingApproval ? actor?.role === "super_admin" ? <button className="text-button" disabled={busyUserId === user.id} onClick={() => void approveAdmin(user)}>{busyUserId === user.id ? "处理中…" : "批准"}</button> : <small className="approval-waiting">等待超级管理员</small> : <button className="text-button" disabled={user.id === actor?.id || busyUserId === user.id} onClick={() => void toggle(user)}>{busyUserId === user.id ? "处理中…" : user.is_active ? "停用" : "启用"}</button>}</span></div>})}</div></section>
+    <div className="user-role-groups">
+      <details className="user-role-group"><summary><span className="user-group-icon"><Users /></span><span><strong>成员</strong><small>普通账号，注册后可直接使用平台</small></span><b>{memberUsers.length}</b><ChevronDown /></summary><div className="user-group-list">{memberUsers.map(renderManagedUser)}</div></details>
+      <details className="user-role-group administrators"><summary><span className="user-group-icon"><ShieldCheck /></span><span><strong>管理员</strong><small>包含管理员与唯一的超级管理员</small></span><b>{administratorUsers.length}</b><ChevronDown /></summary><div className="user-group-list">{administratorUsers.map(renderManagedUser)}</div></details>
+    </div>
     {deleteOpen && <div className="modal-backdrop" role="presentation"><section className="confirm-dialog user-delete-dialog" role="alertdialog" aria-modal="true" aria-labelledby="delete-users-title"><span className="confirm-icon"><AlertTriangle /></span><h2 id="delete-users-title">永久删除 {selectedUserIds.length} 个账号？</h2><p>账号、会话、附件、历史任务和产物会永久删除，无法恢复。仍拥有 Skill 或正在运行任务的账号会被系统阻止删除。</p><div className="selected-user-summary">{users.filter((user) => selectedUserIds.includes(user.id)).map((user) => <span key={user.id}>{user.display_name}<small>{user.email}</small></span>)}</div><div><button className="button ghost" type="button" disabled={deleteBusy} onClick={() => setDeleteOpen(false)}>取消</button><button className="button danger" type="button" disabled={deleteBusy} onClick={() => void deleteSelectedUsers()}><Trash2 size={16} />{deleteBusy ? "正在删除…" : "确认永久删除"}</button></div></section></div>}
   </>;
 }
@@ -1441,7 +1475,6 @@ export function ModelSettingsPage() {
   const [testResult, setTestResult] = useState<ModelConnectionTestResult | null>(null);
   const [editorOpen, setEditorOpen] = useState(false);
 
-  const defaultEntry = catalog.items.find((item) => item.is_default) || catalog.items.find((item) => item.enabled) || null;
 
   function resetEditor(item: ModelConnectionItem | null = null) {
     setEditingModel(item);
@@ -1552,28 +1585,12 @@ export function ModelSettingsPage() {
 
   return <>
     <Breadcrumbs items={[{ label: "工作台", to: "/app" }, { label: "平台设置" }]} />
-    <PageTitle eyebrow="SUPER ADMIN · MODEL RUNTIME" title="模型运行中心" description="查看平台正在使用的模型与连接状态；需要调整时再进入编辑配置。密钥只显示保存状态，不会回显原文。" />
-
-    <section className={`model-runtime-hero ${catalog.configured ? "configured" : "unconfigured"}`}>
-      <header>
-        <div className="model-runtime-status"><span>{catalog.configured ? <ShieldCheck /> : <AlertTriangle />}</span><div><strong>{catalog.configured ? "模型服务运行中" : "模型服务尚未配置"}</strong><small>{catalog.configured ? `${catalog.items.filter((item) => item.enabled).length} 个模型可供对话、Skill 任务和 API 调用` : "点击新增模型完成第一条连接"}</small></div></div>
-        <div className="model-runtime-actions"><button className="button primary" type="button" onClick={() => resetEditor(null)}><Plus />新增模型</button></div>
-      </header>
-      <div className="model-runtime-body">
-        <article className="model-default-card">
-          <span className="model-default-label"><i />平台默认模型</span>
-          <h2>{defaultEntry?.model_name || "未设置默认模型"}</h2>
-          <p>普通对话、Skill 任务和 API Endpoint 未主动选择模型时，将使用此模型。</p>
-          <dl><div><dt>服务地址</dt><dd>{defaultEntry?.base_url || "未设置"}</dd></div><div><dt>API Key</dt><dd className={defaultEntry?.api_key_configured ? "secure" : "missing"}>{defaultEntry?.api_key_configured ? <><ShieldCheck />已安全保存</> : <><AlertTriangle />未配置</>}</dd></div></dl>
-          {defaultEntry && <div className="model-default-actions"><button type="button" onClick={() => void testConnection(defaultEntry)}><Zap />测试连接</button><button type="button" onClick={() => resetEditor(defaultEntry)}><PencilLine />编辑模型</button></div>}
-        </article>
-        <section className="model-inventory">
-          <header><div><span className="eyebrow">MODEL INVENTORY</span><h3>现有模型</h3></div><strong>{catalog.items.length}</strong></header>
-          {catalog.items.length ? <div className="model-inventory-list">{catalog.items.map((item) => <article className={item.is_default ? "default" : ""} key={item.id}><span><Workflow /></span><div><strong>{item.model_name}</strong><small>{item.base_url}</small></div><b className={item.enabled ? item.is_default ? "" : "available" : "disabled"}>{item.is_default ? "默认" : item.enabled ? "可用" : "停用"}</b><div className="model-row-actions"><button type="button" onClick={() => resetEditor(item)}><PencilLine />编辑</button>{!item.is_default && item.enabled && <button type="button" onClick={() => void makeDefault(item)}><Check />设为默认</button>}<button className="danger" type="button" onClick={() => void removeModel(item)}><Trash2 />删除</button></div></article>)}</div> : <div className="model-inventory-empty"><AlertTriangle /><span><strong>还没有现有模型</strong><small>点击右上角“新增模型”后再填写连接参数。</small></span></div>}
-        </section>
-      </div>
-      {defaultEntry && <footer className="model-runtime-policy"><div><span>默认模型超时</span><strong>{defaultEntry.timeout_seconds} 秒</strong></div><div><span>Temperature</span><strong>{defaultEntry.temperature}</strong></div><div><span>JSON 兼容</span><strong>{defaultEntry.json_mode ? "已开启" : "已关闭"}</strong></div><div><span>原生工具调用</span><strong>{defaultEntry.native_tools ? "已开启" : "已关闭"}</strong></div><div><span>TLS 校验</span><strong>{defaultEntry.tls_verify ? "已开启" : "已关闭"}</strong></div></footer>}
-    </section>
+    <div className="workspace-section-head"><div><h1>模型</h1><p>{catalog.items.length} 个模型连接</p></div><button className="button primary compact" type="button" onClick={() => resetEditor(null)}><Plus />新增模型</button></div>
+    {loading ? <div className="detail-loading compact" /> : catalog.items.length ? <section className="model-compact-list">{catalog.items.map((item) => <article key={item.id}>
+      <div className="model-compact-identity"><span><Workflow /></span><div><strong>{item.model_name}</strong><small>{item.base_url}</small></div></div>
+      <b className={item.enabled ? item.is_default ? "default" : "available" : "disabled"}>{item.is_default ? "默认" : item.enabled ? "可用" : "停用"}</b>
+      <div className="model-row-actions"><button type="button" onClick={() => void testConnection(item)}><Zap />测试</button><button type="button" onClick={() => resetEditor(item)}><PencilLine />编辑</button>{!item.is_default && item.enabled && <button type="button" onClick={() => void makeDefault(item)}><Check />设为默认</button>}<button className="danger" type="button" onClick={() => void removeModel(item)}><Trash2 />删除</button></div>
+    </article>)}</section> : <EmptyState icon={AlertTriangle} title="还没有模型" description="新增模型连接后，即可用于对话、Skill 任务和 API 调用。" action={<button className="button primary" type="button" onClick={() => resetEditor(null)}>新增模型</button>} />}
 
     {message && !editorOpen && <div className={`model-runtime-message ${messageTone}`} aria-live="polite">{messageTone === "success" ? <Check /> : <AlertTriangle />}<span>{message}</span></div>}
 

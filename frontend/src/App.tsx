@@ -26,12 +26,16 @@ function PageLoading() {
   return <div className="boot-screen"><span /><p>正在加载…</p></div>;
 }
 
+function WorkspaceLoading() {
+  return <div className="workspace-page-loading" role="status"><span /><p>正在加载页面…</p></div>;
+}
+
 function Protected({ children, roles }: { children: ReactNode; roles?: Role[] }) {
   const { user, loading } = useAuth();
   if (loading) return <div className="boot-screen"><span /><p>正在进入 SkillGo…</p></div>;
   if (!user) return <Navigate to="/login" replace />;
   if (roles && !roles.includes(user.role)) return <Navigate to="/app" replace />;
-  return <AppShell>{children}</AppShell>;
+  return <AppShell><Suspense fallback={<WorkspaceLoading />}>{children}</Suspense></AppShell>;
 }
 
 export default function App() {
@@ -71,7 +75,7 @@ export default function App() {
     <Route path="/app/credentials"><Protected><ComingSoonPage kind="credentials" /></Protected></Route>
     <Route path="/admin/reviews"><Protected roles={["admin", "super_admin"]}><AdminReviewsPage /></Protected></Route>
     <Route path="/admin/users"><Protected roles={["admin", "super_admin"]}><AdminUsersPage /></Protected></Route>
-    <Route path="/super/system"><Protected roles={["super_admin"]}><ModelSettingsPage /></Protected></Route>
+    <Route path="/super/system"><Protected roles={["admin", "super_admin"]}><ModelSettingsPage /></Protected></Route>
     <Route path="/:rest*"><Navigate to="/" replace /></Route>
   </Switch></Suspense>;
 }

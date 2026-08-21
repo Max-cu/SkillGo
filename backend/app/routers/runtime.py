@@ -15,7 +15,7 @@ from ..conversation_service import (
     release_conversation,
 )
 from ..database import get_db
-from ..deps import current_user, super_admin_user
+from ..deps import admin_user, current_user
 from ..execution import RunValidationError, execute_instruction_run, validate_input
 from ..model_config_service import DEFAULT_CONFIG_ID, ensure_model_connection_rows, model_connection_from_db, normalize_models
 from ..model_gateway import ModelConnection, ModelGatewayError, OpenAICompatibleGateway, get_model_gateway
@@ -464,7 +464,7 @@ def _ensure_default_model(db: Session, preferred: ModelConnectionConfig | None =
 
 @router.get("/super-admin/models", response_model=ModelConnectionList)
 def list_model_connections(
-    _: User = Depends(super_admin_user),
+    _: User = Depends(admin_user),
     db: Session = Depends(get_db),
 ) -> ModelConnectionList:
     rows = ensure_model_connection_rows(db)
@@ -485,7 +485,7 @@ def _validated_connection_values(payload: ModelConnectionCreate | ModelConnectio
 @router.post("/super-admin/models", response_model=ModelConnectionItem, status_code=status.HTTP_201_CREATED)
 def create_model_connection(
     payload: ModelConnectionCreate,
-    user: User = Depends(super_admin_user),
+    user: User = Depends(admin_user),
     db: Session = Depends(get_db),
 ) -> ModelConnectionItem:
     model_name, base_url = _validated_connection_values(payload)
@@ -516,7 +516,7 @@ def create_model_connection(
 def update_model_connection(
     model_id: str,
     payload: ModelConnectionUpdate,
-    user: User = Depends(super_admin_user),
+    user: User = Depends(admin_user),
     db: Session = Depends(get_db),
 ) -> ModelConnectionItem:
     row = db.get(ModelConnectionConfig, model_id)
@@ -549,7 +549,7 @@ def update_model_connection(
 @router.post("/super-admin/models/{model_id}/default", response_model=ModelConnectionItem)
 def set_default_model_connection(
     model_id: str,
-    user: User = Depends(super_admin_user),
+    user: User = Depends(admin_user),
     db: Session = Depends(get_db),
 ) -> ModelConnectionItem:
     row = db.get(ModelConnectionConfig, model_id)
@@ -565,7 +565,7 @@ def set_default_model_connection(
 @router.delete("/super-admin/models/{model_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_model_connection(
     model_id: str,
-    user: User = Depends(super_admin_user),
+    user: User = Depends(admin_user),
     db: Session = Depends(get_db),
 ) -> None:
     row = db.get(ModelConnectionConfig, model_id)
@@ -597,7 +597,7 @@ def available_models(
 
 @router.get("/super-admin/model/config", response_model=ModelConfigRead)
 def read_model_config(
-    _: User = Depends(super_admin_user),
+    _: User = Depends(admin_user),
     db: Session = Depends(get_db),
 ) -> ModelConfigRead:
     return _model_config_read(db)
@@ -619,7 +619,7 @@ def _validated_model_values(payload: ModelConfigUpdate) -> tuple[str, tuple[str,
 @router.put("/super-admin/model/config", response_model=ModelConfigRead)
 def update_model_config(
     payload: ModelConfigUpdate,
-    user: User = Depends(super_admin_user),
+    user: User = Depends(admin_user),
     db: Session = Depends(get_db),
 ) -> ModelConfigRead:
     base_url, models = _validated_model_values(payload)
@@ -659,7 +659,7 @@ def update_model_config(
 @router.post("/super-admin/model/test", response_model=ModelConnectionTestResult)
 async def test_model_connection(
     payload: ModelConnectionTestRequest,
-    _: User = Depends(super_admin_user),
+    _: User = Depends(admin_user),
     db: Session = Depends(get_db),
 ) -> ModelConnectionTestResult:
     base_url, models = _validated_model_values(payload)
@@ -693,7 +693,7 @@ async def test_model_connection(
 
 @router.get("/super-admin/model/status", response_model=ModelStatus)
 def model_status(
-    _: User = Depends(super_admin_user),
+    _: User = Depends(admin_user),
     db: Session = Depends(get_db),
 ) -> ModelStatus:
     connection, _, _ = model_connection_from_db(db)

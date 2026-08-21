@@ -1,6 +1,8 @@
-import { AlertTriangle, ArrowDown, ArrowRight, Check, ChevronDown, ChevronRight, Download, FileCheck2, FileText, FolderClock, MessageSquareText, Paperclip, PencilLine, Plus, RotateCw, ShieldCheck, Sparkles, Trash2, Workflow, X, Zap } from "lucide-react";
+import { AlertTriangle, ArrowDown, ArrowRight, Check, ChevronDown, ChevronRight, Download, FileCheck2, FileText, FolderClock, MessageSquareText, Paperclip, PencilLine, Plus, RotateCw, Trash2, Workflow, X, Zap } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { createPortal } from "react-dom";
+import { useGSAP } from "@gsap/react";
+import { gsap } from "gsap";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { api, apiBlob, apiNdjson } from "./api";
@@ -8,6 +10,8 @@ import { useAuth } from "./auth";
 import { SkillPromptEditor, type SkillPromptEditorHandle } from "./SkillPromptEditor";
 import { Link } from "./router";
 import type { AgentMessageFile, AgentWorkspaceConversation, AgentWorkspaceConversationDetail, AvailableModels, Skill, SkillVersion, WorkflowArtifact, WorkflowJob, WorkflowJobEvent, WorkflowJobStatus, WorkflowMessagePart } from "./types";
+
+gsap.registerPlugin(useGSAP);
 
 function useLoad<T>(path: string, initial: T) {
   const [data, setData] = useState<T>(initial);
@@ -266,6 +270,16 @@ export function DashboardPage() {
   const editorRef = useRef<SkillPromptEditorHandle | null>(null);
   const messagesScrollerRef = useRef<HTMLDivElement | null>(null);
   const followLatestRef = useRef(true);
+  const workspaceRef = useRef<HTMLDivElement | null>(null);
+
+  useGSAP(() => {
+    if (activeConversation || window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+    const entrance = gsap.timeline({ defaults: { duration: 0.48, ease: "power3.out" } });
+    entrance
+      .from(".agent-start-heading", { y: 14, autoAlpha: 0 }, 0)
+      .from(".agent-composer-heading", { y: 8, autoAlpha: 0 }, 0.1)
+      .from(".agent-start-composer", { y: 16, scale: 0.994, autoAlpha: 0, duration: 0.56 }, 0.15);
+  }, { scope: workspaceRef, dependencies: [Boolean(activeConversation)], revertOnUpdate: true });
 
   useEffect(() => {
     api<AgentWorkspaceConversation[]>("/agent/conversations").then(setConversations).catch(() => undefined);
@@ -739,25 +753,19 @@ export function DashboardPage() {
         <button type="button" className="agent-start-model" disabled={composerDisabled || !availableModels.configured} aria-expanded={modelMenuOpen} onClick={() => { setModelMenuOpen((open) => !open); setSkillMenuOpen(false); setFileMenuOpen(false); }}><span>{selectedModelName || "默认模型"}</span><ChevronDown /></button>
         {modelMenuOpen && <div className="agent-model-popover">{availableModels.models.map((model) => <button type="button" key={model} className={model === selectedModelName ? "selected" : ""} onClick={() => { setSelectedModelName(model); setModelMenuOpen(false); }}>{model}<Check /></button>)}</div>}
       </div>
-      <span className="agent-start-keyhint">Enter 发送 · Shift + Enter 换行</span>
       <button className="agent-start-send" type="submit" aria-label="发送消息" disabled={!canSend || composerDisabled}>{launching ? <RotateCw className="spin-icon" /> : <ArrowRight />}</button>
     </footer>
   </form>;
 
-  return <div className="agent-start-page">
+  return <div className="agent-start-page" ref={workspaceRef}>
     <header className="agent-start-topbar">
-      <div><span className="eyebrow">AGENT WORKSPACE</span><strong>SkillGo Agent</strong></div>
-      <div className="agent-start-topbar-actions">{!activeConversation && conversationHistory}<div className="sandbox-ready"><ShieldCheck /><span>显式 Skill 任务使用独立沙箱</span></div></div>
+      <div className="agent-workbench-title"><i /><strong>任务工作台</strong><span>对话、Skill 与文件在这里协作</span></div>
+      <div className="agent-start-topbar-actions">{!activeConversation && conversationHistory}</div>
     </header>
 
     <section className={`agent-start-main${activeConversation ? " has-conversation" : ""}`}>
       {!activeConversation ? <>
-        <div className="agent-start-heading">
-          <span className="agent-orb"><Sparkles /></span>
-          <p>{greeting()}，{user?.display_name}</p>
-          <h1>今天想让 SkillGo 做什么？</h1>
-          <span>未插入 Skill 时就是普通对话；只有你明确插入一个或多个 Skill，平台才会创建独立沙箱任务。</span>
-        </div>
+        <div className="agent-start-heading"><p>{greeting()}，{user?.display_name}</p></div>
         {composer}
       </> : <div className="agent-workspace-dialogue">
         <header>

@@ -1,5 +1,6 @@
 import {
   Boxes,
+  ChevronLeft,
   ChevronRight,
   CircleUserRound,
   Code2,
@@ -24,10 +25,15 @@ import {
   Workflow,
   X
 } from "lucide-react";
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
+import { useLocation } from "wouter";
+import { useGSAP } from "@gsap/react";
+import { gsap } from "gsap";
 import { Link, NavLink, useNavigate } from "./router";
 import { useAuth } from "./auth";
 import type { Role, Skill, VersionStatus, Visibility } from "./types";
+
+gsap.registerPlugin(useGSAP);
 
 export const icons = {
   Boxes,
@@ -61,16 +67,20 @@ export function Brand({ to = "/" }: { to?: string }) {
 
 export function PublicHeader() {
   const { user } = useAuth();
+  const navigate = useNavigate();
+  function enterWorkspace(event: ReactMouseEvent<HTMLAnchorElement>) {
+    event.preventDefault();
+    navigate("/app");
+    window.setTimeout(() => {
+      if (window.location.pathname !== "/app") window.location.assign("/app");
+    }, 0);
+  }
   return (
     <header className="public-header">
       <Brand />
-      <nav aria-label="主导航">
-        <NavLink to="/">Skill 市场</NavLink>
-        <a href="/api/docs">API 文档</a>
-      </nav>
       <div className="header-actions">
         {user ? (
-          <Link className="button primary compact" to="/app">进入工作台 <ChevronRight size={16} /></Link>
+          <a className="button primary compact public-workspace-entry" href="/app" onClick={enterWorkspace}>进入工作台 <ChevronRight size={16} /></a>
         ) : (
           <>
             <Link className="text-link" to="/login">登录</Link>
@@ -113,26 +123,48 @@ export function categoryLabel(category: string) {
   return categoryLabels[category] || category;
 }
 
+export function TiltSurface({ children, className = "" }: { children: ReactNode; className?: string }) {
+  const surfaceRef = useRef<HTMLDivElement>(null);
+  const rotateX = useRef<((value: number) => void) | null>(null);
+  const rotateY = useRef<((value: number) => void) | null>(null);
+
+  useGSAP(() => {
+    const surface = surfaceRef.current;
+    if (!surface || window.matchMedia("(prefers-reduced-motion: reduce), (pointer: coarse)").matches) return;
+    gsap.set(surface, { transformPerspective: 900, transformOrigin: "center" });
+    rotateX.current = gsap.quickTo(surface, "rotationX", { duration: 0.32, ease: "power2.out" });
+    rotateY.current = gsap.quickTo(surface, "rotationY", { duration: 0.32, ease: "power2.out" });
+  }, { scope: surfaceRef });
+
+  function move(event: ReactPointerEvent<HTMLDivElement>) {
+    if (!rotateX.current || !rotateY.current) return;
+    const bounds = event.currentTarget.getBoundingClientRect();
+    const x = (event.clientX - bounds.left) / bounds.width - 0.5;
+    const y = (event.clientY - bounds.top) / bounds.height - 0.5;
+    rotateX.current(-y * 5);
+    rotateY.current(x * 6);
+  }
+
+  function reset() {
+    rotateX.current?.(0);
+    rotateY.current?.(0);
+  }
+
+  return <div ref={surfaceRef} className={`tilt-surface ${className}`.trim()} onPointerMove={move} onPointerLeave={reset} onPointerCancel={reset}>{children}</div>;
+}
+
 export function AppShell({ children }: { children: ReactNode }) {
   const { user, logout } = useAuth();
   const navigate = useNavigate();
+  const [location] = useLocation();
   const [open, setOpen] = useState(false);
-  if (!user) return null;
-  const links = [
-    { to: "/app", label: "开始任务", icon: Plus, end: true },
-    { to: "/app/skills", label: "我的 Skill", icon: Library, end: false },
-    { to: "/app/jobs", label: "任务", icon: Workflow, end: false },
-    { to: "/app/endpoints", label: "API", icon: Network, end: false }
-  ];
-  const adminLinks = user.role === "admin" || user.role === "super_admin"
-    ? [
-        { to: "/admin/reviews", label: "发布审核", icon: ShieldCheck, end: false },
-        { to: "/admin/users", label: "用户管理", icon: Users, end: false }
-      ]
-    : [];
-  const superLinks = user.role === "super_admin"
-    ? [{ to: "/super/system", label: "平台设置", icon: Settings2, end: false }]
-    : [];
+  const [collapsed, setCollapsed] = useState(() => window.localStorage.getItem("skillgo-sidebar-collapsed") === "true");
+  const pageRef = useRef<HTMLDivElement>(null);
+
+  useGSAP(() => {
+    if (location === "/app" || window.matchMedia("(prefers-reduced-motion: reduce)").matches || !pageRef.current) return;
+    gsap.fromTo(pageRef.current, { y: 10, autoAlpha: 0 }, { y: 0, autoAlpha: 1, duration: 0.38, ease: "power2.out", clearProps: "transform,opacity,visibility" });
+  }, { scope: pageRef, dependencies: [location], revertOnUpdate: true });
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -142,31 +174,63 @@ export function AppShell({ children }: { children: ReactNode }) {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, []);
 
+  useEffect(() => {
+    window.localStorage.setItem("skillgo-sidebar-collapsed", String(collapsed));
+  }, [collapsed]);
+
+  if (!user) return null;
+  const links = [
+    { to: "/app", label: "开始任务", icon: Plus, end: true },
+    { to: "/app/skills", label: "Skill 管理", icon: Library, end: false },
+    { to: "/app/jobs", label: "运行记录", icon: Workflow, end: false },
+    { to: "/app/endpoints", label: "API 接入", icon: Network, end: false }
+  ];
+  const adminLinks = user.role === "admin" || user.role === "super_admin"
+    ? [
+        { to: "/admin/reviews", label: "发布审核", icon: ShieldCheck, end: false },
+        { to: "/admin/users", label: "用户管理", icon: Users, end: false }
+      ]
+    : [];
+  const superLinks = user.role === "admin" || user.role === "super_admin"
+    ? [{ to: "/super/system", label: "平台设置", icon: Settings2, end: false }]
+    : [];
+
   return (
-    <div className="app-shell">
+    <div className={`app-shell${collapsed ? " sidebar-collapsed" : ""}`}>
       <a className="skip-link" href="#skillgo-main">跳到主要内容</a>
       <button className="mobile-menu" onClick={() => setOpen(!open)} aria-controls="skillgo-sidebar" aria-expanded={open} aria-label={open ? "关闭工作台导航" : "打开工作台导航"}>
         {open ? <X /> : <Menu />}
       </button>
       {open && <button className="sidebar-backdrop" type="button" aria-label="关闭工作台导航" onClick={() => setOpen(false)} />}
-      <aside id="skillgo-sidebar" className={open ? "sidebar open" : "sidebar"}>
+      <aside id="skillgo-sidebar" className={`${open ? "sidebar open" : "sidebar"}${collapsed ? " collapsed" : ""}`}>
         <Brand to="/app" />
-        <Link className="sidebar-home-link" to="/" onClick={() => setOpen(false)} aria-label="发现社区 Skill"><span className="sidebar-home-icon"><Compass size={16} /></span><strong>发现 Skill</strong><ChevronRight size={14} /></Link>
-        <div className="sidebar-section-label">工作区</div>
+        <button className="sidebar-collapse" type="button" onClick={() => setCollapsed((value) => !value)} aria-label={collapsed ? "展开侧边栏" : "收起侧边栏"} title={collapsed ? "展开侧边栏" : "收起侧边栏"}><ChevronLeft /></button>
+        <Link className="sidebar-home-link" to="/" onClick={() => setOpen(false)} aria-label="进入 Skill 社区" title={collapsed ? "Skill 社区" : undefined}><span className="sidebar-home-icon"><Compass size={16} /></span><strong>Skill 社区</strong><ChevronRight size={14} /></Link>
+        <div className="sidebar-section-label">工作台</div>
         <nav className="sidebar-nav">
-          {[...links, ...adminLinks, ...superLinks].map(({ to, label, icon: Icon, end }) => (
-            <NavLink key={to} to={to} end={end} onClick={() => setOpen(false)}>
+          {links.map(({ to, label, icon: Icon, end }) => (
+            <NavLink key={to} to={to} end={end} onClick={() => setOpen(false)} title={collapsed ? label : undefined}>
               <Icon size={18} /><span>{label}</span>
             </NavLink>
           ))}
         </nav>
+        {(adminLinks.length > 0 || superLinks.length > 0) && <>
+          <div className="sidebar-section-label sidebar-management-label">平台管理</div>
+          <nav className="sidebar-nav">
+            {[...adminLinks, ...superLinks].map(({ to, label, icon: Icon, end }) => (
+              <NavLink key={to} to={to} end={end} onClick={() => setOpen(false)} title={collapsed ? label : undefined}>
+                <Icon size={18} /><span>{label}</span>
+              </NavLink>
+            ))}
+          </nav>
+        </>}
         <div className="sidebar-profile">
           <CircleUserRound size={30} />
           <div><strong>{user.display_name}</strong><span>{roleLabels[user.role]}</span></div>
-          <button aria-label="退出登录" onClick={() => { logout(); navigate("/"); }}><LogOut size={17} /></button>
+          <button className="sidebar-logout" aria-label="退出登录" onClick={() => { logout(); navigate("/"); }}><LogOut size={17} /></button>
         </div>
       </aside>
-      <main id="skillgo-main" className="app-main" tabIndex={-1}>{children}</main>
+      <main id="skillgo-main" className="app-main" tabIndex={-1}><div className="app-page-transition" ref={pageRef}>{children}</div></main>
     </div>
   );
 }
@@ -189,7 +253,7 @@ export function StatusBadge({ status }: { status: VersionStatus | null }) {
 
 export function SkillCard({ skill }: { skill: Skill }) {
   return (
-    <Link className="skill-card" to={`/skills/${skill.slug}`} aria-label={`查看 ${skill.name}`}>
+    <TiltSurface className="skill-card-tilt"><Link className="skill-card" to={`/skills/${skill.slug}`} aria-label={`查看 ${skill.name}`}>
       <div className="skill-card-top">
         <span className={`skill-icon tone-${skill.category}`}><Workflow /></span>
         <span className="category-pill">{categoryLabel(skill.category)}</span>
@@ -203,7 +267,7 @@ export function SkillCard({ skill }: { skill: Skill }) {
         <span><Heart size={14} /> {skill.favorite_count}</span>
         {skill.latest_version && <span>v{skill.latest_version}</span>}
       </footer>
-    </Link>
+    </Link></TiltSurface>
   );
 }
 
