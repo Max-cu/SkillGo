@@ -14,6 +14,7 @@
   <img alt="Python" src="https://img.shields.io/badge/Python-3.12-3776ab" />
   <img alt="Node.js" src="https://img.shields.io/badge/Node.js-24-339933" />
   <img alt="Status" src="https://img.shields.io/badge/status-active%20development-6957ee" />
+  <a href="https://github.com/Max-cu/SkillGo/releases"><img alt="Release" src="https://img.shields.io/github/v/release/Max-cu/SkillGo?include_prereleases&color=6957ee" /></a>
 </p>
 
 <p align="center">
@@ -23,6 +24,7 @@
   <a href="#把-skill-封装为-api">Skill API</a> ·
   <a href="#快速开始">快速开始</a> ·
   <a href="docs/README.md">项目文档</a> ·
+  <a href="deploy/README.md">部署指南</a> ·
   <a href="CONTRIBUTING.md">参与贡献</a> ·
   <a href="SECURITY.md">安全政策</a>
 </p>
@@ -238,28 +240,30 @@ hash/content verification ──────────► verified downloadabl
 ## 快速开始
 
 > [!IMPORTANT]
-> `.env.example` 只包含配置模板。首次启动前必须生成自己的数据库密码、JWT Secret、超级管理员密码和模型密钥；不要提交本机 `.env`。
+> `.env.example` 只是模板。首次启动前必须生成自己的数据库密码、JWT Secret 和超级管理员密码；不要提交本机 `.env`。模型可在启动后由管理员配置。
 
-### Docker Compose
+### 基础模式：先看界面和普通对话
 
-需要 Docker Compose。要启用完整沙箱 Worker，还需要 Linux 主机和已安装的 gVisor `runsc`。
+需要 Docker Compose。此模式启动 Web、API 和 PostgreSQL，不启动沙箱 Worker。
 
 ```powershell
 Copy-Item .env.example .env
-# 编辑 .env，至少替换数据库密码、JWT Secret 和超级管理员密码
+# 编辑 .env，替换三项必填密钥和 Bootstrap 邮箱
 docker compose up -d --build
 ```
 
-上面的命令启动 Web、API 和数据库，默认网页地址为 `http://127.0.0.1:8080`。要在已安装并注册 `runsc` 的 Linux 主机上启用完整任务沙箱，构建沙箱镜像并启动 `sandbox` profile：
+默认网页地址为 `http://127.0.0.1:8080`。
+
+### 完整模式：运行独立沙箱 Skill
+
+完整模式需要 Linux、Docker Engine 和已向 Docker 注册的 gVisor `runsc`。配置 `.env` 与 `deploy/ecs.env` 后执行：
 
 ```bash
-docker compose --profile build-only build sandbox-runtime
-docker compose --profile sandbox up -d --build
+docker compose --env-file .env --env-file deploy/ecs.env --profile build-only build sandbox-runtime
+docker compose --env-file .env --env-file deploy/ecs.env --profile sandbox up -d --build
 ```
 
-Worker 启动时会验证 `runsc` Runtime 和沙箱镜像；任一缺失都会报告环境不可用。服务器准备、gVisor 安装和自检步骤见 [部署说明](deploy/README.md)。
-
-服务器部署时请将 `deploy/ecs.env.example` 复制为 `deploy/ecs.env`，再按实际域名、Docker GID 和资源预算修改；该本机文件已被版本库忽略。完整步骤见 [deploy/README.md](deploy/README.md)。
+服务器要求、随机密钥生成、gVisor 安装、Docker GID、首次登录、自检、HTTPS、更新与回滚均见 [完整部署指南](deploy/README.md)。建议从 [GitHub Releases](https://github.com/Max-cu/SkillGo/releases) 选择固定版本部署。
 
 ### 本地开发
 
@@ -306,4 +310,5 @@ npm.cmd run build
 ## 支持 SkillGo
 
 如果 SkillGo 对你有帮助，或者你也认同“让 Skill 在独立、可治理的环境中真正运行”这个方向，欢迎在 [GitHub 仓库](https://github.com/Max-cu/SkillGo) 右上角点一个 ⭐ **Star** 支持项目。你的关注、建议和贡献，都会帮助 SkillGo 继续成长。
+
 
