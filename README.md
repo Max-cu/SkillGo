@@ -39,7 +39,7 @@ Skill 的上传、版本、审核和权限属于治理入口；**让需要工具
 2. **多人使用时怎样保证互不干扰**：用户资源先按所有权隔离，运行时再按任务隔离；同一实例内的用户、任务、附件、进程和产物不会混用。
 3. **已经验证的 Skill 怎样接入其他系统**：已发布的 Skill 版本可以部署成带独立 API Key 的 Endpoint，供业务系统同步调用或异步提交文件任务。
 
-> 当前项目处于积极开发阶段。核心流程已有自动化测试覆盖，但在用于生产或处理敏感数据前，仍应完成组织级租户、数据库迁移、密钥托管、TLS、限流和独立执行控制面等加固。
+> 当前项目处于积极开发阶段。核心流程已有自动化测试覆盖，并已接入版本化数据库迁移与备份恢复工具；处理敏感数据前，仍应完成组织级租户、密钥托管、TLS、限流、定期恢复演练和独立执行控制面等加固。
 
 ## 平台定位
 
@@ -181,7 +181,8 @@ SkillGo 可以把已经审核发布的 Skill 版本固定为 Endpoint，从网�
 | Skill 上传、版本、审核与社区 | 可用 |
 | Skill 同步/异步 API Endpoint | 可用 |
 | Docker Compose 私有化部署 | 可用 |
-| 组织级多租户、SSO、正式迁移体系 | 规划中 |
+| Alembic 数据库迁移、部署预检与备份恢复 | 可用 |
+| 组织级多租户、SSO | 规划中 |
 
 ## 架构概览
 
@@ -217,7 +218,7 @@ hash/content verification ──────────► verified downloadabl
 | Web | React、TypeScript、Vite、Nginx |
 | API 与领域逻辑 | Python 3.12、FastAPI、Pydantic、SQLAlchemy |
 | 身份与权限 | Argon2、JWT、三级角色与资源所有权校验 |
-| 数据 | PostgreSQL；开发环境支持 SQLite |
+| 数据 | PostgreSQL；开发环境支持 SQLite；Alembic 版本化迁移 |
 | 文件 | SkillGo 文件存储层，私有化部署使用独立 Docker Volume |
 | 模型 | OpenAI-compatible Chat Completions / tool calling |
 | 任务调度 | 数据库行锁、`AgentRun` 租约、心跳、失效恢复与最大重试 |
@@ -234,7 +235,7 @@ hash/content verification ──────────► verified downloadabl
 | `sandbox-runtime` | 任务沙箱镜像及受限工具入口 |
 | `examples` | 示例 Skill 与 API 调用代码 |
 | `docs` | 产品、架构、开发和接口文档；入口见 [docs/README.md](docs/README.md) |
-| `deploy` | Linux 部署、自检与故障诊断脚本 |
+| `deploy` | Linux 部署、预检、备份恢复、升级、自检与故障诊断脚本 |
 | `poc` | 隔离执行方案的历史验证代码，不是生产入口 |
 
 ## 快速开始

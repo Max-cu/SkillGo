@@ -11,6 +11,8 @@ RUN groupadd --gid 10001 skillgo \
 WORKDIR /app
 COPY requirements.lock /app/requirements.lock
 RUN python -m pip install --no-cache-dir -r /app/requirements.lock
+COPY --chown=10001:10001 alembic.ini /app/alembic.ini
+COPY --chown=10001:10001 migrations /app/migrations
 COPY --chown=10001:10001 app /app/app
 
 USER 10001:10001

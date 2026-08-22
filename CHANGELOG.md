@@ -2,6 +2,15 @@
 
 所有重要变更都记录在此文件中。版本号遵循 [Semantic Versioning](https://semver.org/)。
 
+## [Unreleased]
+
+### Added
+
+- Alembic 数据库迁移基线，兼容安全接管已有 v0.1 数据库。
+- 部署前配置、Docker GID、gVisor Runtime 和沙箱镜像预检。
+- PostgreSQL、托管文件和本机配置的版本化备份与校验恢复脚本。
+- 指定 Release Tag 的备份优先升级脚本。
+
 ## [0.1.0] - 2026-08-22
 
 ### Added

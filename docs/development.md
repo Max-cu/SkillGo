@@ -26,6 +26,20 @@
 
 API 文档：`http://127.0.0.1:8000/api/docs`
 
+### 数据库迁移
+
+SkillGo 使用 Alembic 管理 v0.1.0 之后的数结构变更。空数据库会创建当前基线并写入 `alembic_version`；无版本表的现有 v0.1 数据库会先验证表和列，结构不完整时拒绝错误 Stamp。
+
+修改 SQLAlchemy Model 后，在 `backend` 目录生成新迁移：
+
+```powershell
+Set-Location backend
+..\.venv\Scripts\python.exe -m alembic revision --autogenerate -m "describe schema change"
+..\.venv\Scripts\python.exe -m alembic upgrade head
+```
+
+生成文件必须人工检查 `upgrade()` 和 `downgrade()`，并在空库、v0.1 基线库和包含业务数据的备份上测试。不得用 `create_all` 替代新版本的显式迁移。
+
 ## 私有模型
 
 Instruction Runner 使用 OpenAI-compatible `chat/completions` 接口。模型地址应包含兼容 API 的版本前缀，例如：

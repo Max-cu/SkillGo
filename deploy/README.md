@@ -122,10 +122,11 @@ SKILLGO_DOCKER_GID=<上一步返回的数字>
 
 ```bash
 docker compose --env-file .env --env-file deploy/ecs.env --profile build-only build sandbox-runtime
+bash deploy/preflight.sh
 docker compose --env-file .env --env-file deploy/ecs.env --profile sandbox up -d --build
 ```
 
-第一条构建受控的 Skill 沙箱镜像；第二条启动数据库、API、Web 和 Worker。
+第一条构建受控的 Skill 沙箱镜像；预检会验证密钥占位符、Compose、Docker GID、`runsc` 和沙箱镜像；最后一条启动数据库、API、Web 和 Worker。
 
 ```bash
 docker compose --env-file .env --env-file deploy/ecs.env --profile sandbox ps
@@ -182,17 +183,30 @@ Compose 提供 HTTP 入口，不直接申请 TLS 证书。公网环境建议：
 
 ## 11. 更新、备份和回滚
 
-更新前至少备份 PostgreSQL Volume `skillgo-postgres`、文件 Volume `skillgo-storage`、`.env` 和 `deploy/ecs.env`。
+每次更新前都应同时备份 PostgreSQL、用户附件与产物、`.env` 和 `deploy/ecs.env`：
 
 ```bash
-git fetch --tags
-git checkout <new-version-tag>
-docker compose --env-file .env --env-file deploy/ecs.env --profile build-only build sandbox-runtime
-docker compose --env-file .env --env-file deploy/ecs.env --profile sandbox up -d --build
+bash deploy/backup-skillgo.sh
+```
+
+默认写入 `backups/<UTC 时间>/`，其中包含数据库 Dump、文件归档、配置副本、Git 提交号和 SHA-256 校验值。`backups/` 已被 Git 忽略，但仍应将备份复制到独立存储。
+
+从当前版本升级到指定 Tag：
+
+```bash
+bash deploy/upgrade-skillgo.sh <new-version-tag>
+```
+
+脚本会拒绝脏工作区，先预检和备份，再检出 Tag、构建、启动并运行总体自检。API 和 Worker 启动时会在 PostgreSQL 事务锁下执行 Alembic 迁移；没有版本表的 v0.1 实例只有在已有表和列完整时才会被接管。
+
+恢复备份会替换当前数据库和托管文件，因此必须明确传入 `--confirm`：
+
+```bash
+bash deploy/restore-skillgo.sh --confirm backups/<UTC-时间>
 SKILLGO_INSTALL_ROOT="$PWD" bash deploy/verify-ecs.sh
 ```
 
-回滚时检出上一个 Tag 并重建服务。如果 Release Notes 提到数结构不兼容，还必须恢复对应的数据库和文件备份。
+回滚代码时请先阅读 Release Notes。如果新版本已执行不可向下兼容的数据迁移，不能只检出旧 Tag，必须同时恢复对应备份。
 
 `deploy/install-skillgo.sh` 保留给自动化升级和历史备份迁移。它默认项目位于 `/opt/skillgo`，可用 `SKILLGO_INSTALL_ROOT` 修改；只有 `.deploy/skillgo.dump` 和 `.deploy/storage.tar.gz` 同时存在时才会恢复备份。
 

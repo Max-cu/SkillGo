@@ -39,3 +39,17 @@ jobs:
           cache-dependency-path: frontend/package-lock.json
       - run: npm ci
       - run: npm run build
+
+  operations:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Validate deployment scripts
+        run: bash -n deploy/*.sh
+      - name: Validate full sandbox Compose profile
+        run: >-
+          docker compose
+          --env-file .env.example
+          --env-file deploy/ecs.env.example
+          --profile sandbox
+          config --quiet
