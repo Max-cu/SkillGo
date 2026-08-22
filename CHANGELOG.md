@@ -4,6 +4,13 @@
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-08-22
+
+### Changed
+
+- README 聚焦当前已实现能力与实际运行边界，不再陈列未排期的功能路线图。
+- GitHub Release 工作流默认发布正式版本，不再自动标记为 Pre-release。
+
 ## [0.2.0] - 2026-08-22
 
 ### Added
@@ -36,7 +43,8 @@
 - 任务容器默认非 root、只读根文件系统、去除 Linux Capabilities 并限制 CPU、内存和 PID。
 - 本机密钥、运行数据、用户文件和备份默认被版本库忽略。
 
-[Unreleased]: https://github.com/Max-cu/SkillGo/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/Max-cu/SkillGo/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/Max-cu/SkillGo/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/Max-cu/SkillGo/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/Max-cu/SkillGo/releases/tag/v0.1.0
 

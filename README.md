@@ -14,7 +14,7 @@
   <img alt="Python" src="https://img.shields.io/badge/Python-3.12-3776ab" />
   <img alt="Node.js" src="https://img.shields.io/badge/Node.js-24-339933" />
   <img alt="Status" src="https://img.shields.io/badge/status-active%20development-6957ee" />
-  <a href="https://github.com/Max-cu/SkillGo/releases"><img alt="Release" src="https://img.shields.io/github/v/release/Max-cu/SkillGo?include_prereleases&color=6957ee" /></a>
+  <a href="https://github.com/Max-cu/SkillGo/releases"><img alt="Release" src="https://img.shields.io/github/v/release/Max-cu/SkillGo?color=6957ee" /></a>
 </p>
 
 <p align="center">
@@ -39,7 +39,7 @@ Skill 的上传、版本、审核和权限属于治理入口；**让需要工具
 2. **多人使用时怎样保证互不干扰**：用户资源先按所有权隔离，运行时再按任务隔离；同一实例内的用户、任务、附件、进程和产物不会混用。
 3. **已经验证的 Skill 怎样接入其他系统**：已发布的 Skill 版本可以部署成带独立 API Key 的 Endpoint，供业务系统同步调用或异步提交文件任务。
 
-> 当前项目处于积极开发阶段。核心流程已有自动化测试覆盖，并已接入版本化数据库迁移与备份恢复工具；处理敏感数据前，仍应完成组织级租户、密钥托管、TLS、限流、定期恢复演练和独立执行控制面等加固。
+> 当前项目处于积极开发阶段。核心流程已有自动化测试覆盖，并已接入版本化数据库迁移与备份恢复工具；生产部署请配置 TLS、妥善托管密钥、设置访问限流，并定期验证备份能够恢复。
 
 ## 平台定位
 
@@ -83,7 +83,7 @@ SkillGo 不是单纯的 Skill 仓库，也不是只生成文本答案的聊天�
 - 密码使用 Argon2 哈希，网页会话使用带签发方、受众和过期时间的 JWT；管理操作、登录、审核、Endpoint 和文件操作写入审计记录。
 - 用户、会话、Skill、任务、附件、Endpoint 和产物在数据模型中都保存明确的所有者字段，API 查询同时校验当前用户和对象归属，而不是只依赖前端隐藏菜单。
 
-当前的“多用户”指同一个私有化实例内的账号、角色和资源隔离；组织、团队空间、SSO 和组织级租户仍在规划中。
+当前的“多用户”指同一个私有化实例内的账号、角色和资源隔离。
 
 ### Skill 生命周期
 
@@ -147,7 +147,7 @@ Sandbox Worker
 3. 一个默认断网、能力受限的临时 Stager 只负责把选中的 Skill 包和输入文件放入 Volume，并把文件所有权调整为任务用户。
 4. Worker 创建真正执行 Skill 的非 root 容器，并设置 `runtime=runsc`。gVisor 位于容器进程与宿主 Linux 内核之间，实际 Skill 代码不会直接使用普通 Docker 容器的宿主系统调用路径。
 5. 容器根文件系统只读，唯一持久可写位置是该任务的 `/workspace`；临时依赖也只能安装到这个工作区，任务结束后一起删除。
-6. 任务默认使用 `network_mode=none`。当运行画像识别到 Skill 明确需要联网或下载依赖时，当前实现会为该任务启用 Docker bridge 网络；这是任务级开关，尚不是域名级出口代理或精细白名单。
+6. 任务默认使用 `network_mode=none`。当运行画像识别到 Skill 明确需要联网或下载依赖时，平台会为该任务启用 Docker bridge 网络；网络权限按任务开启，不提供域名级出口白名单。
 7. Worker 只收集 `/workspace/output` 下声明的常规文件，完成持久化与完整性校验后销毁容器和 Volume。
 
 启动时 Worker 会检查 Docker 是否真的注册了配置的 Runtime，并检查沙箱镜像是否存在；缺少 `runsc` 或镜像时会明确报告运行环境不可用，而不是悄悄退回普通执行路径。核心实现见 [`sandbox_runtime.py`](backend/app/sandbox_runtime.py) 与 [`sandbox_worker.py`](backend/app/sandbox_worker.py)。
@@ -182,7 +182,6 @@ SkillGo 可以把已经审核发布的 Skill 版本固定为 Endpoint，从网�
 | Skill 同步/异步 API Endpoint | 可用 |
 | Docker Compose 私有化部署 | 可用 |
 | Alembic 数据库迁移、部署预检与备份恢复 | 可用 |
-| 组织级多租户、SSO | 规划中 |
 
 ## 架构概览
 
@@ -301,7 +300,7 @@ npm.cmd run build
 - 没有真实工具证据和产物验证，任务不能标记为完成。
 - 对话文字、任务摘要和审计记录持续保留；对话附件、任务输入与生成产物统一保留 15 天，到期后自动删除。
 - 管理员可在“存储管理”查看部署服务器的磁盘总量、已用空间、可用空间及平台文件占用；到期文件由后台计划任务自动删除，数据库无引用的孤儿文件经过 24 小时缓冲后回收。
-- 当前 Worker 管理 Docker 生命周期，生产部署应限制其宿主权限，并逐步迁移到独立执行控制面。
+- Worker 需要管理 Docker 生命周期，生产部署应限制 Worker 与 Docker Socket 的宿主访问范围。
 
 漏洞报告方式见 [SECURITY.md](SECURITY.md)。
 

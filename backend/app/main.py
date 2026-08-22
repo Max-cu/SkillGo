@@ -121,7 +121,7 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(
     title="SkillGo API",
-    version="0.2.0",
+    version="0.2.1",
     description="Skill workflow registry, community and execution control plane.",
     docs_url="/api/docs",
     redoc_url="/api/redoc",
@@ -152,4 +152,4 @@ def health() -> dict[str, str]:
 
 @app.get("/api/v1")
 def api_root() -> dict[str, str]:
-    return {"name": "SkillGo API", "version": "0.2.0"}
+    return {"name": "SkillGo API", "version": "0.2.1"}

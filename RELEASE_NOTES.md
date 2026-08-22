@@ -1,6 +1,6 @@
-# SkillGo v0.2.0
+# SkillGo v0.2.1
 
-本次预览版重点补齐私有化部署后的数据库升级、备份恢复和文件生命周期管理，让 SkillGo 从“可以运行”进一步走向“可以持续运维”。
+SkillGo 的首个正式 Release，建立了从 Skill 治理、任务级独立沙箱执行、结果交付到外部 API 接入的完整闭环，并补齐私有化部署所需的数据库升级、备份恢复和文件生命周期管理。
 
 ## 主要更新
 
@@ -14,7 +14,7 @@
 
 ## 升级
 
-生产环境建议先执行备份，再切换到 `v0.2.0`：
+生产环境建议先执行备份，再切换到 `v0.2.1`：
 
 ```bash
 sudo SKILLGO_INSTALL_ROOT=/opt/skillgo \
@@ -22,16 +22,16 @@ sudo SKILLGO_INSTALL_ROOT=/opt/skillgo \
   bash deploy/backup-skillgo.sh
 
 sudo SKILLGO_INSTALL_ROOT=/opt/skillgo \
-  SKILLGO_RELEASE_TAG=v0.2.0 \
+  SKILLGO_RELEASE_TAG=v0.2.1 \
   SKILLGO_DEPLOY_ENV=deploy/ecs.env \
   bash deploy/update-skillgo.sh
 ```
 
 完整的首次部署、升级、验证和回滚说明见 [`deploy/README.md`](deploy/README.md)。
 
-## 已知边界
+## 部署提示
 
-这是 Pre-release。组织级多租户、SSO、域名级精细出站策略和集中式对象存储仍在规划中。处理敏感数据前，请完成组织自身的 TLS、密钥托管、限流、备份计划和定期恢复演练。
+生产环境请配置 TLS、妥善托管密钥、设置访问限流，并建立经过恢复验证的备份计划。任务默认断网；需要联网的 Skill 按任务启用 Docker bridge 网络，不提供域名级出口白名单。
 
 ## 验证
 
