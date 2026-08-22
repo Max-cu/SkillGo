@@ -180,7 +180,6 @@ export interface WorkflowJob {
   updated_at: string;
   started_at: string | null;
   finished_at: string | null;
-  storage_pinned: boolean;
   steps: WorkflowJobStep[];
   input_files: WorkflowJobInputFile[];
   artifacts: WorkflowArtifact[];

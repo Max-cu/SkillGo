@@ -204,7 +204,6 @@ class WorkflowJobRead(BaseModel):
     updated_at: datetime
     started_at: datetime | None
     finished_at: datetime | None
-    storage_pinned: bool = False
     steps: list[JobStepRead] = Field(default_factory=list)
     input_files: list[JobInputFileRead] = Field(default_factory=list)
     artifacts: list[ArtifactRead] = Field(default_factory=list)
@@ -318,10 +317,6 @@ class SystemSummary(BaseModel):
     pending_reviews: int
     runs: int = 0
     endpoints: int = 0
-
-
-class StoragePinUpdate(BaseModel):
-    pinned: bool
 
 
 class StorageUserUsage(BaseModel):

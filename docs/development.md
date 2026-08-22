@@ -69,7 +69,7 @@ SKILLGO_CONVERSATION_LOCK_SECONDS=180
 - 默认每个会话最多 30 个文件、单文件 10 MB；每次模型运行最多注入 40000 字符，防止文件把上下文无限撑大；
 - 助手回复旁的“保存为文件”可把结果写入同一工作区，并供用户下载。
 
-删除会话或 Skill 会同步清理对应的托管文件。对话附件、任务输入和生成产物默认保留 15 天；对话文字、任务状态、结果摘要与审计记录不会随文件到期而删除。重要任务可以标记为长期保留。保留期、扫描周期和孤儿文件缓冲期可通过 `SKILLGO_STORAGE_RETENTION_DAYS`、`SKILLGO_STORAGE_CLEANUP_INTERVAL_SECONDS`、`SKILLGO_STORAGE_ORPHAN_GRACE_HOURS` 调整。
+删除会话或 Skill 会同步清理对应的托管文件。对话附件、任务输入和生成产物统一保留 15 天；对话文字、任务状态、结果摘要与审计记录不会随文件到期而删除。保留期、扫描周期和孤儿文件缓冲期可通过 `SKILLGO_STORAGE_RETENTION_DAYS`、`SKILLGO_STORAGE_CLEANUP_INTERVAL_SECONDS`、`SKILLGO_STORAGE_ORPHAN_GRACE_HOURS` 调整。
 
 ## 前端开发
 
@@ -123,7 +123,7 @@ docker compose up -d --build
 
 普通工作台对话和 Skill 工作流都会创建统一的 `agent_runs` 运行记录。Sandbox Worker 使用带心跳的任务租约；租约过期后，原尝试会被 fencing token 阻止继续落库，任务最多在新的独立 gVisor 沙箱中自动尝试 3 次。默认租约为 90 秒、每 15 秒续租，可通过 `SKILLGO_SANDBOX_WORKER_LEASE_SECONDS`、`SKILLGO_SANDBOX_WORKER_HEARTBEAT_SECONDS` 和 `SKILLGO_SANDBOX_WORKER_MAX_ATTEMPTS` 调整。
 
-运行摘要和用户消息不会被后台留存任务删除。详细运行事件默认在成功后保留 7 天、失败或取消后保留 30 天；附件、任务输入和生成产物默认保留 15 天，长期保留任务除外。清理后仍保留文件名称、大小、哈希、任务状态和最终结果摘要，下载接口会明确返回文件已到期。清理周期和期限可通过对应的 `SKILLGO_AGENT_RUN_*` 与 `SKILLGO_STORAGE_*` 环境变量调整。
+运行摘要和用户消息不会被后台留存任务删除。详细运行事件默认在成功后保留 7 天、失败或取消后保留 30 天；附件、任务输入和生成产物统一保留 15 天。清理后仍保留文件名称、大小、哈希、任务状态和最终结果摘要，下载接口会明确返回文件已到期。清理周期和期限可通过对应的 `SKILLGO_AGENT_RUN_*` 与 `SKILLGO_STORAGE_*` 环境变量调整。
 
 ## 调用 Endpoint
 

@@ -43,7 +43,6 @@ BASELINE_REVISION = "20260822_0001"
 POST_BASELINE_COLUMNS = {
     "agent_message_files": {"purged_at"},
     "workspace_files": {"purged_at"},
-    "workflow_jobs": {"storage_pinned"},
     "job_input_files": {"purged_at"},
     "artifacts": {"purged_at"},
 }

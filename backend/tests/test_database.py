@@ -25,7 +25,7 @@ def test_blank_database_is_created_and_stamped_at_head():
     assert set(Base.metadata.tables).issubset(tables)
     assert "alembic_version" in tables
     with target.connect() as connection:
-        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "20260822_0002"
+        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "20260822_0003"
 
 
 def test_complete_legacy_database_is_adopted_without_losing_rows():
@@ -47,7 +47,7 @@ def test_complete_legacy_database_is_adopted_without_losing_rows():
     assert "favorites" in inspect(target).get_table_names()
     with target.connect() as connection:
         assert connection.scalar(text("SELECT count(*) FROM users")) == 1
-        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "20260822_0002"
+        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "20260822_0003"
 
 
 def test_v010_database_receives_storage_lifecycle_migration_without_data_loss():
@@ -56,7 +56,6 @@ def test_v010_database_receives_storage_lifecycle_migration_without_data_loss():
     migrated_columns = {
         "agent_message_files": ("ix_agent_message_files_purged_at", "purged_at"),
         "workspace_files": ("ix_workspace_files_purged_at", "purged_at"),
-        "workflow_jobs": ("ix_workflow_jobs_storage_pinned", "storage_pinned"),
         "job_input_files": ("ix_job_input_files_purged_at", "purged_at"),
         "artifacts": ("ix_artifacts_purged_at", "purged_at"),
     }
@@ -80,7 +79,7 @@ def test_v010_database_receives_storage_lifecycle_migration_without_data_loss():
         assert column_name in {column["name"] for column in inspector.get_columns(table_name)}
     with target.connect() as connection:
         assert connection.scalar(text("SELECT count(*) FROM users")) == 1
-        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "20260822_0002"
+        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "20260822_0003"
 
 
 def test_incomplete_legacy_table_is_not_falsely_stamped():

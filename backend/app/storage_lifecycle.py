@@ -130,7 +130,6 @@ def cleanup_expired_storage(*, include_orphans: bool = True) -> CleanupResult:
         ]
         eligible_jobs = select(WorkflowJob.id).where(
             WorkflowJob.status.in_(TERMINAL_JOB_STATUSES),
-            WorkflowJob.storage_pinned.is_(False),
             WorkflowJob.finished_at.is_not(None),
             WorkflowJob.finished_at < cutoff,
         )

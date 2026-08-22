@@ -478,7 +478,6 @@ class WorkflowJob(TimestampMixin, Base):
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    storage_pinned: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
 
     skill: Mapped[Skill] = relationship()
     skill_version: Mapped[SkillVersion] = relationship()

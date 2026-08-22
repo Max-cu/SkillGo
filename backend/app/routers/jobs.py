@@ -21,7 +21,7 @@ from ..execution_runtime import ensure_job_run, fail_run
 from ..model_gateway import ModelGatewayError, OpenAICompatibleGateway, get_model_gateway
 from ..models import AgentConversation, AgentMessage, AgentMessageFile, Artifact, Endpoint, JobInputFile, JobStatus, JobStep, JobStepStatus, Skill, SkillVersion, User, VersionStatus, WorkflowEndpointRequest, WorkflowJob, WorkflowJobModel, WorkflowJobPrompt, WorkflowJobSkill, utcnow
 from ..runtime_profile import version_runtime_profile
-from ..schemas import ArtifactRead, Message, StoragePinUpdate, WorkflowJobRead
+from ..schemas import ArtifactRead, Message, WorkflowJobRead
 from ..security import verify_endpoint_key
 from ..services import add_audit
 from ..storage import storage
@@ -1128,28 +1128,6 @@ def get_workflow_job(
     db: Session = Depends(get_db),
 ) -> WorkflowJobRead:
     return _job_read(_owned_job(db, job_id, user))
-
-
-@router.patch("/jobs/{job_id}/storage", response_model=WorkflowJobRead)
-def update_job_storage_retention(
-    job_id: str,
-    payload: StoragePinUpdate,
-    user: User = Depends(current_user),
-    db: Session = Depends(get_db),
-) -> WorkflowJobRead:
-    job = _owned_job(db, job_id, user)
-    job.storage_pinned = payload.pinned
-    add_audit(
-        db,
-        actor=user,
-        action="workflow_job.storage_pin" if payload.pinned else "workflow_job.storage_unpin",
-        resource_type="workflow_job",
-        resource_id=job.id,
-        details={"pinned": payload.pinned},
-    )
-    db.commit()
-    db.refresh(job)
-    return _job_read(job)
 
 
 @router.post("/jobs/{job_id}/cancel", response_model=Message)

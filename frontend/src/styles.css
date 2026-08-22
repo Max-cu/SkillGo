@@ -636,9 +636,6 @@ input:focus, textarea:focus, select:focus { border-color: #8c7af7; box-shadow: 0
 .agent-run-recovery button svg { width: 13px; }
 .agent-run-artifacts { margin-top: 16px; display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 7px; }
 .agent-run-artifacts > header { grid-column: 1/-1; display: flex; align-items: center; justify-content: space-between; gap: 10px; color: #747b89; font-size: 10px; font-weight: 700; }
-.agent-run-artifacts > header button { padding: 4px 7px; display: inline-flex; align-items: center; gap: 4px; border: 0; border-radius: 7px; color: #7e8491; background: #f2f3f6; font-size: 8px; }
-.agent-run-artifacts > header button.active { color: #5546ba; background: #efecff; }
-.agent-run-artifacts > header button svg { width: 11px; }
 .agent-run-artifacts > button { min-height: 48px; padding: 8px 10px; display: grid; grid-template-columns: 28px minmax(0,1fr) 16px; align-items: center; gap: 8px; border: 1px solid #e1e4e9; border-radius: 10px; color: #6052c9; text-align: left; background: #fff; }
 .agent-run-artifacts > button:hover { border-color: #cdc7ef; background: #faf9ff; }
 .agent-run-artifacts > button:disabled { cursor: default; opacity: .58; }

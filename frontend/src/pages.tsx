@@ -1532,7 +1532,7 @@ export function AdminStoragePage() {
   const categoryCards = [
     ["对话附件", data.categories.conversation_attachments, "随对话保留 15 天"],
     ["任务输入", data.categories.job_inputs, "任务结束后保留 15 天"],
-    ["生成产物", data.categories.artifacts, "长期保留任务除外"],
+    ["生成产物", data.categories.artifacts, "生成后保留 15 天"],
   ] as const;
 
   return <>
@@ -1541,7 +1541,7 @@ export function AdminStoragePage() {
     {error && <div className="form-error">{error}</div>}
     {loading ? <div className="panel detail-loading" /> : <>
       <StorageDonut data={data} />
-      <section className="storage-policy-banner"><span><HardDrive /></span><div><strong>到期文件自动删除</strong><p>附件、任务输入和生成产物统一保留 {data.retention_days} 天，系统按计划自动清理；运行中的任务和标记为长期保留的任务会跳过。</p></div><dl><div><dt>自动保留期限</dt><dd>{data.retention_days} 天</dd></div><div><dt>受生命周期管理</dt><dd>{formatStorageBytes(data.managed_bytes)}</dd></div></dl></section>
+      <section className="storage-policy-banner"><span><HardDrive /></span><div><strong>到期文件自动删除</strong><p>附件、任务输入和生成产物统一保留 {data.retention_days} 天，系统按计划自动清理；运行中的任务会等到结束后再计算保留期限。</p></div><dl><div><dt>自动保留期限</dt><dd>{data.retention_days} 天</dd></div><div><dt>受生命周期管理</dt><dd>{formatStorageBytes(data.managed_bytes)}</dd></div></dl></section>
       <section className="storage-category-grid">{categoryCards.map(([label, value, note]) => {
         const share = data.managed_bytes > 0 ? Math.max(2, value / data.managed_bytes * 100) : 0;
         return <article key={label}><span>{label}</span><strong>{formatStorageBytes(value)}</strong><div className="storage-category-track"><i className="storage-category-fill" style={{ width: `${share}%` }} /></div><small>{note}</small></article>;
