@@ -4,6 +4,8 @@
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-08-22
+
 ### Added
 
 - Alembic 数据库迁移基线，兼容安全接管已有 v0.1 数据库。
@@ -34,5 +36,7 @@
 - 任务容器默认非 root、只读根文件系统、去除 Linux Capabilities 并限制 CPU、内存和 PID。
 - 本机密钥、运行数据、用户文件和备份默认被版本库忽略。
 
+[Unreleased]: https://github.com/Max-cu/SkillGo/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/Max-cu/SkillGo/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/Max-cu/SkillGo/releases/tag/v0.1.0
 

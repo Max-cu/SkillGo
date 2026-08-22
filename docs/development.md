@@ -28,7 +28,7 @@ API 文档：`http://127.0.0.1:8000/api/docs`
 
 ### 数据库迁移
 
-SkillGo 使用 Alembic 管理 v0.1.0 之后的数结构变更。空数据库会创建当前基线并写入 `alembic_version`；无版本表的现有 v0.1 数据库会先验证表和列，结构不完整时拒绝错误 Stamp。
+SkillGo 使用 Alembic 管理 v0.1.0 之后的数据结构变更。空数据库会创建当前基线并写入 `alembic_version`；无版本表的现有 v0.1 数据库会先验证表和列，结构不完整时拒绝错误 Stamp。
 
 修改 SQLAlchemy Model 后，在 `backend` 目录生成新迁移：
 
