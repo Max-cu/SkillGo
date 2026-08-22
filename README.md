@@ -302,3 +302,8 @@ npm.cmd run build
 ## 参与和许可证
 
 贡献流程见 [CONTRIBUTING.md](CONTRIBUTING.md)。SkillGo 采用 [MIT License](LICENSE)。第三方依赖继续遵循各自许可证，生产版本以 `backend/requirements.lock` 和 `frontend/package-lock.json` 为准；后端测试依赖单独锁定在 `backend/requirements-dev.lock`。
+
+## 支持 SkillGo
+
+如果 SkillGo 对你有帮助，或者你也认同“让 Skill 在独立、可治理的环境中真正运行”这个方向，欢迎在 [GitHub 仓库](https://github.com/Max-cu/SkillGo) 右上角点一个 ⭐ **Star** 支持项目。你的关注、建议和贡献，都会帮助 SkillGo 继续成长。
+
