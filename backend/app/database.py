@@ -39,6 +39,16 @@ class SchemaMigrationError(RuntimeError):
     """Raised when an unversioned database cannot be adopted safely."""
 
 
+BASELINE_REVISION = "20260822_0001"
+POST_BASELINE_COLUMNS = {
+    "agent_message_files": {"purged_at"},
+    "workspace_files": {"purged_at"},
+    "workflow_jobs": {"storage_pinned"},
+    "job_input_files": {"purged_at"},
+    "artifacts": {"purged_at"},
+}
+
+
 def _migration_config(connection: Connection) -> Config:
     backend_root = Path(__file__).resolve().parents[1]
     config = Config(str(backend_root / "alembic.ini"))
@@ -47,13 +57,18 @@ def _migration_config(connection: Connection) -> Config:
     return config
 
 
-def _missing_columns(connection: Connection, table_names: set[str]) -> dict[str, list[str]]:
+def _missing_columns(
+    connection: Connection,
+    table_names: set[str],
+    *,
+    ignore: dict[str, set[str]] | None = None,
+) -> dict[str, list[str]]:
     inspector = inspect(connection)
     missing: dict[str, list[str]] = {}
     for table_name in sorted(table_names & set(Base.metadata.tables)):
         expected = set(Base.metadata.tables[table_name].columns.keys())
         actual = {column["name"] for column in inspector.get_columns(table_name)}
-        if absent := sorted(expected - actual):
+        if absent := sorted(expected - actual - (ignore or {}).get(table_name, set())):
             missing[table_name] = absent
     return missing
 
@@ -105,8 +120,14 @@ def initialize_schema(target_engine: Engine | None = None) -> None:
 
         if not business_tables:
             Base.metadata.create_all(bind=connection)
+            config = _migration_config(connection)
+            command.stamp(config, "head")
         elif not has_version_table:
-            missing_columns = _missing_columns(connection, business_tables)
+            missing_columns = _missing_columns(
+                connection,
+                business_tables,
+                ignore=POST_BASELINE_COLUMNS,
+            )
             if missing_columns:
                 formatted = "; ".join(
                     f"{table}({', '.join(columns)})"
@@ -119,12 +140,12 @@ def initialize_schema(target_engine: Engine | None = None) -> None:
             # v0.1 evolved by adding whole tables. Creating only absent tables
             # preserves populated tables before the baseline is stamped.
             Base.metadata.create_all(bind=connection)
-
-        config = _migration_config(connection)
-        if has_version_table:
+            config = _migration_config(connection)
+            command.stamp(config, BASELINE_REVISION)
             command.upgrade(config, "head")
         else:
-            command.stamp(config, "head")
+            config = _migration_config(connection)
+            command.upgrade(config, "head")
         _validate_schema(connection)
 
 

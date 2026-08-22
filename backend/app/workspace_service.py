@@ -169,6 +169,7 @@ def workspace_file_read(file: WorkspaceFile) -> WorkspaceFileRead:
         sha256=file.sha256,
         source=file.source,
         readable=file.extracted_text is not None,
+        purged_at=file.purged_at,
         created_at=file.created_at,
     )
 
@@ -183,6 +184,7 @@ def workspace_context(db: Session, conversation_id: str) -> list[dict[str, str]]
             .where(
                 WorkspaceFile.conversation_id == conversation_id,
                 WorkspaceFile.extracted_text.is_not(None),
+                WorkspaceFile.purged_at.is_(None),
             )
             .order_by(WorkspaceFile.created_at.desc())
             .limit(max(1, settings.workspace_max_files))

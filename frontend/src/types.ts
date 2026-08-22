@@ -115,6 +115,7 @@ export interface WorkflowJobInputFile {
   size_bytes: number;
   sha256: string;
   readable: boolean;
+  purged_at: string | null;
   created_at: string;
 }
 
@@ -126,6 +127,7 @@ export interface WorkflowArtifact {
   sha256: string;
   kind: string;
   verified: boolean;
+  purged_at: string | null;
   created_at: string;
 }
 
@@ -178,6 +180,7 @@ export interface WorkflowJob {
   updated_at: string;
   started_at: string | null;
   finished_at: string | null;
+  storage_pinned: boolean;
   steps: WorkflowJobStep[];
   input_files: WorkflowJobInputFile[];
   artifacts: WorkflowArtifact[];
@@ -191,6 +194,7 @@ export interface AgentMessageFile {
   content_type: string;
   size_bytes: number;
   sha256: string;
+  purged_at: string | null;
   created_at: string;
 }
 
@@ -232,6 +236,27 @@ export interface SystemSummary {
   pending_reviews: number;
   runs: number;
   endpoints: number;
+}
+
+export interface StorageUserUsage {
+  user_id: string;
+  display_name: string;
+  email: string;
+  size_bytes: number;
+  file_count: number;
+}
+
+export interface StorageOverview {
+  retention_days: number;
+  total_bytes: number;
+  managed_bytes: number;
+  categories: {
+    conversation_attachments: number;
+    job_inputs: number;
+    artifacts: number;
+  };
+  users: StorageUserUsage[];
+  last_cleanup_at: string | null;
 }
 
 export interface SkillRun {
@@ -291,6 +316,7 @@ export interface WorkspaceFile {
   sha256: string;
   source: "upload" | "generated" | string;
   readable: boolean;
+  purged_at: string | null;
   created_at: string;
 }
 

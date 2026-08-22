@@ -15,6 +15,7 @@ from .models import Role, User
 from .routers import admin, agent, auth, conversations, jobs, runtime, skills, workspace
 from .security import hash_password
 from .services import add_audit
+from .storage_lifecycle import cleanup_expired_storage
 
 
 logger = logging.getLogger(__name__)
@@ -86,12 +87,17 @@ def bootstrap() -> None:
 
 
 async def _execution_cleanup_loop(stopping: asyncio.Event) -> None:
+    last_storage_cleanup = 0.0
     while not stopping.is_set():
         try:
             await asyncio.to_thread(fail_stale_conversation_runs)
             await asyncio.to_thread(cleanup_execution_history)
+            loop_time = asyncio.get_running_loop().time()
+            if loop_time - last_storage_cleanup >= max(60, settings.storage_cleanup_interval_seconds):
+                await asyncio.to_thread(cleanup_expired_storage)
+                last_storage_cleanup = loop_time
         except Exception:
-            logger.exception("Agent run cleanup failed; it will retry on the next interval")
+            logger.exception("Lifecycle cleanup failed; it will retry on the next interval")
         try:
             await asyncio.wait_for(
                 stopping.wait(),

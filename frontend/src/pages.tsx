@@ -15,6 +15,7 @@ import {
   FileCheck2,
   FileText,
   Filter,
+  HardDrive,
   Github,
   Heart,
   CircleHelp,
@@ -48,7 +49,7 @@ import { api, apiBlob, ApiError } from "./api";
 import { useAuth } from "./auth";
 import { Breadcrumbs, categoryLabel, EmptyState, PageTitle, PublicHeader, roleLabels, SkillCard, skillTypeLabels, StatusBadge, TiltSurface, visibilityLabels } from "./components";
 import { Link, Navigate, useNavigate, useParams } from "./router";
-import type { AvailableModels, Conversation, ConversationDetail, ConversationMessage, Endpoint, EndpointCreated, ModelConnectionItem, ModelConnectionList, ModelConnectionTestResult, Role, RunStatus, Skill, SkillPackageAnalysis, SkillRun, SkillVersion, User, Visibility, WorkflowArtifact, WorkflowJob, WorkflowJobStatus, WorkspaceFile } from "./types";
+import type { AvailableModels, Conversation, ConversationDetail, ConversationMessage, Endpoint, EndpointCreated, ModelConnectionItem, ModelConnectionList, ModelConnectionTestResult, Role, RunStatus, Skill, SkillPackageAnalysis, SkillRun, SkillVersion, StorageOverview, User, Visibility, WorkflowArtifact, WorkflowJob, WorkflowJobStatus, WorkspaceFile } from "./types";
 
 gsap.registerPlugin(useGSAP);
 
@@ -63,6 +64,13 @@ function useLoad<T>(path: string, initial: T) {
 }
 
 const maxSkillPackageBytes = 20 * 1024 * 1024;
+
+function formatStorageBytes(size: number) {
+  if (size < 1024) return `${size} B`;
+  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
+  if (size < 1024 * 1024 * 1024) return `${(size / 1024 / 1024).toFixed(1)} MB`;
+  return `${(size / 1024 / 1024 / 1024).toFixed(2)} GB`;
+}
 
 const executionModeLabels: Record<string, string> = {
   instruction_only: "纯指令",
@@ -712,7 +720,7 @@ export function LegacyWorkflowPage() {
           <div className="workflow-job-meta"><span>任务 {selectedJob.id.slice(0, 8)}</span><span>v{selectedJob.version}</span><time>{new Date(selectedJob.created_at).toLocaleString("zh-CN")}</time></div>
           <div className="workflow-timeline">{selectedJob.steps.map((step) => <article className={step.status} key={step.id}><span>{step.status === "succeeded" ? <Check /> : step.status === "running" ? <RotateCw className="spin-icon" /> : step.status === "failed" || step.status === "blocked" ? <AlertTriangle /> : <i />}</span><div><strong>{step.name}</strong><p>{step.detail || (step.status === "pending" ? "等待前序步骤" : step.status)}</p></div></article>)}</div>
           {selectedJob.error_message && <div className="workflow-error"><AlertTriangle /><div><strong>{selectedJob.error_code}</strong><p>{selectedJob.error_message}</p></div></div>}
-          {selectedJob.artifacts.length > 0 && <div className="workflow-artifacts"><h3>任务产物</h3>{selectedJob.artifacts.map((artifact) => <article key={artifact.id}><FileText /><div><strong>{artifact.filename}</strong><span>{formatPackageSize(artifact.size_bytes)} · {artifact.verified ? "完整性已校验" : "待校验"}</span></div><button className="button primary compact" onClick={() => void downloadArtifact(selectedJob, artifact)}><Download size={15} />下载</button></article>)}</div>}
+          {selectedJob.artifacts.length > 0 && <div className="workflow-artifacts"><h3>任务产物</h3>{selectedJob.artifacts.map((artifact) => <article key={artifact.id}><FileText /><div><strong>{artifact.filename}</strong><span>{artifact.purged_at ? "已超过 15 天保留期" : `${formatPackageSize(artifact.size_bytes)} · ${artifact.verified ? "完整性已校验" : "待校验"}`}</span></div><button className="button primary compact" disabled={Boolean(artifact.purged_at)} onClick={() => void downloadArtifact(selectedJob, artifact)}>{artifact.purged_at ? <Clock3 size={15} /> : <Download size={15} />}{artifact.purged_at ? "已到期" : "下载"}</button></article>)}</div>}
         </> : <EmptyState title={selectedVersion.runtime_runnable ? "上传文件即可开始" : "等待运行环境"} description={selectedVersion.runtime_runnable ? "不需要再发送“看看”或“继续”，平台会自动执行到终态。" : selectedVersion.runtime_block_reason || "当前版本暂不可运行。"} />}
       </section>
 
@@ -942,7 +950,7 @@ export function WorkflowPage() {
                 </details>
               </div>
               {finalEvent && <div className="workflow-final-answer"><strong>已完成</strong><p>{finalEvent.detail}</p></div>}
-              {selectedJob.artifacts.length > 0 && <div className="workflow-agent-artifacts"><span>生成的文件</span>{selectedJob.artifacts.map((artifact) => <button type="button" key={artifact.id} onClick={() => void downloadArtifact(selectedJob, artifact)}><FileCheck2 /><span><strong>{artifact.filename}</strong><small>{formatPackageSize(artifact.size_bytes)} · {artifact.verified ? "已校验" : "校验中"}</small></span><Download /></button>)}</div>}
+              {selectedJob.artifacts.length > 0 && <div className="workflow-agent-artifacts"><span>生成的文件</span>{selectedJob.artifacts.map((artifact) => <button type="button" key={artifact.id} disabled={Boolean(artifact.purged_at)} onClick={() => void downloadArtifact(selectedJob, artifact)}><FileCheck2 /><span><strong>{artifact.filename}</strong><small>{artifact.purged_at ? "已超过 15 天保留期" : `${formatPackageSize(artifact.size_bytes)} · ${artifact.verified ? "已校验" : "校验中"}`}</small></span>{artifact.purged_at ? <Clock3 /> : <Download />}</button>)}</div>}
             </div></article>
           </>}
           <div ref={messagesEndRef} />
@@ -1260,12 +1268,12 @@ export function RunSkillPage() {
           <div ref={messagesEndRef} />
         </div>
 
-        {workspaceFiles.length > 0 && <div className="agent-files"><span><Paperclip />当前会话文件</span>{workspaceFiles.map((file) => <article key={file.id}><FileText /><span><strong title={file.filename}>{file.filename}</strong><small>{formatPackageSize(file.size_bytes)} · {file.source === "generated" ? "Skill 产物" : file.readable ? "可供 Skill 读取" : "仅存储"}</small></span><button type="button" title="下载" aria-label={`下载 ${file.filename}`} onClick={() => void downloadWorkspaceFile(file)}><Download /></button><button className="danger" type="button" title="删除" aria-label={`删除 ${file.filename}`} disabled={fileBusy || busy} onClick={() => void deleteWorkspaceFile(file)}><X /></button></article>)}</div>}
+        {workspaceFiles.length > 0 && <div className="agent-files"><span><Paperclip />当前会话文件</span>{workspaceFiles.map((file) => <article key={file.id}><FileText /><span><strong title={file.filename}>{file.filename}</strong><small>{file.purged_at ? "已超过 15 天保留期" : `${formatPackageSize(file.size_bytes)} · ${file.source === "generated" ? "Skill 产物" : file.readable ? "可供 Skill 读取" : "仅存储"}`}</small></span><button type="button" title={file.purged_at ? "文件已到期" : "下载"} aria-label={`下载 ${file.filename}`} disabled={Boolean(file.purged_at)} onClick={() => void downloadWorkspaceFile(file)}>{file.purged_at ? <Clock3 /> : <Download />}</button><button className="danger" type="button" title="删除" aria-label={`删除 ${file.filename}`} disabled={fileBusy || busy} onClick={() => void deleteWorkspaceFile(file)}><X /></button></article>)}</div>}
         {contextMessage && <div className="agent-context-message" aria-live="polite">{contextMessage}</div>}
         <form className="agent-composer" onSubmit={submit}>
           <label className="agent-model-picker"><span>对话模型</span><select aria-label="选择对话模型" value={selectedModelName} disabled={busy || contextBusy || !availableModels.configured} onChange={(event) => setSelectedModelName(event.target.value)}>{availableModels.models.map((modelName) => <option key={modelName} value={modelName}>{modelName}</option>)}</select></label>
           <textarea aria-label="给 Skill 发送消息" rows={3} maxLength={20000} value={messageText} disabled={busy || contextBusy || selectedConversation?.is_running} onChange={(event) => { setMessageText(event.target.value); setError(""); }} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); event.currentTarget.form?.requestSubmit(); } }} placeholder={`给 ${skill.name} 发送消息…`} />
-          <div><button className="agent-attach" type="button" title="上传会话文件" aria-label="上传会话文件" disabled={busy || fileBusy || contextBusy} onClick={() => fileInputRef.current?.click()}>{fileBusy ? <RotateCw className="spin-icon" /> : <Paperclip />}</button><input ref={fileInputRef} type="file" hidden onChange={uploadWorkspaceFile} accept=".txt,.md,.csv,.json,.yaml,.yml,.log,.html,.htm,.xml,.docx,.xlsx,.pdf,.png,.jpg,.jpeg" /><span className="agent-composer-hint">TXT、DOCX、XLSX 可读取；PDF 和图片暂仅保存 · Enter 发送</span>{error && <small>{error}</small>}<button type="submit" aria-label="发送消息" disabled={!messageText.trim() || busy || contextBusy || selectedConversation?.is_running}><SendHorizontal /></button></div>
+          <div><button className="agent-attach" type="button" title="上传会话文件" aria-label="上传会话文件" disabled={busy || fileBusy || contextBusy} onClick={() => fileInputRef.current?.click()}>{fileBusy ? <RotateCw className="spin-icon" /> : <Paperclip />}</button><input ref={fileInputRef} type="file" hidden onChange={uploadWorkspaceFile} accept=".txt,.md,.csv,.json,.yaml,.yml,.log,.html,.htm,.xml,.docx,.xlsx,.pdf,.png,.jpg,.jpeg" /><span className="agent-composer-hint">附件保留 15 天，请及时保存</span>{error && <small>{error}</small>}<button type="submit" aria-label="发送消息" disabled={!messageText.trim() || busy || contextBusy || selectedConversation?.is_running}><SendHorizontal /></button></div>
         </form>
       </section>
     </div>
@@ -1452,6 +1460,54 @@ export function AdminUsersPage() {
       <details className="user-role-group administrators"><summary><span className="user-group-icon"><ShieldCheck /></span><span><strong>管理员</strong><small>包含管理员与唯一的超级管理员</small></span><b>{administratorUsers.length}</b><ChevronDown /></summary><div className="user-group-list">{administratorUsers.map(renderManagedUser)}</div></details>
     </div>
     {deleteOpen && <div className="modal-backdrop" role="presentation"><section className="confirm-dialog user-delete-dialog" role="alertdialog" aria-modal="true" aria-labelledby="delete-users-title"><span className="confirm-icon"><AlertTriangle /></span><h2 id="delete-users-title">永久删除 {selectedUserIds.length} 个账号？</h2><p>账号、会话、附件、历史任务和产物会永久删除，无法恢复。仍拥有 Skill 或正在运行任务的账号会被系统阻止删除。</p><div className="selected-user-summary">{users.filter((user) => selectedUserIds.includes(user.id)).map((user) => <span key={user.id}>{user.display_name}<small>{user.email}</small></span>)}</div><div><button className="button ghost" type="button" disabled={deleteBusy} onClick={() => setDeleteOpen(false)}>取消</button><button className="button danger" type="button" disabled={deleteBusy} onClick={() => void deleteSelectedUsers()}><Trash2 size={16} />{deleteBusy ? "正在删除…" : "确认永久删除"}</button></div></section></div>}
+  </>;
+}
+
+export function AdminStoragePage() {
+  const empty: StorageOverview = {
+    retention_days: 15,
+    total_bytes: 0,
+    managed_bytes: 0,
+    categories: { conversation_attachments: 0, job_inputs: 0, artifacts: 0 },
+    users: [],
+    last_cleanup_at: null,
+  };
+  const { data, setData, loading, error } = useLoad<StorageOverview>("/admin/storage", empty);
+  const [cleaning, setCleaning] = useState(false);
+  const [message, setMessage] = useState("");
+
+  async function cleanup() {
+    if (cleaning) return;
+    setCleaning(true); setMessage("");
+    try {
+      const result = await api<{ files_deleted: number; bytes_released: number }>("/admin/storage/cleanup", { method: "POST" });
+      setData(await api<StorageOverview>("/admin/storage"));
+      setMessage(result.files_deleted
+        ? `已清理 ${result.files_deleted} 个过期文件，释放 ${formatStorageBytes(result.bytes_released)}。`
+        : "当前没有达到清理期限的文件。");
+    } catch (reason) {
+      setMessage(reason instanceof Error ? reason.message : "存储清理失败");
+    } finally {
+      setCleaning(false);
+    }
+  }
+
+  const categoryCards = [
+    ["对话附件", data.categories.conversation_attachments, "随对话保留 15 天"],
+    ["任务输入", data.categories.job_inputs, "任务结束后保留 15 天"],
+    ["生成产物", data.categories.artifacts, "长期保留任务除外"],
+  ] as const;
+
+  return <>
+    <Breadcrumbs items={[{ label: "工作台", to: "/app" }, { label: "存储管理" }]} />
+    <PageTitle eyebrow="STORAGE LIFECYCLE" title="存储管理" description="查看平台文件占用和统一保留策略。对话文字、任务记录与审计信息不会被自动删除。" action={<button className="button secondary" type="button" disabled={cleaning} onClick={() => void cleanup()}>{cleaning ? <RotateCw className="spin-icon" /> : <Trash2 size={16} />}{cleaning ? "正在清理…" : "立即清理过期文件"}</button>} />
+    {message && <div className="storage-admin-message" role="status">{message}</div>}
+    {error && <div className="form-error">{error}</div>}
+    {loading ? <div className="panel detail-loading" /> : <>
+      <section className="storage-policy-banner"><span><HardDrive /></span><div><strong>统一保留 {data.retention_days} 天</strong><p>附件、任务输入和生成产物到期后自动释放；运行中的任务不会被清理，用户标记为长期保留的任务也会跳过。</p></div><dl><div><dt>磁盘文件</dt><dd>{formatStorageBytes(data.total_bytes)}</dd></div><div><dt>受生命周期管理</dt><dd>{formatStorageBytes(data.managed_bytes)}</dd></div></dl></section>
+      <section className="storage-category-grid">{categoryCards.map(([label, value, note]) => <article key={label}><span>{label}</span><strong>{formatStorageBytes(value)}</strong><small>{note}</small></article>)}</section>
+      <section className="panel storage-user-panel"><header><div><span className="eyebrow">BY USER</span><h2>用户文件占用</h2></div><small>仅管理员可见</small></header>{data.users.length ? <div className="storage-user-list">{data.users.map((item, index) => <article key={item.user_id}><b>{String(index + 1).padStart(2, "0")}</b><span><strong>{item.display_name}</strong><small>{item.email}</small></span><em>{item.file_count} 个文件</em><strong>{formatStorageBytes(item.size_bytes)}</strong></article>)}</div> : <EmptyState icon={HardDrive} title="暂时没有用户文件" description="用户上传附件或任务生成产物后，占用会显示在这里。" />}</section>
+    </>}
   </>;
 }
 

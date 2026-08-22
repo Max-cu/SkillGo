@@ -8,6 +8,7 @@ import {
   FileArchive,
   Gauge,
   Heart,
+  HardDrive,
   House,
   KeyRound,
   LayoutDashboard,
@@ -188,7 +189,8 @@ export function AppShell({ children }: { children: ReactNode }) {
   const adminLinks = user.role === "admin" || user.role === "super_admin"
     ? [
         { to: "/admin/reviews", label: "发布审核", icon: ShieldCheck, end: false },
-        { to: "/admin/users", label: "用户管理", icon: Users, end: false }
+        { to: "/admin/users", label: "用户管理", icon: Users, end: false },
+        { to: "/admin/storage", label: "存储管理", icon: HardDrive, end: false }
       ]
     : [];
   const superLinks = user.role === "admin" || user.role === "super_admin"

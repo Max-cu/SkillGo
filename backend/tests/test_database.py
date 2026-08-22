@@ -25,7 +25,7 @@ def test_blank_database_is_created_and_stamped_at_head():
     assert set(Base.metadata.tables).issubset(tables)
     assert "alembic_version" in tables
     with target.connect() as connection:
-        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "20260822_0001"
+        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "20260822_0002"
 
 
 def test_complete_legacy_database_is_adopted_without_losing_rows():
@@ -47,7 +47,40 @@ def test_complete_legacy_database_is_adopted_without_losing_rows():
     assert "favorites" in inspect(target).get_table_names()
     with target.connect() as connection:
         assert connection.scalar(text("SELECT count(*) FROM users")) == 1
-        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "20260822_0001"
+        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "20260822_0002"
+
+
+def test_v010_database_receives_storage_lifecycle_migration_without_data_loss():
+    target = create_engine("sqlite://")
+    Base.metadata.create_all(target)
+    migrated_columns = {
+        "agent_message_files": ("ix_agent_message_files_purged_at", "purged_at"),
+        "workspace_files": ("ix_workspace_files_purged_at", "purged_at"),
+        "workflow_jobs": ("ix_workflow_jobs_storage_pinned", "storage_pinned"),
+        "job_input_files": ("ix_job_input_files_purged_at", "purged_at"),
+        "artifacts": ("ix_artifacts_purged_at", "purged_at"),
+    }
+    with target.begin() as connection:
+        connection.execute(
+            text(
+                "INSERT INTO users "
+                "(id, email, display_name, password_hash, role, is_active, created_at, updated_at) "
+                "VALUES ('u1', 'legacy@example.com', 'Legacy', 'hash', 'USER', 1, "
+                "CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+            )
+        )
+        for table_name, (index_name, column_name) in migrated_columns.items():
+            connection.execute(text(f'DROP INDEX "{index_name}"'))
+            connection.execute(text(f'ALTER TABLE "{table_name}" DROP COLUMN "{column_name}"'))
+
+    initialize_schema(target)
+
+    inspector = inspect(target)
+    for table_name, (_, column_name) in migrated_columns.items():
+        assert column_name in {column["name"] for column in inspector.get_columns(table_name)}
+    with target.connect() as connection:
+        assert connection.scalar(text("SELECT count(*) FROM users")) == 1
+        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "20260822_0002"
 
 
 def test_incomplete_legacy_table_is_not_falsely_stamped():

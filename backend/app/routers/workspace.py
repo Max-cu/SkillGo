@@ -231,6 +231,8 @@ def download_workspace_file(
     db: Session = Depends(get_db),
 ) -> Response:
     file = _owned_file(db, conversation_id, file_id, user)
+    if file.purged_at is not None:
+        raise HTTPException(status_code=410, detail="文件已超过 15 天保留期")
     data = storage.read(file.storage_path)
     add_audit(
         db,

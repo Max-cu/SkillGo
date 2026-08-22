@@ -332,6 +332,7 @@ class AgentMessageFile(Base):
     sha256: Mapped[str] = mapped_column(String(64), index=True)
     storage_path: Mapped[str] = mapped_column(String(600))
     extracted_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    purged_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
 
     message: Mapped[AgentMessage] = relationship(back_populates="files")
@@ -450,6 +451,7 @@ class WorkspaceFile(Base):
     storage_path: Mapped[str] = mapped_column(String(600))
     source: Mapped[str] = mapped_column(String(20), default="upload", index=True)
     extracted_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    purged_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
 
     conversation: Mapped[Conversation] = relationship(back_populates="files")
@@ -476,6 +478,7 @@ class WorkflowJob(TimestampMixin, Base):
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    storage_pinned: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
 
     skill: Mapped[Skill] = relationship()
     skill_version: Mapped[SkillVersion] = relationship()
@@ -764,6 +767,7 @@ class JobInputFile(Base):
     storage_path: Mapped[str] = mapped_column(String(600))
     readable: Mapped[bool] = mapped_column(Boolean, default=False)
     extracted_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    purged_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
 
     job: Mapped[WorkflowJob] = relationship(back_populates="input_files")
@@ -783,6 +787,7 @@ class Artifact(Base):
     storage_path: Mapped[str] = mapped_column(String(600))
     kind: Mapped[str] = mapped_column(String(40), default="result")
     verified: Mapped[bool] = mapped_column(Boolean, default=False)
+    purged_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
 
     job: Mapped[WorkflowJob] = relationship(back_populates="artifacts")

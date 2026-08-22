@@ -115,11 +115,12 @@ async def _resolve_message_files(
                 AgentMessageFile.id.in_(existing_ids),
                 AgentMessageFile.conversation_id == conversation.id,
                 AgentMessageFile.user_id == user.id,
+                AgentMessageFile.purged_at.is_(None),
             )
         ).all()
         by_id = {item.id: item for item in stored_files}
         if len(by_id) != len(existing_ids):
-            raise HTTPException(status_code=404, detail="历史附件不存在或不属于当前会话")
+            raise HTTPException(status_code=410, detail="历史附件已超过 15 天保留期，请重新上传")
         for file_id in existing_ids:
             item = by_id[file_id]
             if item.extracted_text is None:

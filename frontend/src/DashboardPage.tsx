@@ -147,7 +147,7 @@ function TraceEvent({ event, forceComplete = false }: { event: WorkflowJobEvent;
   </details>;
 }
 
-function WorkflowReply({ job, onDownload, onRetry, onEdit }: { job: WorkflowJob; onDownload: (job: WorkflowJob, artifact: WorkflowArtifact) => void; onRetry: (job: WorkflowJob) => void; onEdit: (job: WorkflowJob) => void }) {
+function WorkflowReply({ job, onDownload, onRetry, onEdit, onPin }: { job: WorkflowJob; onDownload: (job: WorkflowJob, artifact: WorkflowArtifact) => void; onRetry: (job: WorkflowJob) => void; onEdit: (job: WorkflowJob) => void; onPin: (job: WorkflowJob) => void }) {
   const running = activeStatuses.has(job.status);
   const now = useLiveNow(running);
   const [traceOpen, setTraceOpen] = useState(running);
@@ -209,7 +209,7 @@ function WorkflowReply({ job, onDownload, onRetry, onEdit }: { job: WorkflowJob;
     {job.error_message && <div className="agent-run-error"><AlertTriangle /><span><strong>{job.error_code || "TASK_FAILED"}</strong><small>{job.error_message}</small></span></div>}
     {finalEvent && <MarkdownContent className="agent-run-answer">{finalEvent.detail}</MarkdownContent>}
     {["failed", "blocked", "cancelled"].includes(job.status) && <div className="agent-run-recovery"><button type="button" onClick={() => onRetry(job)}><RotateCw />原样重试</button><button type="button" onClick={() => onEdit(job)}><PencilLine />修改后再运行</button></div>}
-    {job.artifacts.length > 0 && <div className="agent-run-artifacts"><span>生成的文件</span>{job.artifacts.map((artifact) => <button type="button" key={artifact.id} onClick={() => onDownload(job, artifact)}><FileCheck2 /><span><strong>{artifact.filename}</strong><small>{formatSize(artifact.size_bytes)} · {artifact.verified ? "已校验" : "校验中"}</small></span><Download /></button>)}</div>}
+    {job.artifacts.length > 0 && <div className="agent-run-artifacts"><header><span>生成的文件</span><button type="button" className={job.storage_pinned ? "active" : ""} onClick={() => onPin(job)}><FolderClock />{job.storage_pinned ? "已长期保留" : "长期保留"}</button></header>{job.artifacts.map((artifact) => <button type="button" key={artifact.id} disabled={Boolean(artifact.purged_at)} onClick={() => onDownload(job, artifact)}><FileCheck2 /><span><strong>{artifact.filename}</strong><small>{artifact.purged_at ? "已超过 15 天保留期" : `${formatSize(artifact.size_bytes)} · ${artifact.verified ? "已校验" : "校验中"}`}</small></span>{artifact.purged_at ? <FolderClock /> : <Download />}</button>)}</div>}
     {!running && <footer className="agent-run-meta">
       <span>{job.model_name || "默认模型"}</span><i />
       <span>{formatDuration(totalDuration)}</span><i />
@@ -277,7 +277,6 @@ export function DashboardPage() {
     const entrance = gsap.timeline({ defaults: { duration: 0.48, ease: "power3.out" } });
     entrance
       .from(".agent-start-heading", { y: 14, autoAlpha: 0 }, 0)
-      .from(".agent-composer-heading", { y: 8, autoAlpha: 0 }, 0.1)
       .from(".agent-start-composer", { y: 16, scale: 0.994, autoAlpha: 0, duration: 0.56 }, 0.15);
   }, { scope: workspaceRef, dependencies: [Boolean(activeConversation)], revertOnUpdate: true });
 
@@ -303,7 +302,9 @@ export function DashboardPage() {
   const conversationBusy = runningJobIds.length > 0;
   const historyFiles = useMemo(() => {
     const bySha = new Map<string, AgentMessageFile>();
-    (activeConversation?.messages || []).forEach((message) => message.files.forEach((file) => bySha.set(file.sha256, file)));
+    (activeConversation?.messages || []).forEach((message) => message.files.forEach((file) => {
+      if (!file.purged_at) bySha.set(file.sha256, file);
+    }));
     return [...bySha.values()].reverse();
   }, [activeConversation?.messages]);
 
@@ -649,6 +650,15 @@ export function DashboardPage() {
     }
   }
 
+  async function toggleJobPin(job: WorkflowJob) {
+    try {
+      await api<WorkflowJob>(`/jobs/${job.id}/storage`, { method: "PATCH", body: JSON.stringify({ pinned: !job.storage_pinned }) });
+      if (activeConversation) syncConversation(await api<AgentWorkspaceConversationDetail>(`/agent/conversations/${activeConversation.id}`));
+    } catch (reason) {
+      setLaunchError(reason instanceof Error ? reason.message : "无法更新任务保留状态");
+    }
+  }
+
   function editFailedJob(job: WorkflowJob) {
     editorRef.current?.setParts(job.message_content.length ? job.message_content : [{ type: "text", text: job.instruction }]);
     const reusable = historyFiles.filter((file) => job.input_files.some((input) => input.sha256 === file.sha256));
@@ -755,6 +765,7 @@ export function DashboardPage() {
       </div>
       <button className="agent-start-send" type="submit" aria-label="发送消息" disabled={!canSend || composerDisabled}>{launching ? <RotateCw className="spin-icon" /> : <ArrowRight />}</button>
     </footer>
+    <p className="agent-storage-notice"><FolderClock />附件与任务产物保留 15 天，请及时下载保存</p>
   </form>;
 
   return <div className="agent-start-page" ref={workspaceRef}>
@@ -779,9 +790,9 @@ export function DashboardPage() {
           <div className="agent-workspace-messages" ref={messagesScrollerRef} aria-live="polite" onScroll={handleMessagesScroll}>
             {conversationMessages.map((message) => message.role === "user" ? <article className="agent-workspace-message user" key={message.id}>
               <div className="agent-workspace-bubble"><StructuredPrompt parts={message.content.parts} fallback={String(message.content.message || "")} />
-                {(message.files.length > 0 || (message.content.files?.length || 0) > 0) && <div className="agent-workspace-files">{message.files.length > 0 ? message.files.map((file) => <span key={file.id}><Paperclip />{file.filename}<small>{formatSize(file.size_bytes)}</small></span>) : message.content.files?.map((file, index) => <span key={`${file.filename}-${index}`}><Paperclip />{file.filename}<small>{formatSize(file.size_bytes)}</small></span>)}</div>}
+                {(message.files.length > 0 || (message.content.files?.length || 0) > 0) && <div className="agent-workspace-files">{message.files.length > 0 ? message.files.map((file) => <span className={file.purged_at ? "expired" : ""} key={file.id}><Paperclip />{file.filename}<small>{file.purged_at ? "已到期" : formatSize(file.size_bytes)}</small></span>) : message.content.files?.map((file, index) => <span key={`${file.filename}-${index}`}><Paperclip />{file.filename}<small>{formatSize(file.size_bytes)}</small></span>)}</div>}
               </div><time>{formatTime(message.created_at)}</time>
-            </article> : <article className="agent-workspace-message assistant" key={message.id}><div>{message.kind === "workflow" && message.job ? <WorkflowReply job={message.job} onDownload={(job, artifact) => void downloadArtifact(job, artifact)} onRetry={(job) => void retryJob(job)} onEdit={editFailedJob} /> : <><MarkdownContent className="agent-workspace-answer">{String(message.content.message || "")}</MarkdownContent><time>{formatTime(message.created_at)}{message.model_name ? ` · ${message.model_name}` : ""}{typeof message.content.latency_ms === "number" ? ` · ${formatDuration(message.content.latency_ms)}` : ""}</time></>}</div></article>)}
+            </article> : <article className="agent-workspace-message assistant" key={message.id}><div>{message.kind === "workflow" && message.job ? <WorkflowReply job={message.job} onDownload={(job, artifact) => void downloadArtifact(job, artifact)} onRetry={(job) => void retryJob(job)} onEdit={editFailedJob} onPin={(job) => void toggleJobPin(job)} /> : <><MarkdownContent className="agent-workspace-answer">{String(message.content.message || "")}</MarkdownContent><time>{formatTime(message.created_at)}{message.model_name ? ` · ${message.model_name}` : ""}{typeof message.content.latency_ms === "number" ? ` · ${formatDuration(message.content.latency_ms)}` : ""}</time></>}</div></article>)}
             {streamingTurn?.conversationId === activeConversation.id && <>
               <article className="agent-workspace-message user streaming-user">
                 <div className="agent-workspace-bubble">{streamingTurn.prompt}{streamingTurn.attachments.length > 0 && <div className="agent-workspace-files">{streamingTurn.attachments.map((file, index) => <span key={`${file.name}-${index}`}><Paperclip />{file.name}<small>{formatSize(file.size)}</small></span>)}</div>}</div>

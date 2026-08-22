@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from pathlib import Path
+from dataclasses import dataclass
+from datetime import UTC, datetime
 
 from .config import settings
 
@@ -33,6 +35,28 @@ class LocalObjectStorage:
         except FileNotFoundError:
             return False
         return True
+
+    def objects(self) -> list["StoredObject"]:
+        objects: list[StoredObject] = []
+        for target in self.root.rglob("*"):
+            if not target.is_file():
+                continue
+            stat = target.stat()
+            objects.append(
+                StoredObject(
+                    key=target.relative_to(self.root).as_posix(),
+                    size_bytes=stat.st_size,
+                    modified_at=datetime.fromtimestamp(stat.st_mtime, UTC),
+                )
+            )
+        return objects
+
+
+@dataclass(frozen=True)
+class StoredObject:
+    key: str
+    size_bytes: int
+    modified_at: datetime
 
 
 storage = LocalObjectStorage(settings.storage_root)

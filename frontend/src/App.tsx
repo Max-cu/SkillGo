@@ -20,6 +20,7 @@ const EndpointsPage = lazy(() => import("./pages").then((module) => ({ default: 
 const ComingSoonPage = lazy(() => import("./pages").then((module) => ({ default: module.ComingSoonPage })));
 const AdminReviewsPage = lazy(() => import("./pages").then((module) => ({ default: module.AdminReviewsPage })));
 const AdminUsersPage = lazy(() => import("./pages").then((module) => ({ default: module.AdminUsersPage })));
+const AdminStoragePage = lazy(() => import("./pages").then((module) => ({ default: module.AdminStoragePage })));
 const ModelSettingsPage = lazy(() => import("./pages").then((module) => ({ default: module.ModelSettingsPage })));
 
 function PageLoading() {
@@ -50,6 +51,7 @@ export default function App() {
       : location === "/app/endpoints" ? "API"
       : location === "/admin/reviews" ? "发布审核"
       : location === "/admin/users" ? "用户管理"
+      : location === "/admin/storage" ? "存储管理"
       : location === "/super/system" ? "平台设置"
       : location.startsWith("/skills/") ? "Skill 详情"
       : location.includes("/workflow") ? "Agent 任务"
@@ -75,6 +77,7 @@ export default function App() {
     <Route path="/app/credentials"><Protected><ComingSoonPage kind="credentials" /></Protected></Route>
     <Route path="/admin/reviews"><Protected roles={["admin", "super_admin"]}><AdminReviewsPage /></Protected></Route>
     <Route path="/admin/users"><Protected roles={["admin", "super_admin"]}><AdminUsersPage /></Protected></Route>
+    <Route path="/admin/storage"><Protected roles={["admin", "super_admin"]}><AdminStoragePage /></Protected></Route>
     <Route path="/super/system"><Protected roles={["admin", "super_admin"]}><ModelSettingsPage /></Protected></Route>
     <Route path="/:rest*"><Navigate to="/" replace /></Route>
   </Switch></Suspense>;

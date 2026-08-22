@@ -143,6 +143,7 @@ class JobInputFileRead(BaseModel):
     size_bytes: int
     sha256: str
     readable: bool
+    purged_at: datetime | None
     created_at: datetime
 
 
@@ -156,6 +157,7 @@ class ArtifactRead(BaseModel):
     sha256: str
     kind: str
     verified: bool
+    purged_at: datetime | None
     created_at: datetime
 
 
@@ -202,6 +204,7 @@ class WorkflowJobRead(BaseModel):
     updated_at: datetime
     started_at: datetime | None
     finished_at: datetime | None
+    storage_pinned: bool = False
     steps: list[JobStepRead] = Field(default_factory=list)
     input_files: list[JobInputFileRead] = Field(default_factory=list)
     artifacts: list[ArtifactRead] = Field(default_factory=list)
@@ -243,6 +246,7 @@ class AgentMessageFileRead(BaseModel):
     content_type: str
     size_bytes: int
     sha256: str
+    purged_at: datetime | None
     created_at: datetime
 
 
@@ -316,6 +320,33 @@ class SystemSummary(BaseModel):
     endpoints: int = 0
 
 
+class StoragePinUpdate(BaseModel):
+    pinned: bool
+
+
+class StorageUserUsage(BaseModel):
+    user_id: str
+    display_name: str
+    email: str
+    size_bytes: int
+    file_count: int
+
+
+class StorageOverview(BaseModel):
+    retention_days: int
+    total_bytes: int
+    managed_bytes: int
+    categories: dict[str, int]
+    users: list[StorageUserUsage]
+    last_cleanup_at: datetime | None = None
+
+
+class StorageCleanupRead(BaseModel):
+    files_deleted: int
+    bytes_released: int
+    message: str
+
+
 class ConversationCreate(BaseModel):
     version_id: str
     title: str | None = Field(default=None, min_length=1, max_length=160)
@@ -379,6 +410,7 @@ class WorkspaceFileRead(BaseModel):
     sha256: str
     source: str
     readable: bool
+    purged_at: datetime | None
     created_at: datetime
 
 

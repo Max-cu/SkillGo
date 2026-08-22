@@ -345,8 +345,8 @@ input:focus, textarea:focus, select:focus { border-color: var(--focus); box-shad
 .agent-run-error small { font-size: 11px; }
 .agent-run-recovery button { min-height: 36px; height: 36px; padding: 0 12px; border-color: var(--border-default); border-radius: 9px; color: var(--text-secondary); font-size: 12px; }
 .agent-run-artifacts { margin-top: 19px; gap: 9px; }
-.agent-run-artifacts > span { color: var(--text-secondary); font-size: 12px; }
-.agent-run-artifacts button { min-height: 60px; padding: 10px 12px; grid-template-columns: 34px minmax(0,1fr) 18px; border-color: var(--border-default); border-radius: 11px; }
+.agent-run-artifacts > header { color: var(--text-secondary); font-size: 12px; }
+.agent-run-artifacts > button { min-height: 60px; padding: 10px 12px; grid-template-columns: 34px minmax(0,1fr) 18px; border-color: var(--border-default); border-radius: 11px; }
 .agent-run-artifacts strong { color: #363e4d; font-size: 12px; }
 .agent-run-artifacts small { color: var(--text-tertiary); font-size: 11px; }
 .agent-run-meta { margin-top: 15px; color: var(--text-tertiary); font-size: 11px; }

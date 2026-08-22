@@ -21,7 +21,7 @@ from ..execution_runtime import ensure_job_run, fail_run
 from ..model_gateway import ModelGatewayError, OpenAICompatibleGateway, get_model_gateway
 from ..models import AgentConversation, AgentMessage, AgentMessageFile, Artifact, Endpoint, JobInputFile, JobStatus, JobStep, JobStepStatus, Skill, SkillVersion, User, VersionStatus, WorkflowEndpointRequest, WorkflowJob, WorkflowJobModel, WorkflowJobPrompt, WorkflowJobSkill, utcnow
 from ..runtime_profile import version_runtime_profile
-from ..schemas import ArtifactRead, Message, WorkflowJobRead
+from ..schemas import ArtifactRead, Message, StoragePinUpdate, WorkflowJobRead
 from ..security import verify_endpoint_key
 from ..services import add_audit
 from ..storage import storage
@@ -578,6 +578,8 @@ def _artifact_download(
     artifact = db.get(Artifact, artifact_id)
     if artifact is None or artifact.job_id != job.id or artifact.user_id != job.user_id:
         raise HTTPException(status_code=404, detail="Artifact not found")
+    if artifact.purged_at is not None:
+        raise HTTPException(status_code=410, detail="产物已超过 15 天保留期")
     data = storage.read(artifact.storage_path)
     details = {"job_id": job.id, "sha256": artifact.sha256}
     details.update(audit_details or {})
@@ -656,11 +658,12 @@ async def create_workflow_job(
                 AgentMessageFile.id.in_(existing_ids),
                 AgentMessageFile.conversation_id == agent_conversation.id,
                 AgentMessageFile.user_id == user.id,
+                AgentMessageFile.purged_at.is_(None),
             )
         ).all()
         by_id = {item.id: item for item in stored_files}
         if len(by_id) != len(existing_ids):
-            raise HTTPException(status_code=404, detail="历史附件不存在或不属于当前会话")
+            raise HTTPException(status_code=410, detail="历史附件已超过 15 天保留期，请重新上传")
         for file_id in existing_ids:
             item = by_id[file_id]
             resolved_inputs.append(
@@ -1127,6 +1130,28 @@ def get_workflow_job(
     return _job_read(_owned_job(db, job_id, user))
 
 
+@router.patch("/jobs/{job_id}/storage", response_model=WorkflowJobRead)
+def update_job_storage_retention(
+    job_id: str,
+    payload: StoragePinUpdate,
+    user: User = Depends(current_user),
+    db: Session = Depends(get_db),
+) -> WorkflowJobRead:
+    job = _owned_job(db, job_id, user)
+    job.storage_pinned = payload.pinned
+    add_audit(
+        db,
+        actor=user,
+        action="workflow_job.storage_pin" if payload.pinned else "workflow_job.storage_unpin",
+        resource_type="workflow_job",
+        resource_id=job.id,
+        details={"pinned": payload.pinned},
+    )
+    db.commit()
+    db.refresh(job)
+    return _job_read(job)
+
+
 @router.post("/jobs/{job_id}/cancel", response_model=Message)
 def cancel_workflow_job(
     job_id: str,
@@ -1210,6 +1235,8 @@ async def retry_workflow_job(
         raise HTTPException(status_code=409, detail="只有失败、受阻或已取消的任务可以重试")
     if not source.input_files:
         raise HTTPException(status_code=409, detail="原任务没有可复用的输入文件")
+    if any(item.purged_at is not None for item in source.input_files):
+        raise HTTPException(status_code=410, detail="原任务输入文件已超过 15 天保留期，无法直接重试")
 
     version_ids = [item["skill_version_id"] for item in source.selected_skills]
     selected_versions = _resolve_version_ids(db, requested_ids=version_ids, user=user)

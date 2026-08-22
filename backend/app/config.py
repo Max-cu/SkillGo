@@ -111,6 +111,15 @@ class Settings:
     agent_run_cleanup_interval_seconds: int = int(
         os.getenv("SKILLGO_AGENT_RUN_CLEANUP_INTERVAL_SECONDS", "3600")
     )
+    storage_retention_days: int = int(
+        os.getenv("SKILLGO_STORAGE_RETENTION_DAYS", "15")
+    )
+    storage_cleanup_interval_seconds: int = int(
+        os.getenv("SKILLGO_STORAGE_CLEANUP_INTERVAL_SECONDS", "3600")
+    )
+    storage_orphan_grace_hours: int = int(
+        os.getenv("SKILLGO_STORAGE_ORPHAN_GRACE_HOURS", "24")
+    )
 
 
 settings = Settings()
@@ -120,6 +129,9 @@ if settings.sandbox_worker_heartbeat_seconds >= settings.sandbox_worker_lease_se
         "SKILLGO_SANDBOX_WORKER_HEARTBEAT_SECONDS must be lower than "
         "SKILLGO_SANDBOX_WORKER_LEASE_SECONDS"
     )
+
+if settings.storage_retention_days < 1:
+    raise RuntimeError("SKILLGO_STORAGE_RETENTION_DAYS must be at least 1")
 
 if settings.environment == "production" and settings.jwt_secret.startswith("development-"):
     raise RuntimeError("SKILLGO_JWT_SECRET must be changed in production")
