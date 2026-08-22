@@ -248,7 +248,10 @@ export interface StorageUserUsage {
 
 export interface StorageOverview {
   retention_days: number;
-  total_bytes: number;
+  disk_total_bytes: number;
+  disk_used_bytes: number;
+  disk_free_bytes: number;
+  skillgo_bytes: number;
   managed_bytes: number;
   categories: {
     conversation_attachments: number;

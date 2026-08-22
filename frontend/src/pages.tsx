@@ -1463,34 +1463,71 @@ export function AdminUsersPage() {
   </>;
 }
 
+function StorageDonut({ data }: { data: StorageOverview }) {
+  const rootRef = useRef<HTMLDivElement>(null);
+  const ringRef = useRef<SVGCircleElement>(null);
+  const percentRef = useRef<HTMLElement>(null);
+  const usedPercent = data.disk_total_bytes > 0
+    ? Math.min(100, Math.max(0, data.disk_used_bytes / data.disk_total_bytes * 100))
+    : 0;
+
+  useGSAP(() => {
+    const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    const finalOffset = 100 - usedPercent;
+    if (reducedMotion) {
+      gsap.set(ringRef.current, { strokeDashoffset: finalOffset });
+      if (percentRef.current) percentRef.current.textContent = `${Math.round(usedPercent)}%`;
+      return;
+    }
+    const counter = { value: 0 };
+    const timeline = gsap.timeline({ defaults: { ease: "power3.out" } });
+    timeline
+      .fromTo(".storage-donut-visual", { autoAlpha: 0, scale: 0.92 }, { autoAlpha: 1, scale: 1, duration: 0.7 })
+      .fromTo(ringRef.current, { strokeDashoffset: 100 }, { strokeDashoffset: finalOffset, duration: 1.1 }, 0.12)
+      .to(counter, {
+        value: usedPercent,
+        duration: 1.05,
+        onUpdate: () => {
+          if (percentRef.current) percentRef.current.textContent = `${Math.round(counter.value)}%`;
+        },
+      }, 0.12)
+      .fromTo(".storage-disk-stat", { autoAlpha: 0, y: 10 }, { autoAlpha: 1, y: 0, duration: 0.45, stagger: 0.07 }, 0.28)
+      .fromTo(".storage-category-fill", { scaleX: 0 }, { scaleX: 1, duration: 0.65, stagger: 0.08 }, 0.38);
+  }, { scope: rootRef, dependencies: [usedPercent], revertOnUpdate: true });
+
+  return <div className="storage-overview" ref={rootRef}>
+    <div className="storage-donut-visual">
+      <svg viewBox="0 0 220 220" role="img" aria-label={`服务器磁盘已使用 ${Math.round(usedPercent)}%`}>
+        <circle className="storage-donut-track" cx="110" cy="110" r="82" pathLength="100" />
+        <circle ref={ringRef} className="storage-donut-value" cx="110" cy="110" r="82" pathLength="100" strokeDasharray="100 100" />
+      </svg>
+      <div className="storage-donut-center"><strong ref={percentRef}>{Math.round(usedPercent)}%</strong><span>磁盘已使用</span></div>
+    </div>
+    <div className="storage-disk-summary">
+      <div className="storage-disk-heading"><span className="eyebrow">SERVER DISK</span><h2>服务器磁盘空间</h2><p>数据来自当前部署节点，反映整台服务器的实际磁盘使用情况。</p></div>
+      <dl>
+        <div className="storage-disk-stat total"><dt><i />总容量</dt><dd>{formatStorageBytes(data.disk_total_bytes)}</dd></div>
+        <div className="storage-disk-stat used"><dt><i />已使用</dt><dd>{formatStorageBytes(data.disk_used_bytes)}</dd></div>
+        <div className="storage-disk-stat free"><dt><i />可用空间</dt><dd>{formatStorageBytes(data.disk_free_bytes)}</dd></div>
+        <div className="storage-disk-stat skillgo"><dt><i />SkillGo 文件</dt><dd>{formatStorageBytes(data.skillgo_bytes)}</dd></div>
+      </dl>
+    </div>
+  </div>;
+}
+
 export function AdminStoragePage() {
   const empty: StorageOverview = {
     retention_days: 15,
-    total_bytes: 0,
+    disk_total_bytes: 0,
+    disk_used_bytes: 0,
+    disk_free_bytes: 0,
+    skillgo_bytes: 0,
     managed_bytes: 0,
     categories: { conversation_attachments: 0, job_inputs: 0, artifacts: 0 },
     users: [],
     last_cleanup_at: null,
   };
-  const { data, setData, loading, error } = useLoad<StorageOverview>("/admin/storage", empty);
-  const [cleaning, setCleaning] = useState(false);
-  const [message, setMessage] = useState("");
-
-  async function cleanup() {
-    if (cleaning) return;
-    setCleaning(true); setMessage("");
-    try {
-      const result = await api<{ files_deleted: number; bytes_released: number }>("/admin/storage/cleanup", { method: "POST" });
-      setData(await api<StorageOverview>("/admin/storage"));
-      setMessage(result.files_deleted
-        ? `已清理 ${result.files_deleted} 个过期文件，释放 ${formatStorageBytes(result.bytes_released)}。`
-        : "当前没有达到清理期限的文件。");
-    } catch (reason) {
-      setMessage(reason instanceof Error ? reason.message : "存储清理失败");
-    } finally {
-      setCleaning(false);
-    }
-  }
+  const { data, loading, error } = useLoad<StorageOverview>("/admin/storage", empty);
 
   const categoryCards = [
     ["对话附件", data.categories.conversation_attachments, "随对话保留 15 天"],
@@ -1500,12 +1537,15 @@ export function AdminStoragePage() {
 
   return <>
     <Breadcrumbs items={[{ label: "工作台", to: "/app" }, { label: "存储管理" }]} />
-    <PageTitle eyebrow="STORAGE LIFECYCLE" title="存储管理" description="查看平台文件占用和统一保留策略。对话文字、任务记录与审计信息不会被自动删除。" action={<button className="button secondary" type="button" disabled={cleaning} onClick={() => void cleanup()}>{cleaning ? <RotateCw className="spin-icon" /> : <Trash2 size={16} />}{cleaning ? "正在清理…" : "立即清理过期文件"}</button>} />
-    {message && <div className="storage-admin-message" role="status">{message}</div>}
+    <PageTitle eyebrow="STORAGE LIFECYCLE" title="存储管理" description="查看部署服务器的磁盘空间与平台文件占用。对话文字、任务记录与审计信息不会被自动删除。" />
     {error && <div className="form-error">{error}</div>}
     {loading ? <div className="panel detail-loading" /> : <>
-      <section className="storage-policy-banner"><span><HardDrive /></span><div><strong>统一保留 {data.retention_days} 天</strong><p>附件、任务输入和生成产物到期后自动释放；运行中的任务不会被清理，用户标记为长期保留的任务也会跳过。</p></div><dl><div><dt>磁盘文件</dt><dd>{formatStorageBytes(data.total_bytes)}</dd></div><div><dt>受生命周期管理</dt><dd>{formatStorageBytes(data.managed_bytes)}</dd></div></dl></section>
-      <section className="storage-category-grid">{categoryCards.map(([label, value, note]) => <article key={label}><span>{label}</span><strong>{formatStorageBytes(value)}</strong><small>{note}</small></article>)}</section>
+      <StorageDonut data={data} />
+      <section className="storage-policy-banner"><span><HardDrive /></span><div><strong>到期文件自动删除</strong><p>附件、任务输入和生成产物统一保留 {data.retention_days} 天，系统按计划自动清理；运行中的任务和标记为长期保留的任务会跳过。</p></div><dl><div><dt>自动保留期限</dt><dd>{data.retention_days} 天</dd></div><div><dt>受生命周期管理</dt><dd>{formatStorageBytes(data.managed_bytes)}</dd></div></dl></section>
+      <section className="storage-category-grid">{categoryCards.map(([label, value, note]) => {
+        const share = data.managed_bytes > 0 ? Math.max(2, value / data.managed_bytes * 100) : 0;
+        return <article key={label}><span>{label}</span><strong>{formatStorageBytes(value)}</strong><div className="storage-category-track"><i className="storage-category-fill" style={{ width: `${share}%` }} /></div><small>{note}</small></article>;
+      })}</section>
       <section className="panel storage-user-panel"><header><div><span className="eyebrow">BY USER</span><h2>用户文件占用</h2></div><small>仅管理员可见</small></header>{data.users.length ? <div className="storage-user-list">{data.users.map((item, index) => <article key={item.user_id}><b>{String(index + 1).padStart(2, "0")}</b><span><strong>{item.display_name}</strong><small>{item.email}</small></span><em>{item.file_count} 个文件</em><strong>{formatStorageBytes(item.size_bytes)}</strong></article>)}</div> : <EmptyState icon={HardDrive} title="暂时没有用户文件" description="用户上传附件或任务生成产物后，占用会显示在这里。" />}</section>
     </>}
   </>;

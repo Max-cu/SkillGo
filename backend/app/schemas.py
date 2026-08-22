@@ -334,19 +334,14 @@ class StorageUserUsage(BaseModel):
 
 class StorageOverview(BaseModel):
     retention_days: int
-    total_bytes: int
+    disk_total_bytes: int
+    disk_used_bytes: int
+    disk_free_bytes: int
+    skillgo_bytes: int
     managed_bytes: int
     categories: dict[str, int]
     users: list[StorageUserUsage]
     last_cleanup_at: datetime | None = None
-
-
-class StorageCleanupRead(BaseModel):
-    files_deleted: int
-    bytes_released: int
-    message: str
-
-
 class ConversationCreate(BaseModel):
     version_id: str
     title: str | None = Field(default=None, min_length=1, max_length=160)

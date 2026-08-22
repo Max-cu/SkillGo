@@ -7,10 +7,10 @@ from sqlalchemy.orm import Session
 from ..database import get_db
 from ..deps import admin_user, super_admin_user
 from ..models import AgentConversation, AgentMessage, AgentMessageFile, AgentRun, AgentRunEvent, Artifact, AuditEvent, Conversation, ConversationMessage, Endpoint, Favorite, JobEvent, JobInputFile, JobStatus, JobStep, Role, Run, Skill, SkillVersion, User, VersionStatus, WorkflowEndpointRequest, WorkflowJob, WorkflowJobModel, WorkflowJobPrompt, WorkflowJobSkill, WorkspaceFile, utcnow
-from ..schemas import Message, ReviewDecision, StorageCleanupRead, StorageOverview, SystemSummary, UserAdminPatch, UserDeleteRequest, UserRead, UserRolePatch, VersionRead
+from ..schemas import Message, ReviewDecision, StorageOverview, SystemSummary, UserAdminPatch, UserDeleteRequest, UserRead, UserRolePatch, VersionRead
 from ..services import add_audit
 from ..storage import storage
-from ..storage_lifecycle import cleanup_expired_storage, storage_overview
+from ..storage_lifecycle import storage_overview
 
 
 router = APIRouter(tags=["admin"])
@@ -21,30 +21,6 @@ def get_storage_overview(
     _: User = Depends(admin_user), db: Session = Depends(get_db)
 ) -> dict:
     return storage_overview(db)
-
-
-@router.post("/admin/storage/cleanup", response_model=StorageCleanupRead)
-def run_storage_cleanup(
-    actor: User = Depends(admin_user), db: Session = Depends(get_db)
-) -> StorageCleanupRead:
-    result = cleanup_expired_storage()
-    add_audit(
-        db,
-        actor=actor,
-        action="admin.storage.cleanup",
-        resource_type="storage",
-        resource_id=None,
-        details={
-            "files_deleted": result.total_files,
-            "bytes_released": result.total_bytes,
-        },
-    )
-    db.commit()
-    return StorageCleanupRead(
-        files_deleted=result.total_files,
-        bytes_released=result.total_bytes,
-        message="Storage cleanup completed",
-    )
 
 
 @router.get("/admin/reviews", response_model=list[VersionRead])

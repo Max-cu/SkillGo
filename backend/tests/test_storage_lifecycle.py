@@ -25,8 +25,14 @@ def test_storage_overview_is_visible_only_to_administrators(
 ):
     response = client.get("/api/v1/admin/storage", headers=owner_headers)
     assert response.status_code == 200
-    assert response.json()["retention_days"] == 15
-    assert response.json()["categories"] == {
+    overview = response.json()
+    assert overview["retention_days"] == 15
+    assert overview["disk_total_bytes"] > 0
+    assert overview["disk_used_bytes"] >= 0
+    assert overview["disk_free_bytes"] >= 0
+    assert overview["disk_used_bytes"] + overview["disk_free_bytes"] == overview["disk_total_bytes"]
+    assert overview["skillgo_bytes"] >= 0
+    assert overview["categories"] == {
         "conversation_attachments": 0,
         "job_inputs": 0,
         "artifacts": 0,
@@ -34,6 +40,9 @@ def test_storage_overview_is_visible_only_to_administrators(
 
     forbidden = client.get("/api/v1/admin/storage", headers=user_headers)
     assert forbidden.status_code == 403
+
+    removed_manual_cleanup = client.post("/api/v1/admin/storage/cleanup", headers=owner_headers)
+    assert removed_manual_cleanup.status_code == 404
 
 
 def test_expired_task_files_are_purged_but_job_record_is_kept(client, owner_headers):

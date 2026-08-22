@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import timedelta
+from shutil import disk_usage
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -89,11 +90,17 @@ def storage_overview(db: Session) -> dict:
             }
         )
     stored_objects = storage.objects()
-    physical_total = sum(item.size_bytes for item in stored_objects)
+    skillgo_total = sum(item.size_bytes for item in stored_objects)
+    disk = disk_usage(storage.root)
     managed_total = sum(categories.values())
     return {
         "retention_days": settings.storage_retention_days,
-        "total_bytes": physical_total,
+        "disk_total_bytes": disk.total,
+        # Treat filesystem-reserved blocks as used so the displayed capacity
+        # always reconciles: used + available == total.
+        "disk_used_bytes": disk.total - disk.free,
+        "disk_free_bytes": disk.free,
+        "skillgo_bytes": skillgo_total,
         "managed_bytes": managed_total,
         "categories": categories,
         "users": user_rows,
