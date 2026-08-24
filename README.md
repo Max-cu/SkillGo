@@ -93,16 +93,53 @@ SkillGo 会根据 Skill 内容和权限声明识别执行画像：
 | `sandbox_required` | 创建持久任务，由 Worker 在独立沙箱中执行 |
 | `platform_tools` | 所需平台工具尚未安全接入时保持阻断并明确提示 |
 
-沙箱任务的核心边界：
+### gVisor 在 SkillGo 中的位置
 
-- Worker 只把当前任务绑定的固定 Skill 版本与输入文件装入本次工作区。
-- 任务容器使用非 root 用户、只读根文件系统、独立 `/tmp`，并限制 CPU、内存、PID 与 Linux Capabilities。
-- Linux 完整部署通过 Docker 的 `runtime=runsc` 使用 gVisor；缺少 Runtime 时明确报错，不静默降级。
-- 任务默认断网；仅在运行画像明确需要时启用 Docker bridge 网络，目前不提供域名级出口白名单。
-- 沙箱内不会获得 Docker Socket、数据库连接、平台 JWT Secret、用户凭据或模型 API Key。
-- Worker 使用数据库租约、心跳与 fencing token，失去租约的旧执行不能覆盖新尝试。
+普通 Docker 容器与宿主机共享 Linux 内核。SkillGo 在创建真正执行 Skill 的容器时显式传入 `runtime=runsc`，让 gVisor 在任务进程和宿主 Linux 内核之间提供额外的系统调用隔离层：
 
-这里的隔离粒度是“**一次任务执行尝试一套临时环境**”，不是为每个用户长期保留一台虚拟机。完整设计见 [产品与技术架构](docs/PRODUCT_ARCHITECTURE.md) 和 [Agent 内核](docs/agent-kernel.md)。
+```text
+FastAPI 控制面 ──► PostgreSQL：任务、归属、状态与审计
+                         │
+                         ▼ 租约领取
+可信 Worker：模型编排、Docker Socket、沙箱生命周期
+  │
+  ├─► 一次性 Stager ──► 本次 execution_id 的 Docker Volume
+  │    断网，只负责写入固定 Skill 版本和任务输入
+  │
+  └─► Docker create(runtime="runsc")
+         └─► gVisor runsc
+                └─► 非 root Skill 进程，仅挂载本次 /workspace
+```
+
+`runsc` 安装在 Linux 宿主机并注册到 Docker，而不是安装在 API、Worker 或任务容器内部。Worker 启动时会检查 Runtime 和沙箱镜像；任一项缺失都会将运行环境报告为不可用，不会静默退回普通 `runc` 执行 Skill。
+
+### 一次任务尝试如何运行
+
+1. API 将用户、固定 Skill 版本、输入文件和执行画像保存为 `WorkflowJob`。
+2. Worker 通过数据库行锁领取任务，为本次尝试生成独立 `execution_id`、租约令牌和过期时间，并持续心跳。
+3. Worker 创建带 `job_id` 与 `execution_id` 标签的专用 Docker Volume。一个断网的临时 Stager 只获得 `CHOWN` 能力，将本次选定的 Skill 和输入写入 Volume，设置为任务用户所有后立即销毁；Stager 不执行 Skill 代码。
+4. Worker 使用受控基础镜像创建实际任务容器，指定 `runtime=runsc`，并只把本次 Volume 挂载为可写 `/workspace`。
+5. 模型负责计划和选择受限工具，Worker 负责路径、命令、超时和状态校验；实际命令始终以 `10001:10001` 身份在 gVisor 容器内执行。
+6. 命令超时会直接销毁整个容器，避免只终止入口进程后遗留子进程。重试会获得新的 `execution_id`、容器和 Volume；旧租约即使恢复也不能提交结果。
+7. Worker 只收集 `/workspace/output` 下声明的常规文件，并逐个拒绝符号链接、空文件、越界路径和超限文件；持久化后重新核对大小、SHA-256 与文件结构，再把任务标记为成功。
+8. 成功、失败、取消或超时都会回收本次容器和 Volume；Worker 启动与租约恢复逻辑还会按标签清理崩溃后遗留的孤儿资源，同时避开仍有有效租约的任务。
+
+### 强制执行的沙箱边界
+
+| 边界 | 当前实现 |
+| --- | --- |
+| Runtime | 实际 Skill 容器强制使用配置的 `runsc`；Docker 未注册时拒绝运行 |
+| 身份 | Skill 命令固定为非 root `10001:10001` |
+| 文件系统 | 容器根文件系统只读；唯一持久可写位置是本次 `/workspace`，`/tmp` 为独立 `tmpfs` |
+| Linux 权限 | `cap_drop=ALL`、`no-new-privileges`，不挂载设备、宿主目录或 Docker Socket |
+| 资源 | 默认 768 MiB 内存、1 CPU、128 PIDs；单命令最多 120 秒、任务最多 30 分钟，均可配置 |
+| 网络 | 默认 `network_mode=none`；仅在运行画像明确需要时启用 bridge，目前不提供域名级出口白名单 |
+| 密钥 | 任务容器不接收数据库连接、JWT Secret、用户凭据、模型 API Key 或 Endpoint Key |
+| 产物 | 只允许 `/workspace/output` 下经过大小、哈希和结构复核的真实文件，单文件默认上限 50 MiB |
+
+这里的隔离粒度是“**一次任务执行尝试一套临时环境**”，不是为每个用户长期保留一台虚拟机。gVisor 也不是完整虚拟机或宿主安全管理的替代品：持有 Docker Socket 的 Worker 仍属于可信执行面，需要限制访问范围并及时更新 Linux、Docker 和 gVisor；API、Web 与实际 Skill 容器都不挂载该 Socket。
+
+实现可直接查看 [`sandbox_runtime.py`](backend/app/sandbox_runtime.py) 与 [`sandbox_worker.py`](backend/app/sandbox_worker.py)，整体设计见 [产品与技术架构](docs/PRODUCT_ARCHITECTURE.md) 和 [Agent 内核](docs/agent-kernel.md)。完整部署自检会真正启动一个 `runsc`、非 root、只读且断网的测试容器，而不是只检查配置文本。
 
 ## Skill API
 
