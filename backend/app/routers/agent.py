@@ -268,8 +268,13 @@ def _workflow_history_content(item: AgentMessage) -> str | None:
 
 
 def _model_history(conversation: AgentConversation) -> list[dict[str, str]]:
-    history: list[dict[str, str]] = []
-    for item in conversation.messages[-20:]:
+    max_messages = max(0, min(settings.context_max_messages, 100))
+    max_chars = max(0, settings.context_max_chars)
+    if not max_messages or not max_chars:
+        return []
+
+    candidates: list[dict[str, str]] = []
+    for item in conversation.messages[-max_messages:]:
         if item.kind == "text":
             content = item.content.get("message")
             if item.role in {"user", "assistant"} and isinstance(content, str) and content.strip():
@@ -282,13 +287,36 @@ def _model_history(conversation: AgentConversation) -> list[dict[str, str]]:
                     ]
                     if excerpts:
                         rendered += "\n\n" + "\n\n".join(excerpts)
-                history.append({"role": item.role, "content": rendered})
+                candidates.append({"role": item.role, "content": rendered})
             continue
         if item.kind == "workflow" and item.job is not None:
             workflow_content = _workflow_history_content(item)
             if workflow_content:
-                history.append({"role": "assistant", "content": workflow_content})
-    return history[-20:]
+                candidates.append({"role": "assistant", "content": workflow_content})
+
+    selected: list[dict[str, str]] = []
+    used_chars = 0
+    truncation_marker = "\n...[较早上下文已截断]"
+    for message in reversed(candidates):
+        role = message["role"]
+        content = message["content"]
+        size = len(role) + len(content)
+        if used_chars + size <= max_chars:
+            selected.append(message)
+            used_chars += size
+            continue
+        if not selected:
+            available = max(0, max_chars - len(role))
+            if available:
+                if len(content) > available:
+                    excerpt_size = max(0, available - len(truncation_marker))
+                    content = content[:excerpt_size] + (
+                        truncation_marker[:available] if excerpt_size == 0 else truncation_marker
+                    )
+                selected.append({"role": role, "content": content[:available]})
+        break
+    selected.reverse()
+    return selected
 
 
 @router.post(

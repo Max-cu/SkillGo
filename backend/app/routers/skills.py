@@ -12,7 +12,7 @@ from ..config import settings
 from ..database import get_db
 from ..deps import current_user
 from ..model_gateway import OpenAICompatibleGateway, get_model_gateway
-from ..models import Artifact, Conversation, ConversationMessage, Endpoint, Favorite, JobEvent, JobInputFile, JobStep, Role, Run, Skill, SkillVersion, User, VersionStatus, Visibility, WorkflowEndpointRequest, WorkflowJob, WorkspaceFile, utcnow
+from ..models import AgentMessage, AgentRun, AgentRunEvent, Artifact, Conversation, ConversationMessage, Endpoint, Favorite, JobEvent, JobInputFile, JobStep, Role, Run, Skill, SkillVersion, User, VersionStatus, Visibility, WorkflowEndpointRequest, WorkflowJob, WorkflowJobModel, WorkflowJobPrompt, WorkflowJobSkill, WorkspaceFile, utcnow
 from ..schemas import Message, SkillCreate, SkillDetail, SkillPackageAnalysis, SkillRead, SkillVisibilityUpdate, VersionRead
 from ..services import add_audit, get_skill_or_none, latest_version, skill_read
 from ..skill_analysis import analyze_package
@@ -199,16 +199,29 @@ def delete_skill(
             )
         )
     )
-    workflow_job_ids = select(WorkflowJob.id).where(WorkflowJob.skill_id == skill.id)
-    endpoint_ids = select(Endpoint.id).where(Endpoint.skill_id == skill.id)
+    workflow_job_ids = set(
+        db.scalars(select(WorkflowJob.id).where(WorkflowJob.skill_id == skill.id)).all()
+    )
+    workflow_job_ids.update(
+        db.scalars(
+            select(WorkflowJobSkill.job_id).where(WorkflowJobSkill.skill_id == skill.id)
+        ).all()
+    )
+    workflow_job_ids = sorted(workflow_job_ids)
+    endpoint_ids = list(
+        db.scalars(select(Endpoint.id).where(Endpoint.skill_id == skill.id)).all()
+    )
     job_input_paths = list(
         db.scalars(select(JobInputFile.storage_path).where(JobInputFile.job_id.in_(workflow_job_ids)))
     )
     artifact_paths = list(
         db.scalars(select(Artifact.storage_path).where(Artifact.job_id.in_(workflow_job_ids)))
     )
-    workflow_job_count = len(
-        list(db.scalars(select(WorkflowJob.id).where(WorkflowJob.skill_id == skill.id)))
+    workflow_job_count = len(workflow_job_ids)
+    agent_run_ids = list(
+        db.scalars(
+            select(AgentRun.id).where(AgentRun.workflow_job_id.in_(workflow_job_ids))
+        ).all()
     )
     db.execute(
         delete(ConversationMessage).where(
@@ -225,13 +238,24 @@ def delete_skill(
             WorkflowEndpointRequest.endpoint_id.in_(endpoint_ids)
         )
     )
+    db.execute(
+        delete(WorkflowEndpointRequest).where(
+            WorkflowEndpointRequest.job_id.in_(workflow_job_ids)
+        )
+    )
     db.execute(delete(Run).where(Run.skill_id == skill.id))
     db.execute(delete(Endpoint).where(Endpoint.skill_id == skill.id))
+    db.execute(delete(AgentMessage).where(AgentMessage.job_id.in_(workflow_job_ids)))
+    db.execute(delete(AgentRunEvent).where(AgentRunEvent.run_id.in_(agent_run_ids)))
+    db.execute(delete(AgentRun).where(AgentRun.id.in_(agent_run_ids)))
     db.execute(delete(Artifact).where(Artifact.job_id.in_(workflow_job_ids)))
     db.execute(delete(JobInputFile).where(JobInputFile.job_id.in_(workflow_job_ids)))
     db.execute(delete(JobEvent).where(JobEvent.job_id.in_(workflow_job_ids)))
     db.execute(delete(JobStep).where(JobStep.job_id.in_(workflow_job_ids)))
-    db.execute(delete(WorkflowJob).where(WorkflowJob.skill_id == skill.id))
+    db.execute(delete(WorkflowJobModel).where(WorkflowJobModel.job_id.in_(workflow_job_ids)))
+    db.execute(delete(WorkflowJobPrompt).where(WorkflowJobPrompt.job_id.in_(workflow_job_ids)))
+    db.execute(delete(WorkflowJobSkill).where(WorkflowJobSkill.job_id.in_(workflow_job_ids)))
+    db.execute(delete(WorkflowJob).where(WorkflowJob.id.in_(workflow_job_ids)))
     db.execute(delete(Conversation).where(Conversation.skill_id == skill.id))
     db.execute(delete(Favorite).where(Favorite.skill_id == skill.id))
     db.execute(delete(SkillVersion).where(SkillVersion.skill_id == skill.id))

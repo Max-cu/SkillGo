@@ -1,7 +1,65 @@
 import json
+from dataclasses import replace
+from types import SimpleNamespace
+
+from app.routers import agent as agent_router
 
 from test_skill_flow import skill_zip
 from test_workflow_jobs import create_version
+
+
+def test_workspace_model_history_honors_message_and_character_limits(monkeypatch):
+    monkeypatch.setattr(
+        agent_router,
+        "settings",
+        replace(
+            agent_router.settings,
+            context_max_messages=3,
+            context_max_chars=30,
+        ),
+    )
+    messages = [
+        SimpleNamespace(
+            kind="text",
+            role="user",
+            content={"message": f"message-{index}"},
+            files=[],
+        )
+        for index in range(5)
+    ]
+
+    history = agent_router._model_history(SimpleNamespace(messages=messages))
+
+    assert [item["content"] for item in history] == ["message-3", "message-4"]
+    assert sum(len(item["role"]) + len(item["content"]) for item in history) <= 30
+
+
+def test_workspace_model_history_truncates_one_oversized_latest_message(monkeypatch):
+    monkeypatch.setattr(
+        agent_router,
+        "settings",
+        replace(
+            agent_router.settings,
+            context_max_messages=20,
+            context_max_chars=40,
+        ),
+    )
+    conversation = SimpleNamespace(
+        messages=[
+            SimpleNamespace(
+                kind="text",
+                role="user",
+                content={"message": "x" * 400},
+                files=[],
+            )
+        ]
+    )
+
+    history = agent_router._model_history(conversation)
+
+    assert len(history) == 1
+    assert "上下文已截断" in history[0]["content"]
+    assert len(history[0]["role"]) + len(history[0]["content"]) <= 40
 
 
 def test_general_workspace_message_does_not_create_or_route_a_skill_job(

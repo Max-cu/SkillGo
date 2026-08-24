@@ -6,6 +6,8 @@ import zipfile
 from dataclasses import replace
 
 from app import config
+from app.database import SessionLocal
+from app.models import WorkflowJobSkill
 from conftest import make_email, make_password
 from test_skill_flow import skill_zip
 
@@ -343,6 +345,54 @@ def test_multi_skill_job_preserves_order_and_queues_one_sandbox(
         first_version["id"],
         second_version["id"],
     ]
+
+
+def test_deleting_secondary_skill_removes_linked_multi_skill_job(
+    client, user_headers, monkeypatch
+):
+    monkeypatch.setattr(
+        config,
+        "settings",
+        replace(config.settings, sandbox_worker_enabled=True),
+    )
+    first_skill, first_version = create_version(
+        client, user_headers, slug="delete-primary-skill", package=sandbox_skill_zip()
+    )
+    second_skill, second_version = create_version(
+        client, user_headers, slug="delete-secondary-skill", package=sandbox_skill_zip()
+    )
+    created = client.post(
+        "/api/v1/jobs",
+        headers=user_headers,
+        data={
+            "version_id": first_version["id"],
+            "version_ids": json.dumps([first_version["id"], second_version["id"]]),
+            "instruction": "组合执行后验证删除清理",
+        },
+    )
+    assert created.status_code == 201, created.text
+    job_id = created.json()["id"]
+
+    deleted = client.delete(
+        f"/api/v1/skills/{second_skill['id']}", headers=user_headers
+    )
+
+    assert deleted.status_code == 204, deleted.text
+    assert client.get(f"/api/v1/jobs/{job_id}", headers=user_headers).status_code == 404
+    assert client.get(
+        f"/api/v1/skills/{first_skill['id']}", headers=user_headers
+    ).status_code == 200
+    assert client.get(
+        f"/api/v1/skills/{second_skill['id']}", headers=user_headers
+    ).status_code == 404
+    assert all(
+        item["id"] != job_id
+        for item in client.get("/api/v1/jobs", headers=user_headers).json()
+    )
+    with SessionLocal() as db:
+        assert not db.query(WorkflowJobSkill).filter(
+            WorkflowJobSkill.job_id == job_id
+        ).count()
 
 
 def test_structured_message_uses_inline_skill_order_as_hard_constraints(
