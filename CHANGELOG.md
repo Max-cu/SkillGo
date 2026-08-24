@@ -4,6 +4,20 @@
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-08-24
+
+### Fixed
+
+- 普通对话上下文同时遵守消息数量与字符上限，最近单条超长消息也会安全截断，避免请求体失控。
+- 删除参与多 Skill 编排的任意 Skill 时完整清理关联任务、运行记录和绑定关系，不再遗留失效引用。
+- 部署时等待 API 健康后强制重建 Web/Nginx，避免后端容器地址变化后 `/health` 等代理路由返回 502。
+
+### Changed
+
+- 自动化部署同时验证首页与 API 健康路由，失败时输出 Web/API 日志并停止发布。
+- 只有完整自检成功后才以原子方式记录实际部署的 Git 提交号，便于迁移、审计和故障定位。
+- Tag 升级流程采用相同的数据库、API、Web 启动顺序与健康检查。
+
 ## [0.2.1] - 2026-08-22
 
 ### Changed
@@ -43,7 +57,8 @@
 - 任务容器默认非 root、只读根文件系统、去除 Linux Capabilities 并限制 CPU、内存和 PID。
 - 本机密钥、运行数据、用户文件和备份默认被版本库忽略。
 
-[Unreleased]: https://github.com/Max-cu/SkillGo/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/Max-cu/SkillGo/compare/v0.2.2...HEAD
+[0.2.2]: https://github.com/Max-cu/SkillGo/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/Max-cu/SkillGo/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/Max-cu/SkillGo/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/Max-cu/SkillGo/releases/tag/v0.1.0

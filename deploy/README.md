@@ -28,7 +28,7 @@
 ```bash
 git clone https://github.com/Max-cu/SkillGo.git
 cd SkillGo
-git checkout v0.2.1
+git checkout v0.2.2
 ```
 
 也可从 [GitHub Releases](https://github.com/Max-cu/SkillGo/releases) 下载对应版本的源码包。
@@ -208,7 +208,7 @@ SKILLGO_INSTALL_ROOT="$PWD" bash deploy/verify-ecs.sh
 
 回滚代码时请先阅读 Release Notes。如果新版本已执行不可向下兼容的数据迁移，不能只检出旧 Tag，必须同时恢复对应备份。
 
-`deploy/install-skillgo.sh` 保留给自动化升级和历史备份迁移。它默认项目位于 `/opt/skillgo`，可用 `SKILLGO_INSTALL_ROOT` 修改；只有 `.deploy/skillgo.dump` 和 `.deploy/storage.tar.gz` 同时存在时才会恢复备份。
+`deploy/install-skillgo.sh` 保留给自动化升级和历史备份迁移。它默认项目位于 `/opt/skillgo`，可用 `SKILLGO_INSTALL_ROOT` 修改；只有 `.deploy/skillgo.dump` 和 `.deploy/storage.tar.gz` 同时存在时才会恢复备份。自动化发布可通过 `SKILLGO_DEPLOY_REVISION=<完整 Git SHA>` 或 `.deploy/revision.pending` 传入源码提交号；脚本只会在首页、API 健康检查全部通过后将其写入 `.deploy/revision`。部署会在 API 健康后强制重建 Web 容器，确保 Nginx 重新解析后端地址。
 
 ## 12. 常见问题
 

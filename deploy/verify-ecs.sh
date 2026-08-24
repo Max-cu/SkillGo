@@ -3,11 +3,19 @@ set -euo pipefail
 
 cd "${SKILLGO_INSTALL_ROOT:-/opt/skillgo}"
 deploy_env="${SKILLGO_DEPLOY_ENV:-deploy/ecs.env}"
+source deploy/deploy-lib.sh
 if [ ! -f "$deploy_env" ]; then
   echo "Missing $deploy_env; copy deploy/ecs.env.example and adjust it first" >&2
   exit 1
 fi
-docker compose --env-file .env --env-file "$deploy_env" --profile sandbox ps
+compose() {
+  docker compose --env-file .env --env-file "$deploy_env" "$@"
+}
+compose --profile sandbox ps
+wait_for_service_health db
+wait_for_service_health api
+wait_for_service_health worker
+verify_web_routes 15 2
 
 echo WORKER_LOG
 docker logs --tail 100 skillgo-worker-1

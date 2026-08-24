@@ -45,7 +45,9 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - name: Validate deployment scripts
-        run: bash -n deploy/*.sh
+        run: bash -n deploy/*.sh deploy/tests/*.sh
+      - name: Test deployment helpers
+        run: bash deploy/tests/deploy-lib-test.sh
       - name: Validate full sandbox Compose profile
         run: >-
           docker compose

@@ -11,6 +11,12 @@ install_root="${SKILLGO_INSTALL_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." &
 deploy_env="${SKILLGO_DEPLOY_ENV:-deploy/ecs.env}"
 cd "$install_root"
 
+source deploy/deploy-lib.sh
+
+compose() {
+  docker compose --env-file .env --env-file "$deploy_env" "$@"
+}
+
 if [ -n "$(git status --porcelain)" ]; then
   echo "Refusing to upgrade a dirty working tree" >&2
   exit 1
@@ -25,10 +31,17 @@ backup_dir="$(printf '%s\n' "$backup_output" | sed -n 's/^backup_dir=//p')"
 git fetch --tags origin
 git rev-parse --verify "refs/tags/$target_version^{commit}" >/dev/null
 git checkout "$target_version"
+target_commit="$(git rev-parse HEAD)"
 
-compose=(docker compose --env-file .env --env-file "$deploy_env")
-if ! "${compose[@]}" --profile build-only build sandbox-runtime \
-  || ! "${compose[@]}" --profile sandbox up -d --build; then
+if ! compose --profile build-only build sandbox-runtime \
+  || ! compose --profile sandbox build api web worker \
+  || ! compose up -d db \
+  || ! wait_for_service_health db \
+  || ! compose --profile sandbox up -d api worker \
+  || ! wait_for_service_health api \
+  || ! wait_for_service_health worker \
+  || ! compose up -d --force-recreate web \
+  || ! verify_web_routes; then
   echo "UPGRADE_FAILED" >&2
   echo "previous_commit=$old_commit" >&2
   echo "backup_dir=$backup_dir" >&2
@@ -36,14 +49,8 @@ if ! "${compose[@]}" --profile build-only build sandbox-runtime \
   exit 1
 fi
 
-for _ in $(seq 1 60); do
-  if curl -fsS http://127.0.0.1/health >/dev/null 2>&1; then
-    break
-  fi
-  sleep 2
-done
-curl -fsS http://127.0.0.1/health >/dev/null
 SKILLGO_INSTALL_ROOT="$install_root" SKILLGO_DEPLOY_ENV="$deploy_env" bash deploy/verify-ecs.sh
+record_deploy_revision "$target_commit"
 
 echo "UPGRADE_OK"
 echo "from=$old_commit"
