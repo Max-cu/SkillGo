@@ -5,7 +5,7 @@
 <h1 align="center">SkillGo</h1>
 
 <p align="center">
-  让 Skill 变成每个人的能力。<br />
+  企业级对skill管理、不同用户独立沙箱运行、二次开发闭环平台。<br />
   <sub>A self-hosted, multi-user Skill platform with isolated per-task execution.</sub>
 </p>
 
