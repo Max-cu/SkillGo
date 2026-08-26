@@ -588,11 +588,35 @@ export function ManageSkillPage() {
     <div className="manage-layout">
       <section className="panel">
         <div className="panel-heading"><div><h2>版本</h2><p>平台会根据包内脚本、依赖和权限识别真实运行方式。</p></div></div>
-        {skill.versions?.length ? <div className="version-list">{[...skill.versions].reverse().map((version) => <article key={version.id}>
-          <div><strong>v{version.version}</strong><span>{skillTypeLabels[version.skill_type]}</span><span className={`runtime-mode ${version.execution_mode}`}>{executionModeLabels[version.execution_mode] || version.execution_mode}</span>{version.execution_mode === "sandbox_required" && <span className={`network-state ${version.network_enabled ? "enabled" : "disabled"}`}>{version.network_enabled ? <Wifi size={12} /> : <WifiOff size={12} />}{version.network_enabled ? "运行联网" : "运行断网"}</span>}<code>{version.package_sha256.slice(0, 12)}</code></div>
-          <div className="version-actions"><StatusBadge status={version.status} />{version.status === "published" && version.execution_mode === "sandbox_required" && canManageNetwork && <button className={`button compact ${version.network_enabled ? "danger" : "secondary"}`} type="button" disabled={networkBusyId === version.id} onClick={() => void toggleNetworkAccess(version)}>{version.network_enabled ? <WifiOff size={15} /> : <Wifi size={15} />}{networkBusyId === version.id ? "正在修改…" : version.network_enabled ? "关闭联网" : "开启联网"}</button>}{(version.status === "ready" || version.status === "rejected") && <button className="button secondary compact" onClick={() => submitVersion(version)}>提交审核</button>}<Link className="button primary compact" to={`/app/skills/${currentSkill.id}/workflow?version=${version.id}`}><Play size={15} />用 Agent 运行</Link>{version.execution_mode === "instruction_only" && <Link className="button secondary compact" to={`/app/skills/${currentSkill.id}/run?version=${version.id}`}><MessageSquareText size={15} />对话调试</Link>}{version.status === "published" && version.runtime_runnable && ["instruction_only", "sandbox_required"].includes(version.execution_mode) && <button className="button secondary compact" onClick={() => deploy(version)}><Zap size={15} />发布为 API</button>}</div>
-          {version.runtime_block_reason && <p className="runtime-warning"><AlertTriangle />{version.runtime_block_reason}</p>}{version.review_note && <p className="review-note">审核意见：{version.review_note}</p>}
-        </article>)}</div> : <EmptyState title="还没有版本" description="上传一个符合规范的 ZIP 包开始。" />}
+        {skill.versions?.length ? <div className="version-list">{[...skill.versions].reverse().map((version) => {
+          const networkLabel = version.network_enabled ? "运行联网已开启" : "沙箱当前断网";
+          const canToggleNetwork = version.status === "published" && version.execution_mode === "sandbox_required" && canManageNetwork;
+          return <article key={version.id}>
+            <div className="version-summary">
+              <strong>v{version.version}</strong>
+              <span className="version-kind">{skillTypeLabels[version.skill_type]}</span>
+              {version.execution_mode === "sandbox_required" && (canToggleNetwork
+                ? <button
+                    className={`version-network-indicator ${version.network_enabled ? "enabled" : "disabled"}`}
+                    type="button"
+                    title={`${networkLabel}，点击${version.network_enabled ? "关闭" : "开启"}`}
+                    aria-label={`${networkLabel}，点击${version.network_enabled ? "关闭" : "开启"}`}
+                    aria-busy={networkBusyId === version.id}
+                    disabled={networkBusyId === version.id}
+                    onClick={() => void toggleNetworkAccess(version)}
+                  >{version.network_enabled ? <Wifi /> : <WifiOff />}</button>
+                : <span className={`version-network-indicator ${version.network_enabled ? "enabled" : "disabled"}`} title={networkLabel} aria-label={networkLabel}>{version.network_enabled ? <Wifi /> : <WifiOff />}</span>)}
+            </div>
+            <div className="version-actions">
+              <StatusBadge status={version.status} />
+              {(version.status === "ready" || version.status === "rejected") && <button className="button secondary compact" onClick={() => submitVersion(version)}>提交审核</button>}
+              {version.execution_mode === "instruction_only" && <Link className="button secondary compact" to={`/app/skills/${currentSkill.id}/run?version=${version.id}`}><MessageSquareText size={15} />对话调试</Link>}
+              {version.status === "published" && version.runtime_runnable && ["instruction_only", "sandbox_required"].includes(version.execution_mode) && <button className="button secondary compact" onClick={() => deploy(version)}><Zap size={15} />发布为 API</button>}
+              <Link className="button primary compact" to={`/app/skills/${currentSkill.id}/workflow?version=${version.id}`}><Play size={15} />用 Agent 运行</Link>
+            </div>
+            {version.runtime_block_reason && <p className="runtime-warning"><AlertTriangle />{version.runtime_block_reason}</p>}{version.review_note && <p className="review-note">审核意见：{version.review_note}</p>}
+          </article>;
+        })}</div> : <EmptyState title="还没有版本" description="上传一个符合规范的 ZIP 包开始。" />}
       </section>
       <aside className="panel upload-panel">
         <section className={`community-publish-card ${isCommunityPublic ? "published" : ""}`}><div className="community-publish-icon">{isCommunityPublic ? <Check /> : <CloudUpload />}</div><div><span className="eyebrow">COMMUNITY</span><h2>{isCommunityPublic ? "已在社区展示" : "发布到社区"}</h2><p>{isCommunityPublic ? "首页访客可以发现、查看并下载已审核版本。" : hasPublishedVersion ? "这个 Skill 已有审核通过的版本，可以立即公开展示。" : "版本审核通过后，才可以安全地发布到公开社区。"}</p></div><button className={`button full ${isCommunityPublic ? "secondary" : "primary"}`} type="button" disabled={visibilityBusy || (!isCommunityPublic && !hasPublishedVersion)} onClick={() => { setVisibilityError(""); setVisibilityTarget(isCommunityPublic ? "private" : "public"); }}>{isCommunityPublic ? <LockKeyhole size={15} /> : <CloudUpload size={15} />}{isCommunityPublic ? "从社区下架" : hasPublishedVersion ? "发布到社区" : "等待版本审核"}</button></section>

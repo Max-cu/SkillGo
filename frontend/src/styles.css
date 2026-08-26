@@ -738,17 +738,18 @@ input:focus, textarea:focus, select:focus { border-color: #8c7af7; box-shadow: 0
 .upload-panel form { margin-top: 17px; display: flex; flex-direction: column; gap: 12px; }
 .compact-drop { min-height: 132px; padding: 18px 14px; }
 .version-list { margin-top: 17px; }
-.version-list article { padding: 15px 4px; display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 10px; border-top: 1px solid #edf0f4; }
-.version-list article > div { display: flex; align-items: center; gap: 11px; }
-.version-list article span, .version-list article code { color: var(--muted); font-size: 11px; }
-.version-list article code { padding: 4px 6px; border-radius: 5px; background: #f2f4f7; }
-.version-list .runtime-mode { padding: 4px 7px; border-radius: 999px; color: #4d43a5; background: #efedff; font-weight: 700; }
-.version-list .runtime-mode.sandbox_required { color: #9a5b12; background: #fff1da; }
-.version-list .runtime-mode.platform_tools { color: #176b78; background: #e2f6f8; }
-.version-list .network-state { padding: 4px 7px; display: inline-flex; align-items: center; gap: 4px; border-radius: 999px; font-weight: 750; }
-.version-list .network-state.enabled { color: #286f47; background: #e6f6ec; }
-.version-list .network-state.disabled { color: #6e7585; background: #eef0f4; }
-.version-list .network-state svg { width: 12px; }
+.version-list article { padding: 18px 4px; display: grid; grid-template-columns: minmax(150px,1fr) auto; align-items: center; gap: 14px; border-top: 1px solid #eceff4; }
+.version-summary { min-width: 0; display: flex; align-items: center; gap: 13px; }
+.version-summary > strong { font-size: 15px; letter-spacing: -.18px; }
+.version-summary .version-kind { color: #7b8291; font-size: 12px; }
+.version-network-indicator { width: 27px; height: 27px; padding: 0; display: inline-grid; flex: 0 0 auto; place-items: center; border: 0; border-radius: 50%; background: transparent; transition: color .18s ease, background .18s ease, transform .18s ease, opacity .18s ease; }
+.version-network-indicator svg { width: 17px; height: 17px; stroke-width: 1.9; }
+.version-network-indicator.enabled { color: #249665; }
+.version-network-indicator.disabled { color: #a2a9b5; }
+button.version-network-indicator { cursor: pointer; }
+button.version-network-indicator:hover { background: rgba(39,46,64,.055); transform: translateY(-1px); }
+button.version-network-indicator:focus-visible { outline: 2px solid rgba(102,83,230,.28); outline-offset: 2px; }
+button.version-network-indicator:disabled { cursor: wait; opacity: .42; transform: none; }
 .runtime-warning { grid-column: 1 / -1; margin: 0; padding: 9px 11px; display: flex; align-items: center; gap: 7px; border-radius: 9px; color: #8b5a16; background: #fff7e9; font-size: 11px; }
 .runtime-warning svg { width: 14px; flex: 0 0 auto; }
 .review-note { grid-column: 1/-1; margin: 0; color: #a33a4c; font-size: 12px; }
@@ -776,7 +777,7 @@ input:focus, textarea:focus, select:focus { border-color: #8c7af7; box-shadow: 0
 .network-approval-toggle strong, .network-approval-toggle small { display: block; }
 .network-approval-toggle strong { font-size: 12px; }
 .network-approval-toggle small { margin-top: 3px; color: #777f90; font-size: 10px; line-height: 1.5; }
-.version-actions { justify-content: flex-end; flex-wrap: wrap; }
+.version-actions { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 8px; }
 .secret-reveal { margin: 0 0 20px; padding: 15px; border: 1px solid #cfc8ff; border-radius: 12px; background: linear-gradient(145deg, #f4f1ff, #faf9ff); }
 .secret-reveal h3 { margin: 7px 0 3px; font-size: 15px; }
 .secret-reveal p { margin: 0 0 10px; color: var(--muted); font-size: 11px; line-height: 1.5; }
@@ -1333,7 +1334,7 @@ input:focus, textarea:focus, select:focus { border-color: #8c7af7; box-shadow: 0
   .form-fields .wide { grid-column: auto; }
   .form-section { padding: 19px; }
   .version-list article { grid-template-columns: 1fr; }
-  .version-list article > div { flex-wrap: wrap; }
+  .version-summary { flex-wrap: wrap; }
   .run-row { grid-template-columns: 1fr auto; }
   .run-row-meta { grid-column: 1/-1; text-align: left; }
   .secret-banner { align-items: flex-start; flex-direction: column; }
