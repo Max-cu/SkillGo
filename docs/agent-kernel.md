@@ -1,6 +1,16 @@
 # SkillGo Agent 内核
 
-SkillGo 使用“模型负责理解和决策、Worker 负责可信状态、一次性沙箱负责执行”的三层结构。模型不能直接访问宿主机、数据库、其他用户文件或模型密钥。
+SkillGo 使用“模型负责理解和决策、Worker 负责可信状态、一次性沙箱负责执行”的三层结构。任务级独立环境首先解决多用户文件、依赖、进程和运行状态互不冲突；gVisor 在此基础上提供纵深隔离。模型不能直接访问宿主机、数据库、其他用户文件或模型密钥。
+
+## 内核模块边界
+
+- `sandbox_worker.py`：数据库租约、任务尝试、沙箱生命周期、结果持久化和尝试级重跑。
+- `sandbox_agent_loop.py`：模型工具循环、上下文裁剪、进度事件和受限工具调度。
+- `sandbox_tool_registry.py`：工具名称、参数校验和工具能力分类。
+- `agent_policy.py`：计划、Skill 顺序、验证状态、重复动作和完成条件。
+- `artifact_validation.py`：产物路径、结构校验和 SHA-256 快照。
+- `deterministic_runtime.py`：固定入口 Skill 的无模型选择执行路径。
+- `sandbox_runtime.py`：Docker Volume、gVisor 容器、命令和文件传输。
 
 ## 当前执行路径
 
@@ -8,9 +18,9 @@ SkillGo 使用“模型负责理解和决策、Worker 负责可信状态、一�
 2. Worker 为任务创建独立工作区和 gVisor 容器，挂载输入与已审核 Skill。
 3. Agent 完整理解用户要求和相关 `SKILL.md`，建立 2–8 步的简短执行计划，其中明确一个最终验证步骤。
 4. Agent 通过结构化工具完成读取、处理和产物生成；多 Skill 按用户指定顺序依次加载和协作。
-5. 产物生成后只做一次集中验证：优先运行 Skill 自带验证器，否则依据本次用户要求和 `SKILL.md` 生成一个紧凑验证程序。
+5. 产物生成后只做一次集中验证：优先运行 Skill 自带验证器，否则依据本次用户要求和 `SKILL.md` 生成一个紧凑验证程序。平台把该 verifier 工具操作绑定到当时 `/workspace/output` 全部文件的 SHA-256。
 6. 验证失败时只修正被证实的问题，最多允许两轮定向修正；仍不通过则如实失败，禁止空转。
-7. Worker 校验真实文件路径、哈希及 DOCX/XLSX/PPTX/PDF/JSON 的基本结构后保存产物。
+7. `finish` 前重新计算全部产物 SHA-256；字节与验证快照不一致、存在未声明文件或缺少验证证据时拒绝完成。Worker 随后校验真实文件路径及 DOCX/XLSX/PPTX/PDF/JSON 的基本结构并保存产物。
 8. 容器与临时依赖随任务销毁，产物回到用户自己的持久工作区。
 
 ## 执行质量策略
@@ -28,14 +38,36 @@ SkillGo 使用“模型负责理解和决策、Worker 负责可信状态、一�
 
 这套设计不硬编码“必须语义分段”或“必须使用某个字体”。文档 Skill 可以验证排版，代码 Skill 可以验证测试，检索 Skill 可以验证来源，新的 Skill 类型无需修改平台内核。
 
+## 固定入口模式
+
+带 `skillgo.yaml` 的单 Skill 可以声明不可变 argv，由平台直接执行，不让模型选择脚本：
+
+```yaml
+spec:
+  type: code
+  execution:
+    mode: fixed
+    entrypoint: [python3, scripts/run.py]
+    verifier: [python3, scripts/verify.py] # 可选；必须只读最终产物
+    timeoutSeconds: 300
+    verifierTimeoutSeconds: 120
+```
+
+固定入口从 `/workspace/work/skillgo-job.json` 读取任务说明和输入文件索引，将最终文件写入 `/workspace/output`。平台先运行 `entrypoint`，再运行可选 `verifier`；verifier 修改产物字节会使任务失败。当前固定入口只支持单 Skill 任务，多 Skill 继续走 Agent 协调路径。
+
+## 中断与重跑语义
+
+沙箱隔离粒度是“一次执行尝试”，不是可恢复的长期环境。Worker 租约过期后，旧容器和 Volume 会被回收；下一次尝试使用新的 `execution_id`，从固定 Skill 版本和原始输入重新开始，不恢复半成品工作区。运行事件明确记录 `restart_policy=fresh_attempt` 和 `workspace_restored=false`。这保持环境干净且避免继承不一致的中间状态；阶段快照只在长任务成为主要场景后再评估。
+
 ## 网络与依赖
 
-- 没有网络声明的 Skill 保持离线。
-- 声明网络、在线查询或依赖下载的 Skill，任务沙箱可获得出站网络。
+- 所有 Skill 版本默认保持离线；内容分析只提示潜在联网需求，不能自动授予权限。
+- 管理员可以在审核时或发布后为具体 Skill 版本开启、关闭“运行联网”。
+- 多 Skill 任务中只要一个选中版本获得联网授权，整个一次性任务沙箱即联网；任务记录会保存授权来源快照。
 - `pip`/`npm` 依赖安装到任务工作区，仅当前任务可见并随沙箱销毁。
 - `apt`/`apk` 等系统级安装继续禁止，不能修改宿主机。
 
-当前网络控制粒度是“按任务开关”。域名白名单、代理审计、依赖锁文件校验与缓存仓库属于下一阶段安全增强。
+当前联网使用普通 Docker bridge，不限制目标域名，也不提供出口代理或 SSRF 拦截；因此只应为管理员已经审核并信任的 Skill 版本开启。域名白名单、代理审计、依赖锁文件校验与缓存仓库属于下一阶段安全增强。
 
 ## 评估指标
 

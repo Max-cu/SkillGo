@@ -45,6 +45,8 @@ POST_BASELINE_COLUMNS = {
     "workspace_files": {"purged_at"},
     "job_input_files": {"purged_at"},
     "artifacts": {"purged_at"},
+    "skill_versions": {"network_enabled"},
+    "workflow_jobs": {"network_enabled", "network_enabled_by"},
 }
 
 

@@ -153,10 +153,15 @@ class SkillVersion(TimestampMixin, Base):
     input_schema: Mapped[dict] = mapped_column(JSON, default=dict)
     output_schema: Mapped[dict] = mapped_column(JSON, default=dict)
     requested_permissions: Mapped[dict] = mapped_column(JSON, default=dict)
+    network_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     review_note: Mapped[str | None] = mapped_column(Text, nullable=True)
     published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     skill: Mapped[Skill] = relationship(back_populates="versions")
+
+    @property
+    def skill_name(self) -> str:
+        return self.skill.name
 
     @property
     def runtime_profile(self) -> dict:
@@ -474,6 +479,8 @@ class WorkflowJob(TimestampMixin, Base):
     execution_mode: Mapped[str] = mapped_column(String(40))
     trigger: Mapped[str] = mapped_column(String(30), default="file_upload")
     instruction: Mapped[str] = mapped_column(Text, default="")
+    network_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    network_enabled_by: Mapped[list] = mapped_column(JSON, default=list)
     error_code: Mapped[str | None] = mapped_column(String(80), nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

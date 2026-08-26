@@ -5,6 +5,7 @@ import shlex
 from pathlib import PurePosixPath
 from urllib.parse import urlsplit
 
+from .skill_execution_spec import SkillExecutionSpecError, fixed_execution_spec
 from .skill_metadata import parse_skill_frontmatter
 
 
@@ -220,6 +221,10 @@ def detect_runtime_profile(
     """
     spec = manifest.get("spec") if isinstance(manifest.get("spec"), dict) else {}
     permissions = spec.get("permissions") if isinstance(spec.get("permissions"), dict) else {}
+    try:
+        fixed_execution = fixed_execution_spec(manifest)
+    except SkillExecutionSpecError:
+        fixed_execution = None
     frontmatter = parse_skill_frontmatter(skill_md)
     raw_type = str(spec.get("type", "instruction")).lower()
     normalized_files = sorted({name.replace("\\", "/") for name in file_names})
@@ -242,6 +247,16 @@ def detect_runtime_profile(
         runtimes.append("python")
     if any(PurePosixPath(name).suffix.lower() in {".js", ".mjs", ".cjs"} for name in script_files):
         runtimes.append("node")
+    if fixed_execution:
+        fixed_programs = [
+            PurePosixPath(argv[0]).name.casefold()
+            for argv in (fixed_execution.entrypoint, fixed_execution.verifier or ())
+            if argv
+        ]
+        if any(item.startswith("python") for item in fixed_programs):
+            runtimes.append("python")
+        if any(item in {"node", "npm", "npx", "pnpm", "yarn"} for item in fixed_programs):
+            runtimes.append("node")
     runtimes = sorted(set(runtimes))
 
     tools = _string_list(permissions.get("tools"))
@@ -251,7 +266,20 @@ def detect_runtime_profile(
     binaries = sorted(
         {
             binary
-            for value in [*declared_binaries, *_command_binaries(blocks)]
+            for value in [
+                *declared_binaries,
+                *_command_binaries(blocks),
+                *(
+                    [fixed_execution.entrypoint[0]]
+                    if fixed_execution and fixed_execution.entrypoint
+                    else []
+                ),
+                *(
+                    [fixed_execution.verifier[0]]
+                    if fixed_execution and fixed_execution.verifier
+                    else []
+                ),
+            ]
             if (binary := _clean_binary(value))
         }
     )[:100]
@@ -308,7 +336,11 @@ def detect_runtime_profile(
 
     reasons: list[str] = []
     package_requires_sandbox = (
-        raw_type == "code" or bool(script_files) or bool(runtimes) or bool(binaries)
+        raw_type == "code"
+        or fixed_execution is not None
+        or bool(script_files)
+        or bool(runtimes)
+        or bool(binaries)
     )
     compatible_instruction_requires_sandbox = (
         not platform_tools and (bool(document_artifacts) or bool(tool_adapters))
@@ -319,6 +351,8 @@ def detect_runtime_profile(
         runtime_status = "awaiting_sandbox"
         if script_files:
             reasons.append(f"包含 {len(script_files)} 个可执行脚本")
+        if fixed_execution:
+            reasons.append("声明了平台直接执行的固定入口")
         if runtimes:
             reasons.append("需要运行环境：" + "、".join(runtimes))
         if binaries:
@@ -328,7 +362,7 @@ def detect_runtime_profile(
         if tool_adapters:
             reasons.append("可由沙箱兼容工具适配：" + "、".join(sorted(tool_adapters)))
         if network_required:
-            reasons.append("部分步骤需要受控网络访问")
+            reasons.append("部分步骤检测到联网需求，是否开放由管理员审核")
         block_reason = "需要 Linux 沙箱 Worker 执行脚本、工具或文档处理"
     elif platform_tools:
         execution_mode = "platform_tools"
@@ -358,6 +392,7 @@ def detect_runtime_profile(
             "dependency_download": dependency_download,
             "dependency_files": dependency_files[:50],
             "expected_artifacts": expected_artifacts,
+            "fixed_execution": fixed_execution is not None,
         },
         "reasons": reasons,
     }

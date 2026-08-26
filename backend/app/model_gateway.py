@@ -168,7 +168,8 @@ SANDBOX_AGENT_TOOLS: list[dict[str, Any]] = [
             "name": "record_validation",
             "description": (
                 "Record the outcome of one concentrated final verification after a real verifier "
-                "command, Python program, or file inspection. Report observed checks, not just PASS."
+                "command or Python program. The platform binds that operation to SHA-256 hashes of "
+                "every current output artifact. Report observed checks, not just PASS."
             ),
             "parameters": {
                 "type": "object",

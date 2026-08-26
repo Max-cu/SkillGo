@@ -59,6 +59,29 @@ Read the supplied content, identify the objective, and return a concise summary.
     return output.getvalue()
 
 
+def sandbox_network_skill_zip() -> bytes:
+    output = io.BytesIO()
+    with zipfile.ZipFile(output, "w") as archive:
+        archive.writestr(
+            "network-check/SKILL.md",
+            """---
+name: network-check
+description: Call a public endpoint from an approved Python script.
+---
+
+# Network check
+
+Run `python scripts/check.py` to call https://example.com and save the result.
+The workflow requires internet access.
+""",
+        )
+        archive.writestr(
+            "network-check/scripts/check.py",
+            "import urllib.request\nprint(urllib.request.urlopen('https://example.com').status)\n",
+        )
+    return output.getvalue()
+
+
 def test_analyze_standard_package_with_configured_model(
     client, user_headers, fake_model_gateway
 ):
@@ -152,6 +175,7 @@ def test_upload_submit_approve_and_community(client, user_headers, owner_headers
     )
     assert approved.status_code == 200
     assert approved.json()["status"] == "published"
+    assert approved.json()["network_enabled"] is False
 
     public = client.get("/api/v1/community/skills")
     assert public.status_code == 200
@@ -169,6 +193,110 @@ def test_upload_submit_approve_and_community(client, user_headers, owner_headers
     runnable = client.get(f"/api/v1/skills/{skill_id}", headers=viewer_headers)
     assert runnable.status_code == 200
     assert [item["status"] for item in runnable.json()["versions"]] == ["published"]
+
+
+def test_admin_controls_network_access_for_each_published_sandbox_version(
+    client, user_headers, owner_headers
+):
+    skill = client.post(
+        "/api/v1/skills",
+        headers=user_headers,
+        json={
+            "slug": "network-check",
+            "name": "Network Check",
+            "summary": "A sandbox Skill whose runtime network access requires approval.",
+            "visibility": "private",
+        },
+    ).json()
+    uploaded = client.post(
+        f"/api/v1/skills/{skill['id']}/versions",
+        headers=user_headers,
+        files={"package": ("network-check.zip", sandbox_network_skill_zip(), "application/zip")},
+    ).json()
+    assert uploaded["execution_mode"] == "sandbox_required"
+    assert uploaded["runtime_requirements"]["network"] is True
+    assert uploaded["network_enabled"] is False
+
+    client.post(
+        f"/api/v1/skills/{skill['id']}/versions/{uploaded['id']}/submit",
+        headers=user_headers,
+    )
+    approved = client.post(
+        f"/api/v1/admin/reviews/{uploaded['id']}/approve",
+        headers=owner_headers,
+        json={"note": "Approved with runtime network", "network_enabled": True},
+    )
+    assert approved.status_code == 200, approved.text
+    assert approved.json()["network_enabled"] is True
+    assert approved.json()["skill_name"] == skill["name"]
+
+    published = client.get(
+        "/api/v1/admin/skill-versions/published", headers=owner_headers
+    )
+    assert published.status_code == 200
+    assert published.json()[0]["id"] == uploaded["id"]
+    assert published.json()[0]["network_enabled"] is True
+
+    forbidden = client.patch(
+        f"/api/v1/admin/skill-versions/{uploaded['id']}/network-access",
+        headers=user_headers,
+        json={"enabled": False},
+    )
+    assert forbidden.status_code == 403
+
+    disabled = client.patch(
+        f"/api/v1/admin/skill-versions/{uploaded['id']}/network-access",
+        headers=owner_headers,
+        json={"enabled": False},
+    )
+    assert disabled.status_code == 200, disabled.text
+    assert disabled.json()["network_enabled"] is False
+
+    enabled = client.patch(
+        f"/api/v1/admin/skill-versions/{uploaded['id']}/network-access",
+        headers=owner_headers,
+        json={"enabled": True},
+    )
+    assert enabled.status_code == 200, enabled.text
+    assert enabled.json()["network_enabled"] is True
+
+
+def test_non_sandbox_version_cannot_receive_runtime_network_access(
+    client, user_headers, owner_headers
+):
+    skill = client.post(
+        "/api/v1/skills",
+        headers=user_headers,
+        json={
+            "slug": "offline-summary",
+            "name": "Offline Summary",
+            "summary": "An instruction-only Skill that does not execute inside the sandbox.",
+            "visibility": "private",
+        },
+    ).json()
+    uploaded = client.post(
+        f"/api/v1/skills/{skill['id']}/versions",
+        headers=user_headers,
+        files={"package": ("offline-summary.zip", skill_zip(), "application/zip")},
+    ).json()
+    client.post(
+        f"/api/v1/skills/{skill['id']}/versions/{uploaded['id']}/submit",
+        headers=user_headers,
+    )
+    approved = client.post(
+        f"/api/v1/admin/reviews/{uploaded['id']}/approve",
+        headers=owner_headers,
+        json={"network_enabled": True},
+    )
+    assert approved.status_code == 200
+    assert approved.json()["network_enabled"] is False
+
+    rejected = client.patch(
+        f"/api/v1/admin/skill-versions/{uploaded['id']}/network-access",
+        headers=owner_headers,
+        json={"enabled": True},
+    )
+    assert rejected.status_code == 409
 
 
 def test_approved_private_skill_can_be_published_and_unpublished(

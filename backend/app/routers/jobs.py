@@ -426,6 +426,7 @@ def _prepare_file_job(
 ) -> tuple[WorkflowJob, str | None, dict]:
     selected_versions = versions or [version]
     profile = _job_runtime_profile(selected_versions)
+    network_versions = [item for item in selected_versions if item.network_enabled]
     job = WorkflowJob(
         user_id=user.id,
         skill_id=version.skill_id,
@@ -434,6 +435,16 @@ def _prepare_file_job(
         execution_mode=str(profile["execution_mode"]),
         trigger=trigger,
         instruction=instruction.strip(),
+        network_enabled=bool(network_versions),
+        network_enabled_by=[
+            {
+                "skill_id": item.skill_id,
+                "skill_version_id": item.id,
+                "skill_name": item.skill.name,
+                "version": item.version,
+            }
+            for item in network_versions
+        ],
     )
     db.add(job)
     db.flush()

@@ -98,6 +98,7 @@ class VersionRead(BaseModel):
 
     id: str
     skill_id: str
+    skill_name: str
     version: str
     status: VersionStatus
     skill_type: SkillType
@@ -106,6 +107,7 @@ class VersionRead(BaseModel):
     input_schema: dict
     output_schema: dict
     requested_permissions: dict
+    network_enabled: bool
     execution_mode: str
     runtime_status: str
     runtime_runnable: bool
@@ -195,6 +197,8 @@ class WorkflowJobRead(BaseModel):
     execution_mode: str
     trigger: str
     instruction: str
+    network_enabled: bool = False
+    network_enabled_by: list[dict] = Field(default_factory=list)
     message_content: list[dict] = Field(default_factory=list)
     routing_mode: str = "legacy"
     model_name: str | None
@@ -279,6 +283,11 @@ class AgentConversationDetail(AgentConversationRead):
 
 class ReviewDecision(BaseModel):
     note: str = Field(default="", max_length=4000)
+    network_enabled: bool = False
+
+
+class NetworkAccessUpdate(BaseModel):
+    enabled: bool
 
 
 class UserAdminPatch(BaseModel):

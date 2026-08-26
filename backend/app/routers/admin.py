@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 from ..database import get_db
 from ..deps import admin_user, super_admin_user
 from ..models import AgentConversation, AgentMessage, AgentMessageFile, AgentRun, AgentRunEvent, Artifact, AuditEvent, Conversation, ConversationMessage, Endpoint, Favorite, JobEvent, JobInputFile, JobStatus, JobStep, Role, Run, Skill, SkillVersion, User, VersionStatus, WorkflowEndpointRequest, WorkflowJob, WorkflowJobModel, WorkflowJobPrompt, WorkflowJobSkill, WorkspaceFile, utcnow
-from ..schemas import Message, ReviewDecision, StorageOverview, SystemSummary, UserAdminPatch, UserDeleteRequest, UserRead, UserRolePatch, VersionRead
+from ..schemas import Message, NetworkAccessUpdate, ReviewDecision, StorageOverview, SystemSummary, UserAdminPatch, UserDeleteRequest, UserRead, UserRolePatch, VersionRead
 from ..services import add_audit
 from ..storage import storage
 from ..storage_lifecycle import storage_overview
@@ -36,6 +36,20 @@ def review_queue(
     )
 
 
+@router.get("/admin/skill-versions/published", response_model=list[VersionRead])
+def published_versions(
+    _: User = Depends(admin_user), db: Session = Depends(get_db)
+) -> list[SkillVersion]:
+    return list(
+        db.scalars(
+            select(SkillVersion)
+            .where(SkillVersion.status == VersionStatus.PUBLISHED)
+            .order_by(SkillVersion.published_at.desc(), SkillVersion.created_at.desc())
+            .limit(200)
+        ).all()
+    )
+
+
 @router.post("/admin/reviews/{version_id}/approve", response_model=VersionRead)
 def approve_version(
     version_id: str,
@@ -47,6 +61,9 @@ def approve_version(
     if version is None or version.status not in (VersionStatus.SUBMITTED, VersionStatus.REVIEWING):
         raise HTTPException(status_code=404, detail="Pending version not found")
     version.status = VersionStatus.PUBLISHED
+    version.network_enabled = bool(
+        payload.network_enabled and version.execution_mode == "sandbox_required"
+    )
     version.reviewed_by_id = actor.id
     version.review_note = payload.note or None
     version.published_at = utcnow()
@@ -56,7 +73,37 @@ def approve_version(
         action="skill.version.approve",
         resource_type="skill_version",
         resource_id=version.id,
-        details={"note": payload.note},
+        details={"note": payload.note, "network_enabled": version.network_enabled},
+    )
+    db.commit()
+    db.refresh(version)
+    return version
+
+
+@router.patch("/admin/skill-versions/{version_id}/network-access", response_model=VersionRead)
+def update_version_network_access(
+    version_id: str,
+    payload: NetworkAccessUpdate,
+    actor: User = Depends(admin_user),
+    db: Session = Depends(get_db),
+) -> SkillVersion:
+    version = db.get(SkillVersion, version_id)
+    if version is None or version.status != VersionStatus.PUBLISHED:
+        raise HTTPException(status_code=404, detail="Published version not found")
+    if payload.enabled and version.execution_mode != "sandbox_required":
+        raise HTTPException(
+            status_code=409,
+            detail="Only sandbox Skill versions can receive runtime network access",
+        )
+    previous = version.network_enabled
+    version.network_enabled = payload.enabled
+    add_audit(
+        db,
+        actor=actor,
+        action="skill.version.network_access.update",
+        resource_type="skill_version",
+        resource_id=version.id,
+        details={"previous": previous, "enabled": version.network_enabled},
     )
     db.commit()
     db.refresh(version)

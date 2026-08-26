@@ -36,11 +36,22 @@ def _payload_succeeded(payload: object) -> bool:
     return not isinstance(exit_code, int) or exit_code == 0
 
 
-def _compact_observation(action: dict[str, Any], payload: object) -> dict[str, Any]:
+def _compact_observation(
+    action: dict[str, Any],
+    payload: object,
+    *,
+    operation: int,
+    mutation_epoch: int,
+    tool_call_id: str | None = None,
+) -> dict[str, Any]:
     item: dict[str, Any] = {
         "tool": str(action.get("action") or "unknown"),
         "ok": _payload_succeeded(payload),
+        "operation": operation,
+        "mutation_epoch": mutation_epoch,
     }
+    if tool_call_id:
+        item["tool_call_id"] = tool_call_id[:160]
     for key in ("path", "cwd"):
         value = action.get(key)
         if isinstance(value, str) and value:
@@ -170,7 +181,12 @@ class AgentExecutionState:
         self.completed_skill_indexes.add(index)
         return {"ok": True, "skill_index": index, "evidence": evidence}
 
-    def record_validation(self, action: dict[str, Any]) -> dict[str, Any]:
+    def record_validation(
+        self,
+        action: dict[str, Any],
+        *,
+        artifact_snapshot: dict[str, str],
+    ) -> dict[str, Any]:
         status = str(action.get("status") or "").strip().lower()
         summary = str(action.get("summary") or "").strip()
         evidence = str(action.get("evidence") or "").strip()
@@ -189,11 +205,19 @@ class AgentExecutionState:
                 "error_code": "VALIDATION_INVALID",
                 "message": "checks must contain 1-20 non-empty observed results",
             }
+        if not artifact_snapshot:
+            return {
+                "ok": False,
+                "error_code": "VALIDATION_ARTIFACTS_MISSING",
+                "message": "Generate at least one output artifact before recording validation",
+            }
         recent_proof = next(
             (
                 item
                 for item in reversed(self.observations)
-                if item.get("ok") and item.get("tool") in {"command", "run_python", "read_file"}
+                if item.get("ok")
+                and item.get("tool") in {"command", "run_python"}
+                and item.get("mutation_epoch") == self.mutation_epoch
             ),
             None,
         )
@@ -201,7 +225,7 @@ class AgentExecutionState:
             return {
                 "ok": False,
                 "error_code": "VALIDATION_EVIDENCE_MISSING",
-                "message": "Run or read a real verifier result before recording validation",
+                "message": "Run a real command or Python verifier before recording validation",
             }
         normalized = {
             "status": status,
@@ -209,6 +233,8 @@ class AgentExecutionState:
             "evidence": evidence[:1000],
             "checks": [str(item).strip()[:300] for item in checks],
             "mutation_epoch": self.mutation_epoch,
+            "verifier": deepcopy(recent_proof),
+            "artifacts": dict(sorted(artifact_snapshot.items())),
         }
         if status == "failed":
             self.validation = None
@@ -256,7 +282,7 @@ class AgentExecutionState:
             "observation": deepcopy(recent_failure),
         }
 
-    def finish_blocker(self) -> str | None:
+    def finish_blocker(self, *, current_artifacts: dict[str, str]) -> str | None:
         if self.plan_required and self.plan is None:
             return "Create a concise execution plan before finish."
         unread = [index for index in range(1, self.skill_count + 1) if index not in self.loaded_skills]
@@ -277,6 +303,8 @@ class AgentExecutionState:
                 return f"Update the plan before finish; incomplete step ids: {incomplete}."
         if self.validation is None or self.validation.get("mutation_epoch") != self.mutation_epoch:
             return "Run one concentrated final verification on the current artifacts and record_validation before finish."
+        if self.validation.get("artifacts") != dict(sorted(current_artifacts.items())):
+            return "Current artifact bytes differ from the files bound to the latest validation; rerun verification."
         return None
 
     def cached_observation(self, action: dict[str, Any]) -> object | None:
@@ -291,7 +319,14 @@ class AgentExecutionState:
             cached["hint"] = "Reused a prior observation because the workspace has not changed."
         return cached
 
-    def record(self, action: dict[str, Any], payload: object) -> None:
+    def record(
+        self,
+        action: dict[str, Any],
+        payload: object,
+        *,
+        operation: int | None = None,
+        tool_call_id: str | None = None,
+    ) -> None:
         fingerprint = action_fingerprint(action)
         self.action_counts[fingerprint] = self.action_counts.get(fingerprint, 0) + 1
         succeeded = _payload_succeeded(payload)
@@ -300,7 +335,15 @@ class AgentExecutionState:
         elif action.get("action") in WORKSPACE_MUTATING_TOOLS and succeeded:
             self.mutation_epoch += 1
             self.validation = None
-        self.observations.append(_compact_observation(action, payload))
+        self.observations.append(
+            _compact_observation(
+                action,
+                payload,
+                operation=operation or len(self.observations) + 1,
+                mutation_epoch=self.mutation_epoch,
+                tool_call_id=tool_call_id,
+            )
+        )
         self.observations = self.observations[-24:]
 
     def repeated_count(self, action: dict[str, Any]) -> int:

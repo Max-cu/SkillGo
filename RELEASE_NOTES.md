@@ -1,18 +1,19 @@
-# SkillGo v0.2.2
+# SkillGo v0.2.3
 
-这是一次稳定性修复版本，重点收紧普通对话上下文、完善多 Skill 删除清理，并让自动化部署可以可靠识别 Nginx/API 失联，而不是在首页仍可访问时误判发布成功。
+这是一次可信执行边界更新：完成沙箱执行内核模块化、固定入口与产物证据绑定，并将任务容器是否允许联网改为管理员对具体 Skill 版本的显式授权。
 
 ## 主要更新
 
-- 普通对话历史同时受消息数和字符数限制，超长的最近消息会保留末尾并标记截断。
-- 删除多 Skill 任务中的任意参与 Skill 时，完整清理关联任务、运行记录、文件元数据和绑定。
-- 部署流程先等待 API 健康，再强制重建 Web/Nginx，消除容器地址变化造成的代理 502。
-- 发布成功必须同时通过首页与 `/health` 检查；失败时自动输出相关容器日志。
-- 完整验证通过后才记录实际 Git 提交号，版本文件以 `0600` 权限原子更新。
+- 管理员在审核沙箱 Skill 时决定是否开启“运行联网”，发布后仍可关闭或重新开启。
+- 网络需求分析只提供审核提示，不会再自动为任务授予 Docker bridge 网络。
+- 每个任务保存实际联网状态及授权来源，保证历史记录可追踪；多 Skill 任务由任一获授权版本开启联网。
+- `sandbox_worker.py` 的 Agent 循环、工具注册、固定执行和产物验证已经拆分为独立模块。
+- 固定入口 Skill 直接执行审核版本中的 argv；Agent 任务继续使用受限工具完成灵活流程。
+- 验证操作绑定当时全部产物的 SHA-256，任何后续文件修改都会使旧验证失效。
 
 ## 升级
 
-Git 工作区部署建议先执行备份，再升级到 `v0.2.2`：
+Git 工作区部署建议先执行备份，再升级到 `v0.2.3`：
 
 ```bash
 sudo SKILLGO_INSTALL_ROOT=/opt/skillgo \
@@ -21,20 +22,20 @@ sudo SKILLGO_INSTALL_ROOT=/opt/skillgo \
 
 sudo SKILLGO_INSTALL_ROOT=/opt/skillgo \
   SKILLGO_DEPLOY_ENV=deploy/ecs.env \
-  bash deploy/upgrade-skillgo.sh v0.2.2
+  bash deploy/upgrade-skillgo.sh v0.2.3
 ```
 
 完整的首次部署、升级、验证和回滚说明见 [`deploy/README.md`](deploy/README.md)。
 
 ## 部署提示
 
-公网正式环境仍应配置 TLS 并妥善托管密钥。任务默认断网；需要联网的 Skill 按任务启用 Docker bridge 网络，不提供域名级出口白名单。
+公网正式环境仍应配置 TLS 并妥善托管密钥。所有 Skill 版本默认断网；开启“运行联网”后任务使用 Docker bridge，当前不限制目标域名，也不提供出口代理或 SSRF 拦截，因此只应授权已经审核并信任的 Skill。
 
 ## 验证
 
-- Backend: `142 passed`
+- Backend: `155 passed`
 - Frontend: TypeScript + Vite production build passed
-- Operations: Compose sandbox profile、部署脚本语法与部署辅助函数测试通过
+- Operations: Compose sandbox profile configuration passed；Linux Shell checks由CI继续执行
 
 完整变更见 [`CHANGELOG.md`](CHANGELOG.md)。
 

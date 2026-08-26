@@ -38,6 +38,8 @@ import {
   UserRoundCheck,
   Users,
   Workflow,
+  Wifi,
+  WifiOff,
   X,
   Zap
 } from "lucide-react";
@@ -503,6 +505,7 @@ export function ManageSkillPage() {
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [deleteBusy, setDeleteBusy] = useState(false);
   const [deleteError, setDeleteError] = useState("");
+  const [networkBusyId, setNetworkBusyId] = useState("");
   if (loading) return <div className="detail-loading" />;
   if (error || !skill) return <EmptyState title="没有找到这个 Skill" description="你可能没有管理权限。" />;
   const currentSkill = skill;
@@ -539,6 +542,20 @@ export function ManageSkillPage() {
       setMessage(reason instanceof Error ? reason.message : "部署失败");
     }
   }
+  async function toggleNetworkAccess(version: SkillVersion) {
+    if (networkBusyId) return;
+    setNetworkBusyId(version.id); setMessage("");
+    try {
+      const updated = await api<SkillVersion>(`/admin/skill-versions/${version.id}/network-access`, {
+        method: "PATCH",
+        body: JSON.stringify({ enabled: !version.network_enabled }),
+      });
+      setData({ ...currentSkill, versions: currentSkill.versions?.map((item) => item.id === updated.id ? updated : item) });
+      setMessage(updated.network_enabled ? `v${updated.version} 已允许在沙箱中联网` : `v${updated.version} 已关闭沙箱联网`);
+    } catch (reason) {
+      setMessage(reason instanceof Error ? reason.message : "联网权限修改失败");
+    } finally { setNetworkBusyId(""); }
+  }
   async function confirmVisibility() {
     if (!visibilityTarget) return;
     setVisibilityBusy(true); setVisibilityError(""); setMessage("");
@@ -562,6 +579,7 @@ export function ManageSkillPage() {
     }
   }
   const canDelete = user?.id === currentSkill.owner_id || user?.role === "super_admin";
+  const canManageNetwork = user?.role === "admin" || user?.role === "super_admin";
   const hasPublishedVersion = Boolean(currentSkill.versions?.some((version) => version.status === "published"));
   const isCommunityPublic = currentSkill.visibility === "public";
   return <>
@@ -571,8 +589,8 @@ export function ManageSkillPage() {
       <section className="panel">
         <div className="panel-heading"><div><h2>版本</h2><p>平台会根据包内脚本、依赖和权限识别真实运行方式。</p></div></div>
         {skill.versions?.length ? <div className="version-list">{[...skill.versions].reverse().map((version) => <article key={version.id}>
-          <div><strong>v{version.version}</strong><span>{skillTypeLabels[version.skill_type]}</span><span className={`runtime-mode ${version.execution_mode}`}>{executionModeLabels[version.execution_mode] || version.execution_mode}</span><code>{version.package_sha256.slice(0, 12)}</code></div>
-          <div className="version-actions"><StatusBadge status={version.status} />{(version.status === "ready" || version.status === "rejected") && <button className="button secondary compact" onClick={() => submitVersion(version)}>提交审核</button>}<Link className="button primary compact" to={`/app/skills/${currentSkill.id}/workflow?version=${version.id}`}><Play size={15} />用 Agent 运行</Link>{version.execution_mode === "instruction_only" && <Link className="button secondary compact" to={`/app/skills/${currentSkill.id}/run?version=${version.id}`}><MessageSquareText size={15} />对话调试</Link>}{version.status === "published" && version.runtime_runnable && ["instruction_only", "sandbox_required"].includes(version.execution_mode) && <button className="button secondary compact" onClick={() => deploy(version)}><Zap size={15} />发布为 API</button>}</div>
+          <div><strong>v{version.version}</strong><span>{skillTypeLabels[version.skill_type]}</span><span className={`runtime-mode ${version.execution_mode}`}>{executionModeLabels[version.execution_mode] || version.execution_mode}</span>{version.execution_mode === "sandbox_required" && <span className={`network-state ${version.network_enabled ? "enabled" : "disabled"}`}>{version.network_enabled ? <Wifi size={12} /> : <WifiOff size={12} />}{version.network_enabled ? "运行联网" : "运行断网"}</span>}<code>{version.package_sha256.slice(0, 12)}</code></div>
+          <div className="version-actions"><StatusBadge status={version.status} />{version.status === "published" && version.execution_mode === "sandbox_required" && canManageNetwork && <button className={`button compact ${version.network_enabled ? "danger" : "secondary"}`} type="button" disabled={networkBusyId === version.id} onClick={() => void toggleNetworkAccess(version)}>{version.network_enabled ? <WifiOff size={15} /> : <Wifi size={15} />}{networkBusyId === version.id ? "正在修改…" : version.network_enabled ? "关闭联网" : "开启联网"}</button>}{(version.status === "ready" || version.status === "rejected") && <button className="button secondary compact" onClick={() => submitVersion(version)}>提交审核</button>}<Link className="button primary compact" to={`/app/skills/${currentSkill.id}/workflow?version=${version.id}`}><Play size={15} />用 Agent 运行</Link>{version.execution_mode === "instruction_only" && <Link className="button secondary compact" to={`/app/skills/${currentSkill.id}/run?version=${version.id}`}><MessageSquareText size={15} />对话调试</Link>}{version.status === "published" && version.runtime_runnable && ["instruction_only", "sandbox_required"].includes(version.execution_mode) && <button className="button secondary compact" onClick={() => deploy(version)}><Zap size={15} />发布为 API</button>}</div>
           {version.runtime_block_reason && <p className="runtime-warning"><AlertTriangle />{version.runtime_block_reason}</p>}{version.review_note && <p className="review-note">审核意见：{version.review_note}</p>}
         </article>)}</div> : <EmptyState title="还没有版本" description="上传一个符合规范的 ZIP 包开始。" />}
       </section>
@@ -701,7 +719,8 @@ export function LegacyWorkflowPage() {
           <div><strong>{selectedVersion.runtime_runnable ? "当前环境可以运行" : "当前环境暂不可运行"}</strong><p>{executionModeLabels[selectedVersion.execution_mode] || selectedVersion.execution_mode}</p></div>
         </div>
         {selectedVersion.runtime_reasons.length > 0 && <ul className="runtime-reason-list">{selectedVersion.runtime_reasons.map((reason) => <li key={reason}>{reason}</li>)}</ul>}
-        {(requirements.runtimes?.length || requirements.scripts?.length || requirements.network) && <div className="runtime-requirements"><span>运行要求</span><div>{requirements.runtimes?.map((item) => <code key={item}>{item}</code>)}{requirements.network && <code>受控网络</code>}{requirements.scripts?.slice(0, 3).map((item) => <code key={item}>{item.split("/").pop()}</code>)}</div></div>}
+        {(requirements.runtimes?.length || requirements.scripts?.length || requirements.network) && <div className="runtime-requirements"><span>运行要求</span><div>{requirements.runtimes?.map((item) => <code key={item}>{item}</code>)}{requirements.network && <code>检测到联网需求</code>}{requirements.scripts?.slice(0, 3).map((item) => <code key={item}>{item.split("/").pop()}</code>)}</div></div>}
+        {selectedVersion.execution_mode === "sandbox_required" && <div className={`runtime-network-notice ${selectedVersion.network_enabled ? "enabled" : "disabled"}`}>{selectedVersion.network_enabled ? <Wifi /> : <WifiOff />}<div><strong>{selectedVersion.network_enabled ? "管理员已开启运行联网" : "当前沙箱断网"}</strong><p>{selectedVersion.network_enabled ? "任务沙箱可以访问网络，但不会获得平台模型密钥或数据库凭据。" : requirements.network ? "此 Skill 可能需要联网；管理员开启权限后才能访问网络或下载依赖。" : "任务将使用 network_mode=none 运行。"}</p></div></div>}
         {selectedVersion.runtime_runnable ? <>
           <label className="workflow-instruction">补充要求（可选）<textarea rows={3} maxLength={20000} value={instruction} disabled={busy} onChange={(event) => setInstruction(event.target.value)} placeholder="例如：重点检查日期、金额和前后矛盾" /></label>
           <label className={`workflow-file-trigger ${busy ? "busy" : ""}`}>
@@ -717,7 +736,8 @@ export function LegacyWorkflowPage() {
       <section className="workflow-stage panel">
         <div className="panel-heading"><div><h2>任务进度</h2><p>只有步骤和产物真实完成，任务才会标记成功。</p></div>{selectedJob && <span className={`workflow-status ${selectedJob.status}`}>{workflowStatusLabels[selectedJob.status]}</span>}</div>
         {selectedJob ? <>
-          <div className="workflow-job-meta"><span>任务 {selectedJob.id.slice(0, 8)}</span><span>v{selectedJob.version}</span><time>{new Date(selectedJob.created_at).toLocaleString("zh-CN")}</time></div>
+          <div className="workflow-job-meta"><span>任务 {selectedJob.id.slice(0, 8)}</span><span>v{selectedJob.version}</span><span className={selectedJob.network_enabled ? "network-on" : "network-off"}>{selectedJob.network_enabled ? "运行联网" : "沙箱断网"}</span><time>{new Date(selectedJob.created_at).toLocaleString("zh-CN")}</time></div>
+          {selectedJob.network_enabled && selectedJob.network_enabled_by.length > 0 && <p className="workflow-network-source">联网授权：{selectedJob.network_enabled_by.map((item) => `${item.skill_name} v${item.version}`).join("、")}</p>}
           <div className="workflow-timeline">{selectedJob.steps.map((step) => <article className={step.status} key={step.id}><span>{step.status === "succeeded" ? <Check /> : step.status === "running" ? <RotateCw className="spin-icon" /> : step.status === "failed" || step.status === "blocked" ? <AlertTriangle /> : <i />}</span><div><strong>{step.name}</strong><p>{step.detail || (step.status === "pending" ? "等待前序步骤" : step.status)}</p></div></article>)}</div>
           {selectedJob.error_message && <div className="workflow-error"><AlertTriangle /><div><strong>{selectedJob.error_code}</strong><p>{selectedJob.error_message}</p></div></div>}
           {selectedJob.artifacts.length > 0 && <div className="workflow-artifacts"><h3>任务产物</h3>{selectedJob.artifacts.map((artifact) => <article key={artifact.id}><FileText /><div><strong>{artifact.filename}</strong><span>{artifact.purged_at ? "已超过 15 天保留期" : `${formatPackageSize(artifact.size_bytes)} · ${artifact.verified ? "完整性已校验" : "待校验"}`}</span></div><button className="button primary compact" disabled={Boolean(artifact.purged_at)} onClick={() => void downloadArtifact(selectedJob, artifact)}>{artifact.purged_at ? <Clock3 size={15} /> : <Download size={15} />}{artifact.purged_at ? "已到期" : "下载"}</button></article>)}</div>}
@@ -1364,14 +1384,17 @@ export function EndpointsPage() {
 
 export function AdminReviewsPage() {
   const { data: versions, setData, loading } = useLoad<SkillVersion[]>("/admin/reviews", []);
+  const { data: publishedVersions, setData: setPublishedVersions, loading: publishedLoading } = useLoad<SkillVersion[]>("/admin/skill-versions/published", []);
   const [reviewTarget, setReviewTarget] = useState<SkillVersion | null>(null);
   const [decision, setDecision] = useState<"approve" | "reject">("approve");
   const [note, setNote] = useState("");
   const [reviewBusy, setReviewBusy] = useState(false);
   const [reviewError, setReviewError] = useState("");
+  const [networkEnabled, setNetworkEnabled] = useState(false);
+  const [networkBusyId, setNetworkBusyId] = useState("");
 
   function openReview(version: SkillVersion, nextDecision: "approve" | "reject") {
-    setReviewTarget(version); setDecision(nextDecision); setNote(""); setReviewError("");
+    setReviewTarget(version); setDecision(nextDecision); setNote(""); setReviewError(""); setNetworkEnabled(false);
   }
 
   async function confirmReview() {
@@ -1379,18 +1402,35 @@ export function AdminReviewsPage() {
     if (decision === "reject" && !note.trim()) { setReviewError("驳回时必须填写原因"); return; }
     setReviewBusy(true); setReviewError("");
     try {
-      await api(`/admin/reviews/${reviewTarget.id}/${decision}`, { method: "POST", body: JSON.stringify({ note: note.trim() }) });
+      const updated = await api<SkillVersion>(`/admin/reviews/${reviewTarget.id}/${decision}`, { method: "POST", body: JSON.stringify({ note: note.trim(), network_enabled: decision === "approve" && networkEnabled }) });
       setData(versions.filter((item) => item.id !== reviewTarget.id));
+      if (decision === "approve") setPublishedVersions([updated, ...publishedVersions.filter((item) => item.id !== updated.id)]);
       setReviewTarget(null); setNote("");
     } catch (reason) { setReviewError(reason instanceof Error ? reason.message : "审核操作失败"); }
     finally { setReviewBusy(false); }
   }
 
+  async function togglePublishedNetwork(version: SkillVersion) {
+    if (networkBusyId) return;
+    setNetworkBusyId(version.id); setReviewError("");
+    try {
+      const updated = await api<SkillVersion>(`/admin/skill-versions/${version.id}/network-access`, {
+        method: "PATCH",
+        body: JSON.stringify({ enabled: !version.network_enabled }),
+      });
+      setPublishedVersions(publishedVersions.map((item) => item.id === updated.id ? updated : item));
+    } catch (reason) {
+      setReviewError(reason instanceof Error ? reason.message : "联网权限修改失败");
+    } finally { setNetworkBusyId(""); }
+  }
+
   return <>
     <Breadcrumbs items={[{ label: "工作台", to: "/app" }, { label: "发布审核" }]} />
     <PageTitle eyebrow="MODERATION" title="发布审核" description="检查版本内容、权限申请、类型和包哈希，再决定是否进入社区。" />
-    {loading ? <div className="panel detail-loading" /> : versions.length ? <div className="review-grid">{versions.map((version) => <article className="review-card" key={version.id}><div className="review-card-head"><span className="skill-icon"><FileCheck2 /></span><div><span className="eyebrow">版本</span><h3>v{version.version}</h3></div><StatusBadge status={version.status} /></div><dl><div><dt>类型</dt><dd>{skillTypeLabels[version.skill_type]}</dd></div><div><dt>包摘要</dt><dd><code>{version.package_sha256.slice(0, 16)}…</code></dd></div><div><dt>权限项</dt><dd>{Object.keys(version.requested_permissions).length}</dd></div></dl><div className="review-actions"><button className="button danger" onClick={() => openReview(version, "reject")}>驳回</button><button className="button primary" onClick={() => openReview(version, "approve")}><UserRoundCheck size={17} />批准发布</button></div></article>)}</div> : <EmptyState icon={ShieldCheck} title="审核队列为空" description="所有提交的 Skill 版本都已经处理。" />}
-    {reviewTarget && <div className="modal-backdrop" role="presentation"><section className={`confirm-dialog review-dialog ${decision}`} role="dialog" aria-modal="true" aria-labelledby="review-dialog-title"><span className="confirm-icon">{decision === "approve" ? <UserRoundCheck /> : <AlertTriangle />}</span><h2 id="review-dialog-title">{decision === "approve" ? `批准发布 v${reviewTarget.version}` : `驳回版本 v${reviewTarget.version}`}</h2><p>{decision === "approve" ? "批准后该版本会进入公开社区，版本内容将保持不可变。" : "请写明具体原因，作者会在版本管理页看到这条审核意见。"}</p><label>{decision === "approve" ? "审核备注（可选）" : "驳回原因"}<textarea value={note} rows={4} maxLength={4000} autoFocus placeholder={decision === "approve" ? "例如：权限范围与用途说明一致" : "说明需要修改的内容或权限问题"} onChange={(event) => { setNote(event.target.value); setReviewError(""); }} /></label>{reviewError && <div className="form-error" aria-live="polite">{reviewError}</div>}<div><button className="button ghost" type="button" disabled={reviewBusy} onClick={() => setReviewTarget(null)}>取消</button><button className={`button ${decision === "approve" ? "primary" : "danger"}`} type="button" disabled={reviewBusy} onClick={confirmReview}>{reviewBusy ? "正在提交…" : decision === "approve" ? "确认批准" : "确认驳回"}</button></div></section></div>}
+    {loading ? <div className="panel detail-loading" /> : versions.length ? <div className="review-grid">{versions.map((version) => <article className="review-card" key={version.id}><div className="review-card-head"><span className="skill-icon"><FileCheck2 /></span><div><span className="eyebrow">{version.skill_name}</span><h3>v{version.version}</h3></div><StatusBadge status={version.status} /></div><dl><div><dt>类型</dt><dd>{skillTypeLabels[version.skill_type]}</dd></div><div><dt>包摘要</dt><dd><code>{version.package_sha256.slice(0, 16)}…</code></dd></div><div><dt>联网分析</dt><dd>{version.execution_mode !== "sandbox_required" ? "无需沙箱联网" : version.runtime_requirements.network ? "可能需要联网" : "未发现联网需求"}</dd></div></dl><div className="review-actions"><button className="button danger" onClick={() => openReview(version, "reject")}>驳回</button><button className="button primary" onClick={() => openReview(version, "approve")}><UserRoundCheck size={17} />批准发布</button></div></article>)}</div> : <EmptyState icon={ShieldCheck} title="审核队列为空" description="所有提交的 Skill 版本都已经处理。" />}
+    <section className="published-network-panel panel"><div className="panel-heading"><div><h2>已发布版本联网</h2><p>运行联网默认关闭。开启后，该版本所在的任务沙箱可以访问网络，当前不限制目标域名。</p></div></div>{publishedLoading ? <div className="detail-loading" /> : publishedVersions.filter((version) => version.execution_mode === "sandbox_required").length ? <div className="published-network-list">{publishedVersions.filter((version) => version.execution_mode === "sandbox_required").map((version) => <article key={version.id}><span className={version.network_enabled ? "enabled" : "disabled"}>{version.network_enabled ? <Wifi /> : <WifiOff />}</span><div><strong>{version.skill_name}</strong><small>v{version.version} · {version.runtime_requirements.network ? "检测到联网需求" : "未发现联网需求"}</small></div><button className={`button compact ${version.network_enabled ? "danger" : "secondary"}`} type="button" disabled={networkBusyId === version.id} onClick={() => void togglePublishedNetwork(version)}>{networkBusyId === version.id ? "正在修改…" : version.network_enabled ? "关闭联网" : "开启联网"}</button></article>)}</div> : <p className="published-network-empty">还没有已发布的沙箱 Skill 版本。</p>}</section>
+    {reviewError && !reviewTarget && <div className="form-error" aria-live="polite">{reviewError}</div>}
+    {reviewTarget && <div className="modal-backdrop" role="presentation"><section className={`confirm-dialog review-dialog ${decision}`} role="dialog" aria-modal="true" aria-labelledby="review-dialog-title"><span className="confirm-icon">{decision === "approve" ? <UserRoundCheck /> : <AlertTriangle />}</span><h2 id="review-dialog-title">{decision === "approve" ? `批准发布 v${reviewTarget.version}` : `驳回版本 v${reviewTarget.version}`}</h2><p>{decision === "approve" ? "批准后版本内容保持不可变；运行联网由管理员控制并可在发布后关闭。" : "请写明具体原因，作者会在版本管理页看到这条审核意见。"}</p>{decision === "approve" && reviewTarget.execution_mode === "sandbox_required" && <label className={`network-approval-toggle ${networkEnabled ? "enabled" : ""}`}><input type="checkbox" checked={networkEnabled} disabled={reviewBusy} onChange={(event) => setNetworkEnabled(event.target.checked)} /><span>{networkEnabled ? <Wifi /> : <WifiOff />}</span><div><strong>运行联网</strong><small>{networkEnabled ? "已允许该版本的任务沙箱访问网络；当前不限制目标域名。" : reviewTarget.runtime_requirements.network ? "平台检测到联网需求，但默认保持断网。" : "默认关闭；仅在确认确有需要时开启。"}</small></div></label>}<label>{decision === "approve" ? "审核备注（可选）" : "驳回原因"}<textarea value={note} rows={4} maxLength={4000} autoFocus placeholder={decision === "approve" ? "例如：已核对脚本和运行权限" : "说明需要修改的内容或权限问题"} onChange={(event) => { setNote(event.target.value); setReviewError(""); }} /></label>{reviewError && <div className="form-error" aria-live="polite">{reviewError}</div>}<div><button className="button ghost" type="button" disabled={reviewBusy} onClick={() => setReviewTarget(null)}>取消</button><button className={`button ${decision === "approve" ? "primary" : "danger"}`} type="button" disabled={reviewBusy} onClick={confirmReview}>{reviewBusy ? "正在提交…" : decision === "approve" ? "确认批准" : "确认驳回"}</button></div></section></div>}
   </>;
 }
 

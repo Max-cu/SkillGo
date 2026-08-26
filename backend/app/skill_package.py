@@ -12,6 +12,7 @@ import yaml
 
 from .config import settings
 from .models import SkillType
+from .skill_execution_spec import SkillExecutionSpecError, fixed_execution_spec
 from .skill_metadata import SkillFrontmatterError, parse_skill_frontmatter
 
 
@@ -166,6 +167,10 @@ def validate_skill_package(data: bytes) -> ValidatedPackage:
     permissions = spec.get("permissions") or {}
     if not all(isinstance(item, dict) for item in (input_schema, output_schema, permissions)):
         raise PackageValidationError("schemas and permissions must be objects")
+    try:
+        fixed_execution_spec(manifest)
+    except SkillExecutionSpecError as exc:
+        raise PackageValidationError(str(exc)) from exc
 
     return ValidatedPackage(
         sha256=hashlib.sha256(data).hexdigest(),

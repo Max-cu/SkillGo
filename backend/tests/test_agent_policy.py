@@ -3,6 +3,11 @@ from __future__ import annotations
 from app.agent_policy import AgentExecutionState, action_fingerprint
 
 
+ARTIFACT_SNAPSHOT = {
+    "/workspace/output/result.docx": "a" * 64,
+}
+
+
 def _completed_plan() -> dict:
     return {
         "goal": "Inspect, process, and verify the requested Skill result",
@@ -40,7 +45,8 @@ def _pass_validation(state: AgentExecutionState) -> dict:
             "summary": "The concentrated verifier passed",
             "evidence": "verify.py exit 0 with observed values",
             "checks": ["PARAGRAPHS=4", "TITLE_FONT=方正小标宋简体"],
-        }
+        },
+        artifact_snapshot=ARTIFACT_SNAPSHOT,
     )
 
 
@@ -103,6 +109,26 @@ def test_validation_requires_a_real_recent_tool_observation():
     assert result["error_code"] == "VALIDATION_EVIDENCE_MISSING"
 
 
+def test_validation_requires_output_artifacts_and_binds_verifier_operation():
+    state = AgentExecutionState(skill_count=1)
+    _record_verifier(state)
+    missing = state.record_validation(
+        {
+            "status": "passed",
+            "summary": "Verified",
+            "evidence": "verify.py exit 0",
+            "checks": ["PARAGRAPHS=4"],
+        },
+        artifact_snapshot={},
+    )
+    assert missing["error_code"] == "VALIDATION_ARTIFACTS_MISSING"
+
+    passed = _pass_validation(state)
+    assert passed["validation"]["artifacts"] == ARTIFACT_SNAPSHOT
+    assert passed["validation"]["verifier"]["tool"] == "command"
+    assert passed["validation"]["verifier"]["operation"] == 1
+
+
 def test_blocked_outcome_requires_a_real_failed_operation():
     state = AgentExecutionState(skill_count=1)
     missing = state.block_workflow("Remote service unavailable", "DNS lookup failed")
@@ -119,14 +145,26 @@ def test_blocked_outcome_requires_a_real_failed_operation():
 
 def test_complete_workflow_requires_skill_plan_and_current_validation():
     state = AgentExecutionState(skill_count=1, loaded_skills={1})
-    assert "execution plan" in (state.finish_blocker() or "")
+    assert "execution plan" in (
+        state.finish_blocker(current_artifacts=ARTIFACT_SNAPSHOT) or ""
+    )
     assert state.update_plan(_completed_plan())["ok"] is True
-    assert "incomplete skill indexes" in (state.finish_blocker() or "")
+    assert "incomplete skill indexes" in (
+        state.finish_blocker(current_artifacts=ARTIFACT_SNAPSHOT) or ""
+    )
     assert state.complete_skill(1, "/workspace/output/result.docx")["ok"] is True
-    assert "record_validation" in (state.finish_blocker() or "")
+    assert "record_validation" in (
+        state.finish_blocker(current_artifacts=ARTIFACT_SNAPSHOT) or ""
+    )
     _record_verifier(state)
     assert _pass_validation(state)["ok"] is True
-    assert state.finish_blocker() is None
+    assert state.finish_blocker(current_artifacts=ARTIFACT_SNAPSHOT) is None
+    assert "differ" in (
+        state.finish_blocker(
+            current_artifacts={"/workspace/output/result.docx": "b" * 64}
+        )
+        or ""
+    )
 
 
 def test_workspace_mutation_invalidates_previous_validation():
@@ -144,7 +182,22 @@ def test_workspace_mutation_invalidates_previous_validation():
         {"exit_code": 0, "stdout": "rewritten", "stderr": ""},
     )
     assert state.validation is None
-    assert "record_validation" in (state.finish_blocker() or "")
+    assert "record_validation" in (
+        state.finish_blocker(current_artifacts=ARTIFACT_SNAPSHOT) or ""
+    )
+
+
+def test_old_verifier_cannot_be_rebound_after_a_later_workspace_write():
+    state = AgentExecutionState(skill_count=1)
+    _record_verifier(state)
+    state.record(
+        {"action": "write_file", "path": "/workspace/output/result.txt"},
+        {"ok": True, "path": "/workspace/output/result.txt", "bytes": 7},
+    )
+
+    result = _pass_validation(state)
+
+    assert result["error_code"] == "VALIDATION_EVIDENCE_MISSING"
 
 
 def test_failed_validation_allows_only_two_targeted_corrections():
@@ -158,9 +211,9 @@ def test_failed_validation_allows_only_two_targeted_corrections():
         "checks": ["PARAGRAPHS=1"],
     }
 
-    first = state.record_validation(action)
-    second = state.record_validation(action)
-    third = state.record_validation(action)
+    first = state.record_validation(action, artifact_snapshot=ARTIFACT_SNAPSHOT)
+    second = state.record_validation(action, artifact_snapshot=ARTIFACT_SNAPSHOT)
+    third = state.record_validation(action, artifact_snapshot=ARTIFACT_SNAPSHOT)
     assert first["retry_allowed"] is True
     assert second["retry_allowed"] is True
     assert third["retry_allowed"] is False

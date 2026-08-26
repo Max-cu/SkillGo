@@ -24,6 +24,7 @@ export interface User {
 export interface SkillVersion {
   id: string;
   skill_id: string;
+  skill_name: string;
   version: string;
   status: VersionStatus;
   skill_type: "instruction" | "code";
@@ -32,6 +33,7 @@ export interface SkillVersion {
   input_schema: Record<string, unknown>;
   output_schema: Record<string, unknown>;
   requested_permissions: Record<string, unknown>;
+  network_enabled: boolean;
   execution_mode: "instruction_only" | "platform_tools" | "sandbox_required" | string;
   runtime_status: "available" | "awaiting_platform_tools" | "awaiting_sandbox" | string;
   runtime_runnable: boolean;
@@ -171,6 +173,13 @@ export interface WorkflowJob {
   execution_mode: string;
   trigger: string;
   instruction: string;
+  network_enabled: boolean;
+  network_enabled_by: Array<{
+    skill_id: string;
+    skill_version_id: string;
+    skill_name: string;
+    version: string;
+  }>;
   message_content: WorkflowMessagePart[];
   routing_mode: "explicit" | "automatic" | "legacy" | string;
   model_name: string | null;

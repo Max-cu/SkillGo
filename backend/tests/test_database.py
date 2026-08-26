@@ -25,7 +25,7 @@ def test_blank_database_is_created_and_stamped_at_head():
     assert set(Base.metadata.tables).issubset(tables)
     assert "alembic_version" in tables
     with target.connect() as connection:
-        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "20260822_0003"
+        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "20260826_0004"
 
 
 def test_complete_legacy_database_is_adopted_without_losing_rows():
@@ -47,7 +47,7 @@ def test_complete_legacy_database_is_adopted_without_losing_rows():
     assert "favorites" in inspect(target).get_table_names()
     with target.connect() as connection:
         assert connection.scalar(text("SELECT count(*) FROM users")) == 1
-        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "20260822_0003"
+        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "20260826_0004"
 
 
 def test_v010_database_receives_storage_lifecycle_migration_without_data_loss():
@@ -79,7 +79,59 @@ def test_v010_database_receives_storage_lifecycle_migration_without_data_loss():
         assert column_name in {column["name"] for column in inspector.get_columns(table_name)}
     with target.connect() as connection:
         assert connection.scalar(text("SELECT count(*) FROM users")) == 1
-        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "20260822_0003"
+        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "20260826_0004"
+
+
+def test_v022_database_receives_network_policy_columns_with_safe_defaults():
+    target = create_engine("sqlite://")
+    Base.metadata.create_all(target)
+    with target.begin() as connection:
+        connection.execute(text('ALTER TABLE "skill_versions" DROP COLUMN "network_enabled"'))
+        connection.execute(text('ALTER TABLE "workflow_jobs" DROP COLUMN "network_enabled"'))
+        connection.execute(text('ALTER TABLE "workflow_jobs" DROP COLUMN "network_enabled_by"'))
+        connection.execute(text("CREATE TABLE alembic_version (version_num VARCHAR(32) NOT NULL)"))
+        connection.execute(text("INSERT INTO alembic_version VALUES ('20260822_0003')"))
+        connection.execute(
+            text(
+                "INSERT INTO users "
+                "(id, email, display_name, password_hash, role, is_active, created_at, updated_at) "
+                "VALUES ('u1', 'v022@example.com', 'v022', 'hash', 'USER', 1, "
+                "CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+            )
+        )
+        connection.execute(
+            text(
+                "INSERT INTO skills "
+                "(id, owner_id, slug, name, summary, description, category, visibility, icon, created_at, updated_at) "
+                "VALUES ('s1', 'u1', 'v022-skill', 'v022 Skill', 'Existing v0.2.2 Skill version', '', "
+                "'other', 'PRIVATE', 'sparkles', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+            )
+        )
+        connection.execute(
+            text(
+                "INSERT INTO skill_versions "
+                "(id, skill_id, created_by_id, version, status, skill_type, package_sha256, package_path, "
+                "manifest, skill_md, input_schema, output_schema, requested_permissions, created_at, updated_at) "
+                "VALUES ('v1', 's1', 'u1', '0.2.2', 'PUBLISHED', 'INSTRUCTION', "
+                "'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 'package.zip', "
+                "'{}', '# Existing', '{}', '{}', '{}', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+            )
+        )
+
+    initialize_schema(target)
+
+    inspector = inspect(target)
+    assert "network_enabled" in {
+        column["name"] for column in inspector.get_columns("skill_versions")
+    }
+    assert {"network_enabled", "network_enabled_by"}.issubset(
+        {column["name"] for column in inspector.get_columns("workflow_jobs")}
+    )
+    with target.connect() as connection:
+        assert connection.scalar(
+            text("SELECT network_enabled FROM skill_versions WHERE id='v1'")
+        ) == 0
+        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "20260826_0004"
 
 
 def test_incomplete_legacy_table_is_not_falsely_stamped():

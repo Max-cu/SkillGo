@@ -214,6 +214,7 @@ function WorkflowReply({ job, onDownload, onRetry, onEdit }: { job: WorkflowJob;
       <span>{job.model_name || "默认模型"}</span><i />
       <span>{formatDuration(totalDuration)}</span><i />
       <span>{latestTurn} 轮 · {toolEvents.length} 次工具调用</span>
+      <i /><span>{job.network_enabled ? `运行联网${job.network_enabled_by.length ? ` · ${job.network_enabled_by.map((item) => item.skill_name).join("、")}` : ""}` : "沙箱断网"}</span>
       {failedTools.length > 0 && job.status === "succeeded" && <><i /><span>已自动纠正 {failedTools.length} 次异常</span></>}
     </footer>}
   </div>;

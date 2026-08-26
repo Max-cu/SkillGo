@@ -9,7 +9,7 @@ from app import config
 from app.database import SessionLocal
 from app.models import WorkflowJobSkill
 from conftest import make_email, make_password
-from test_skill_flow import skill_zip
+from test_skill_flow import sandbox_network_skill_zip, skill_zip
 
 
 def create_version(client, headers, *, slug: str, package: bytes) -> tuple[dict, dict]:
@@ -271,6 +271,54 @@ def test_sandbox_skill_is_blocked_without_calling_model(
     )
     assert chat.status_code == 409
     assert chat.json()["detail"]["code"] == "WORKFLOW_RUNNER_REQUIRED"
+
+
+def test_job_snapshots_admin_approved_network_access(
+    client, user_headers, owner_headers
+):
+    skill, version = create_version(
+        client,
+        user_headers,
+        slug="network-snapshot",
+        package=sandbox_network_skill_zip(),
+    )
+    client.post(
+        f"/api/v1/skills/{skill['id']}/versions/{version['id']}/submit",
+        headers=user_headers,
+    )
+    approved = client.post(
+        f"/api/v1/admin/reviews/{version['id']}/approve",
+        headers=owner_headers,
+        json={"network_enabled": True},
+    )
+    assert approved.status_code == 200, approved.text
+
+    created = client.post(
+        "/api/v1/jobs",
+        headers=user_headers,
+        data={"version_id": version["id"], "instruction": "访问公开端点"},
+    )
+    assert created.status_code == 201, created.text
+    job = created.json()
+    assert job["network_enabled"] is True
+    assert job["network_enabled_by"] == [
+        {
+            "skill_id": skill["id"],
+            "skill_version_id": version["id"],
+            "skill_name": skill["name"],
+            "version": version["version"],
+        }
+    ]
+
+    disabled = client.patch(
+        f"/api/v1/admin/skill-versions/{version['id']}/network-access",
+        headers=owner_headers,
+        json={"enabled": False},
+    )
+    assert disabled.status_code == 200
+    historical = client.get(f"/api/v1/jobs/{job['id']}", headers=user_headers).json()
+    assert historical["network_enabled"] is True
+    assert historical["network_enabled_by"] == job["network_enabled_by"]
 
 
 def test_sandbox_skill_is_queued_when_worker_is_enabled(

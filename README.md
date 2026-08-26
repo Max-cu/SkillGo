@@ -26,7 +26,7 @@
   <a href="deploy/README.md">部署指南</a>
 </p>
 
-SkillGo 是一个可私有化部署的多用户 Skill 平台。它把 Skill 的上传、版本、审核、运行、产物交付和 API 接入放进同一条闭环，并为需要脚本、工具或文件处理的任务提供独立沙箱。
+SkillGo 是一个可私有化部署的多用户 Skill 平台。它把 Skill 的上传、版本、审核、运行、产物交付和 API 接入放进同一条闭环，并为需要脚本、工具或文件处理的任务提供独立环境，首先保证不同用户的文件、依赖、进程和运行状态互不冲突；gVisor 在此基础上提供纵深隔离。
 
 普通消息可以直接流式调用模型；使用 Skill 的任务会留下可追踪的运行记录。已发布的固定 Skill 版本还可以部署为带独立密钥的 API Endpoint，供其他系统调用。
 
@@ -119,10 +119,10 @@ FastAPI 控制面 ──► PostgreSQL：任务、归属、状态与审计
 2. Worker 通过数据库行锁领取任务，为本次尝试生成独立 `execution_id`、租约令牌和过期时间，并持续心跳。
 3. Worker 创建带 `job_id` 与 `execution_id` 标签的专用 Docker Volume。一个断网的临时 Stager 只获得 `CHOWN` 能力，将本次选定的 Skill 和输入写入 Volume，设置为任务用户所有后立即销毁；Stager 不执行 Skill 代码。
 4. Worker 使用受控基础镜像创建实际任务容器，指定 `runtime=runsc`，并只把本次 Volume 挂载为可写 `/workspace`。
-5. 模型负责计划和选择受限工具，Worker 负责路径、命令、超时和状态校验；实际命令始终以 `10001:10001` 身份在 gVisor 容器内执行。
+5. 模型负责计划和选择受限工具，Worker 负责路径、命令、超时和状态校验；实际命令始终以 `10001:10001` 身份在 gVisor 容器内执行。声明 `spec.execution.mode: fixed` 的单 Skill 由平台直接运行审核版本中的固定 argv，不经过模型选择脚本。
 6. 命令超时会直接销毁整个容器，避免只终止入口进程后遗留子进程。重试会获得新的 `execution_id`、容器和 Volume；旧租约即使恢复也不能提交结果。
-7. Worker 只收集 `/workspace/output` 下声明的常规文件，并逐个拒绝符号链接、空文件、越界路径和超限文件；持久化后重新核对大小、SHA-256 与文件结构，再把任务标记为成功。
-8. 成功、失败、取消或超时都会回收本次容器和 Volume；Worker 启动与租约恢复逻辑还会按标签清理崩溃后遗留的孤儿资源，同时避开仍有有效租约的任务。
+7. Agent 验证会绑定真实 verifier 操作与当时全部输出文件的 SHA-256；`finish` 前再次核对字节。Worker 只收集 `/workspace/output` 下声明的常规文件，并逐个拒绝符号链接、空文件、越界路径和超限文件；持久化后重新核对大小、SHA-256 与文件结构，再把任务标记为成功。
+8. 成功、失败、取消或超时都会回收本次容器和 Volume；Worker 启动与租约恢复逻辑还会按标签清理崩溃后遗留的孤儿资源，同时避开仍有有效租约的任务。租约中断后的下一次尝试使用全新沙箱，从固定 Skill 版本和原始输入重新开始，不恢复半成品工作区。
 
 ### 强制执行的沙箱边界
 
@@ -133,13 +133,13 @@ FastAPI 控制面 ──► PostgreSQL：任务、归属、状态与审计
 | 文件系统 | 容器根文件系统只读；唯一持久可写位置是本次 `/workspace`，`/tmp` 为独立 `tmpfs` |
 | Linux 权限 | `cap_drop=ALL`、`no-new-privileges`，不挂载设备、宿主目录或 Docker Socket |
 | 资源 | 默认 768 MiB 内存、1 CPU、128 PIDs；单命令最多 120 秒、任务最多 30 分钟，均可配置 |
-| 网络 | 默认 `network_mode=none`；仅在运行画像明确需要时启用 bridge，目前不提供域名级出口白名单 |
+| 网络 | 默认 `network_mode=none`；仅管理员可为已审核的具体 Skill 版本开启运行联网，任务会保存授权来源快照；当前不限制目标域名 |
 | 密钥 | 任务容器不接收数据库连接、JWT Secret、用户凭据、模型 API Key 或 Endpoint Key |
 | 产物 | 只允许 `/workspace/output` 下经过大小、哈希和结构复核的真实文件，单文件默认上限 50 MiB |
 
 这里的隔离粒度是“**一次任务执行尝试一套临时环境**”，不是为每个用户长期保留一台虚拟机。gVisor 也不是完整虚拟机或宿主安全管理的替代品：持有 Docker Socket 的 Worker 仍属于可信执行面，需要限制访问范围并及时更新 Linux、Docker 和 gVisor；API、Web 与实际 Skill 容器都不挂载该 Socket。
 
-实现可直接查看 [`sandbox_runtime.py`](backend/app/sandbox_runtime.py) 与 [`sandbox_worker.py`](backend/app/sandbox_worker.py)，整体设计见 [产品与技术架构](docs/PRODUCT_ARCHITECTURE.md) 和 [Agent 内核](docs/agent-kernel.md)。完整部署自检会真正启动一个 `runsc`、非 root、只读且断网的测试容器，而不是只检查配置文本。
+实现可直接查看 [`sandbox_runtime.py`](backend/app/sandbox_runtime.py)、[`sandbox_worker.py`](backend/app/sandbox_worker.py)、[`sandbox_agent_loop.py`](backend/app/sandbox_agent_loop.py)、[`artifact_validation.py`](backend/app/artifact_validation.py) 与 [`deterministic_runtime.py`](backend/app/deterministic_runtime.py)，整体设计见 [产品与技术架构](docs/PRODUCT_ARCHITECTURE.md) 和 [Agent 内核](docs/agent-kernel.md)。完整部署自检会真正启动一个 `runsc`、非 root、只读且断网的测试容器，而不是只检查配置文本。
 
 ## Skill API
 

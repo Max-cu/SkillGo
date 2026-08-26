@@ -4,6 +4,27 @@
 
 ## [Unreleased]
 
+## [0.2.3] - 2026-08-26
+
+### Added
+
+- 管理员可在版本审核时为沙箱 Skill 开启“运行联网”，并可在发布后随时关闭或重新开启；所有版本默认断网。
+- 任务创建时保存实际联网状态及授权来源 Skill 版本，多 Skill 任务按任一授权版本开启联网，历史记录不受后续开关变化影响。
+- 固定入口执行模式、产物 SHA-256 验证快照与验证失效机制，确定性 Skill 不再由模型临时选择脚本。
+- 审核页、Skill 版本列表、任务运行页和工作台任务卡展示联网需求、当前授权及任务快照。
+
+### Changed
+
+- 将沙箱 Agent 循环、工具注册、固定执行和产物验证从 Worker 主流程拆分为独立模块。
+- Skill 内容中的网络声明、URL和依赖文件仅作为审核提示，不再自动授予任务容器网络。
+- pip/npm 依赖继续限定在一次性工作区，apt/apk 等系统包安装保持禁止。
+
+### Security
+
+- 只有管理员审核过的具体 Skill 版本能够获得运行联网权限，权限变更写入审计日志，模型和普通用户不能自行开启。
+- 任务容器继续不接收数据库连接、JWT Secret、模型 API Key、Endpoint Key或 Docker Socket。
+- 当前联网仍为不限制目标域名的 Docker bridge；管理员只应为可信 Skill 开启，域名白名单、出口代理与 SSRF 防护不在本版本范围内。
+
 ## [0.2.2] - 2026-08-24
 
 ### Fixed
@@ -57,7 +78,8 @@
 - 任务容器默认非 root、只读根文件系统、去除 Linux Capabilities 并限制 CPU、内存和 PID。
 - 本机密钥、运行数据、用户文件和备份默认被版本库忽略。
 
-[Unreleased]: https://github.com/Max-cu/SkillGo/compare/v0.2.2...HEAD
+[Unreleased]: https://github.com/Max-cu/SkillGo/compare/v0.2.3...HEAD
+[0.2.3]: https://github.com/Max-cu/SkillGo/compare/v0.2.2...v0.2.3
 [0.2.2]: https://github.com/Max-cu/SkillGo/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/Max-cu/SkillGo/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/Max-cu/SkillGo/compare/v0.1.0...v0.2.0
