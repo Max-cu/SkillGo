@@ -87,7 +87,7 @@ class Settings:
     sandbox_max_agent_turns: int = int(
         os.getenv(
             "SKILLGO_SANDBOX_MAX_AGENT_TURNS",
-            os.getenv("SKILLGO_SANDBOX_MAX_AGENT_STEPS", "40"),
+            os.getenv("SKILLGO_SANDBOX_MAX_AGENT_STEPS", "100"),
         )
     )
     sandbox_max_agent_tool_calls: int = int(
