@@ -30,37 +30,111 @@ import app.sandbox_worker as worker
 
 
 class FakeGateway:
-    def __init__(self) -> None:
+    def __init__(self, skill_cwd: str) -> None:
         self.index = 0
+        self.skill_cwd = skill_cwd
+
+    def for_model(self, model_name: str | None):
+        return self
 
     async def agent_step(self, *, messages):
         self.index += 1
         if self.index == 1:
             action = {
+                "action": "update_plan",
+                "goal": "Create and verify the deterministic self-test artifact.",
+                "steps": [
+                    {"id": "create", "title": "Create the result", "status": "in_progress", "evidence": ""},
+                    {"id": "verify", "title": "Verify the result", "status": "pending", "evidence": ""},
+                ],
+                "success_criteria": ["result.txt contains the verified input"],
+                "validation_step_id": "verify",
+                "reason": "Establish the required execution and validation plan",
+            }
+        elif self.index == 2:
+            action = {
+                "action": "read_skill",
+                "skill_index": 1,
+                "reason": "Load the approved self-test instructions",
+            }
+        elif self.index == 3:
+            action = {
                 "action": "read_file",
                 "path": "/workspace/input",
                 "reason": "故意触发一次可恢复的目录读取错误",
             }
-        elif self.index == 2:
+        elif self.index == 4:
             action = {
                 "action": "write_file",
                 "path": "/workspace/work/large.txt",
                 "content": "x" * 10_000,
                 "reason": "验证受控写文件可承载超过普通命令参数限制的内容",
             }
-        elif self.index == 3:
+        elif self.index == 5:
             action = {
                 "action": "command",
                 "argv": [
                     "python3",
                     "-c",
-                    "from pathlib import Path; out=Path('/workspace/output'); out.mkdir(); source=Path('/workspace/input/input.txt').read_text(encoding='utf-8'); assert len(Path('/workspace/work/large.txt').read_text()) == 10000; out.joinpath('result.txt').write_text('verified:'+source,encoding='utf-8')",
+                    "from pathlib import Path; out=Path('/workspace/output'); out.mkdir(exist_ok=True); source=Path('/workspace/input/input.txt').read_text(encoding='utf-8'); assert len(Path('/workspace/work/large.txt').read_text()) == 10000; out.joinpath('result.txt').write_text('verified:'+source,encoding='utf-8')",
                 ],
-                "cwd": "/workspace/skill/demo",
+                "cwd": self.skill_cwd,
                 "timeout_seconds": 30,
                 "reason": "生成真实测试产物",
             }
-        elif self.index == 4:
+        elif self.index == 6:
+            action = {
+                "action": "complete_skill",
+                "skill_index": 1,
+                "evidence": "/workspace/output/result.txt was generated from the staged input",
+                "reason": "The approved self-test Skill has produced its deliverable",
+            }
+        elif self.index == 7:
+            action = {
+                "action": "update_plan",
+                "goal": "Create and verify the deterministic self-test artifact.",
+                "steps": [
+                    {"id": "create", "title": "Create the result", "status": "completed", "evidence": "/workspace/output/result.txt"},
+                    {"id": "verify", "title": "Verify the result", "status": "in_progress", "evidence": ""},
+                ],
+                "success_criteria": ["result.txt contains the verified input"],
+                "validation_step_id": "verify",
+                "reason": "Move the completed artifact into concentrated validation",
+            }
+        elif self.index == 8:
+            action = {
+                "action": "command",
+                "argv": [
+                    "python3",
+                    "-c",
+                    "from pathlib import Path; data=Path('/workspace/output/result.txt').read_text(encoding='utf-8'); assert data == 'verified:tenant-isolated'; print('result.txt verified, bytes=', len(data.encode()))",
+                ],
+                "cwd": self.skill_cwd,
+                "timeout_seconds": 30,
+                "reason": "Verify the exact output content without mutating artifacts",
+            }
+        elif self.index == 9:
+            action = {
+                "action": "record_validation",
+                "status": "passed",
+                "summary": "result.txt passed the exact content check",
+                "evidence": "The verifier printed the observed byte length after asserting the full content",
+                "checks": ["result.txt equals verified:tenant-isolated"],
+                "reason": "Bind successful validation to the current output hashes",
+            }
+        elif self.index == 10:
+            action = {
+                "action": "update_plan",
+                "goal": "Create and verify the deterministic self-test artifact.",
+                "steps": [
+                    {"id": "create", "title": "Create the result", "status": "completed", "evidence": "/workspace/output/result.txt"},
+                    {"id": "verify", "title": "Verify the result", "status": "completed", "evidence": "Exact content verifier passed"},
+                ],
+                "success_criteria": ["result.txt contains the verified input"],
+                "validation_step_id": "verify",
+                "reason": "Mark the validated workflow complete",
+            }
+        elif self.index == 11:
             action = {
                 "action": "finish",
                 "summary": "故意先声明一个不存在的产物以验证自动纠正",
@@ -163,11 +237,21 @@ async def main() -> None:
         db.commit()
         job_id = job.id
 
-    worker.OpenAICompatibleGateway = FakeGateway
+    fake_gateway = FakeGateway(f"/workspace/skills/01-{skill.slug}/demo")
+    worker.get_model_gateway = lambda: fake_gateway
     await worker.execute_sandbox_job(job_id, docker_client())
 
     with SessionLocal() as db:
         job = db.get(WorkflowJob, job_id)
+        if job.status != JobStatus.SUCCEEDED:
+            print("gateway_calls", fake_gateway.index)
+            print(
+                "events",
+                [
+                    (event.sequence, event.event_type, event.status, event.title, event.detail)
+                    for event in job.events
+                ],
+            )
         assert job.status == JobStatus.SUCCEEDED, (job.status, job.error_code, job.error_message)
         assert len(job.artifacts) == 1
         artifact = job.artifacts[0]
