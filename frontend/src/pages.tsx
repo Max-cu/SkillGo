@@ -590,7 +590,7 @@ export function ManageSkillPage() {
         <div className="panel-heading"><div><h2>版本</h2><p>平台会根据包内脚本、依赖和权限识别真实运行方式。</p></div></div>
         {skill.versions?.length ? <div className="version-list">{[...skill.versions].reverse().map((version) => {
           const networkLabel = version.network_enabled ? "运行联网已开启" : "沙箱当前断网";
-          const canToggleNetwork = version.status === "published" && version.execution_mode === "sandbox_required" && canManageNetwork;
+          const canToggleNetwork = version.execution_mode === "sandbox_required" && canManageNetwork;
           return <article key={version.id}>
             <div className="version-summary">
               <strong>v{version.version}</strong>
@@ -1418,7 +1418,7 @@ export function AdminReviewsPage() {
   const [networkBusyId, setNetworkBusyId] = useState("");
 
   function openReview(version: SkillVersion, nextDecision: "approve" | "reject") {
-    setReviewTarget(version); setDecision(nextDecision); setNote(""); setReviewError(""); setNetworkEnabled(false);
+    setReviewTarget(version); setDecision(nextDecision); setNote(""); setReviewError(""); setNetworkEnabled(version.network_enabled);
   }
 
   async function confirmReview() {

@@ -3,7 +3,7 @@ from __future__ import annotations
 import io
 import zipfile
 
-from conftest import make_email, make_password
+from conftest import login, make_email, make_password
 
 
 def skill_zip(version: str = "1.0.0", unsafe_name: str | None = None) -> bytes:
@@ -195,9 +195,28 @@ def test_upload_submit_approve_and_community(client, user_headers, owner_headers
     assert [item["status"] for item in runnable.json()["versions"]] == ["published"]
 
 
-def test_admin_controls_network_access_for_each_published_sandbox_version(
+def test_admin_controls_network_access_before_and_after_sandbox_version_submission(
     client, user_headers, owner_headers
 ):
+    admin_email = make_email("network-admin")
+    admin_password = make_password("network-admin")
+    registered_admin = client.post(
+        "/api/v1/auth/register",
+        json={
+            "email": admin_email,
+            "display_name": "Network Admin",
+            "password": admin_password,
+            "identity": "admin",
+        },
+    )
+    assert registered_admin.status_code == 201, registered_admin.text
+    approved_admin = client.post(
+        f"/api/v1/super-admin/users/{registered_admin.json()['user']['id']}/approve-admin",
+        headers=owner_headers,
+    )
+    assert approved_admin.status_code == 200, approved_admin.text
+    admin_headers = login(client, admin_email, admin_password)
+
     skill = client.post(
         "/api/v1/skills",
         headers=user_headers,
@@ -217,36 +236,45 @@ def test_admin_controls_network_access_for_each_published_sandbox_version(
     assert uploaded["runtime_requirements"]["network"] is True
     assert uploaded["network_enabled"] is False
 
+    forbidden = client.patch(
+        f"/api/v1/admin/skill-versions/{uploaded['id']}/network-access",
+        headers=user_headers,
+        json={"enabled": True},
+    )
+    assert forbidden.status_code == 403
+
+    enabled_before_submission = client.patch(
+        f"/api/v1/admin/skill-versions/{uploaded['id']}/network-access",
+        headers=admin_headers,
+        json={"enabled": True},
+    )
+    assert enabled_before_submission.status_code == 200, enabled_before_submission.text
+    assert enabled_before_submission.json()["status"] == "ready"
+    assert enabled_before_submission.json()["network_enabled"] is True
+
     client.post(
         f"/api/v1/skills/{skill['id']}/versions/{uploaded['id']}/submit",
         headers=user_headers,
     )
     approved = client.post(
         f"/api/v1/admin/reviews/{uploaded['id']}/approve",
-        headers=owner_headers,
-        json={"note": "Approved with runtime network", "network_enabled": True},
+        headers=admin_headers,
+        json={"note": "Approved with preauthorized runtime network"},
     )
     assert approved.status_code == 200, approved.text
     assert approved.json()["network_enabled"] is True
     assert approved.json()["skill_name"] == skill["name"]
 
     published = client.get(
-        "/api/v1/admin/skill-versions/published", headers=owner_headers
+        "/api/v1/admin/skill-versions/published", headers=admin_headers
     )
     assert published.status_code == 200
     assert published.json()[0]["id"] == uploaded["id"]
     assert published.json()[0]["network_enabled"] is True
 
-    forbidden = client.patch(
-        f"/api/v1/admin/skill-versions/{uploaded['id']}/network-access",
-        headers=user_headers,
-        json={"enabled": False},
-    )
-    assert forbidden.status_code == 403
-
     disabled = client.patch(
         f"/api/v1/admin/skill-versions/{uploaded['id']}/network-access",
-        headers=owner_headers,
+        headers=admin_headers,
         json={"enabled": False},
     )
     assert disabled.status_code == 200, disabled.text

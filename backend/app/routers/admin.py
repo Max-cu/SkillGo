@@ -61,9 +61,10 @@ def approve_version(
     if version is None or version.status not in (VersionStatus.SUBMITTED, VersionStatus.REVIEWING):
         raise HTTPException(status_code=404, detail="Pending version not found")
     version.status = VersionStatus.PUBLISHED
-    version.network_enabled = bool(
-        payload.network_enabled and version.execution_mode == "sandbox_required"
-    )
+    if version.execution_mode != "sandbox_required":
+        version.network_enabled = False
+    elif payload.network_enabled is not None:
+        version.network_enabled = payload.network_enabled
     version.reviewed_by_id = actor.id
     version.review_note = payload.note or None
     version.published_at = utcnow()
@@ -88,8 +89,8 @@ def update_version_network_access(
     db: Session = Depends(get_db),
 ) -> SkillVersion:
     version = db.get(SkillVersion, version_id)
-    if version is None or version.status != VersionStatus.PUBLISHED:
-        raise HTTPException(status_code=404, detail="Published version not found")
+    if version is None:
+        raise HTTPException(status_code=404, detail="Skill version not found")
     if payload.enabled and version.execution_mode != "sandbox_required":
         raise HTTPException(
             status_code=409,

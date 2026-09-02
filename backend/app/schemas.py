@@ -283,7 +283,7 @@ class AgentConversationDetail(AgentConversationRead):
 
 class ReviewDecision(BaseModel):
     note: str = Field(default="", max_length=4000)
-    network_enabled: bool = False
+    network_enabled: bool | None = None
 
 
 class NetworkAccessUpdate(BaseModel):
