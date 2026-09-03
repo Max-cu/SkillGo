@@ -1,4 +1,5 @@
 import json
+import base64
 from dataclasses import replace
 from types import SimpleNamespace
 
@@ -6,6 +7,11 @@ from app.routers import agent as agent_router
 
 from test_skill_flow import skill_zip
 from test_workflow_jobs import create_version
+
+
+ONE_PIXEL_PNG = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+)
 
 
 def test_workspace_model_history_honors_message_and_character_limits(monkeypatch):
@@ -211,3 +217,72 @@ def test_workspace_message_accepts_multiple_files_and_reuses_them(
     )
     assert reused.status_code == 200, reused.text
     assert reused.json()["messages"][-2]["files"][0]["sha256"] == stored_files[0]["sha256"]
+
+
+def test_workspace_image_uses_ocr_then_vision_when_enabled(
+    client, user_headers, fake_model_gateway
+):
+    conversation = client.post(
+        "/api/v1/agent/conversations", headers=user_headers, json={}
+    ).json()
+
+    response = client.post(
+        f"/api/v1/agent/conversations/{conversation['id']}/messages",
+        headers=user_headers,
+        data={"message": "这张图说明了什么？", "ocr_enabled": "true"},
+        files={"file": ("figure.png", ONE_PIXEL_PNG, "image/png")},
+    )
+
+    assert response.status_code == 200, response.text
+    stored = response.json()["messages"][0]["files"][0]
+    assert stored["analysis_mode"] == "vision_with_ocr"
+    assert stored["analysis_status"] == "ready"
+    assert stored["analysis_model"] == "test-vision-model"
+    assert stored["ocr_model"] == "test-ocr-model"
+    assert fake_model_gateway.selected_capabilities[-2:] == ["ocr", "vision"]
+    assert [item["purpose"] for item in fake_model_gateway.attachment_analyses[-2:]] == [
+        "ocr",
+        "vision",
+    ]
+    assert "OCR extracted text" in fake_model_gateway.attachment_analyses[-1]["prompt"]
+    assert "Vision understood image" in fake_model_gateway.chat_messages[-1][-1]["content"]
+    assert "OCR extracted text" in fake_model_gateway.chat_messages[-1][-1]["content"]
+
+
+def test_workspace_image_uses_vision_only_by_default(
+    client, user_headers, fake_model_gateway
+):
+    conversation = client.post(
+        "/api/v1/agent/conversations", headers=user_headers, json={}
+    ).json()
+    response = client.post(
+        f"/api/v1/agent/conversations/{conversation['id']}/messages",
+        headers=user_headers,
+        data={"message": "描述图片"},
+        files={"file": ("photo.jpg", b"\xff\xd8\xff" + b"image", "image/jpeg")},
+    )
+    assert response.status_code == 200, response.text
+    stored = response.json()["messages"][0]["files"][0]
+    assert stored["analysis_mode"] == "vision"
+    assert stored["analysis_model"] == "test-vision-model"
+    assert stored["ocr_model"] is None
+    assert fake_model_gateway.selected_capabilities == ["vision"]
+    assert [item["purpose"] for item in fake_model_gateway.attachment_analyses] == [
+        "vision"
+    ]
+
+
+def test_workspace_image_rejects_extension_signature_mismatch(
+    client, user_headers, fake_model_gateway
+):
+    conversation = client.post(
+        "/api/v1/agent/conversations", headers=user_headers, json={}
+    ).json()
+    response = client.post(
+        f"/api/v1/agent/conversations/{conversation['id']}/messages",
+        headers=user_headers,
+        data={"message": "看看图片"},
+        files={"file": ("fake.png", b"not an image", "image/png")},
+    )
+    assert response.status_code == 422
+    assert "扩展名与实际文件格式不一致" in response.text

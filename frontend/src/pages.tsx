@@ -777,7 +777,7 @@ export function WorkflowPage() {
   const { skillId } = useParams();
   const { data: skill, loading } = useLoad<Skill | null>(`/skills/${skillId}`, null);
   const { data: jobs, setData: setJobs } = useLoad<WorkflowJob[]>(`/jobs?skill_id=${encodeURIComponent(skillId || "")}`, []);
-  const { data: availableModels } = useLoad<AvailableModels>("/models/available", { configured: false, models: [], default_model: null });
+  const { data: availableModels } = useLoad<AvailableModels>("/models/available", { configured: false, models: [], default_model: null, vision_configured: false, default_vision_model: null, ocr_configured: false, default_ocr_model: null });
   const query = new URLSearchParams(window.location.search);
   const requestedVersion = query.get("version");
   const requestedJob = query.get("job");
@@ -787,6 +787,7 @@ export function WorkflowPage() {
   const [messageText, setMessageText] = useState(query.get("prompt") || "");
   const [attachment, setAttachment] = useState<File | null>(null);
   const [selectedModelName, setSelectedModelName] = useState("");
+  const [ocrEnabled, setOcrEnabled] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [deleteTarget, setDeleteTarget] = useState<WorkflowJob | null>(null);
@@ -853,7 +854,7 @@ export function WorkflowPage() {
     setSelectedVersionId(versionId);
     setCreatingNewTask(false);
     setSelectedJobId(jobs.find((item) => item.skill_version_id === versionId)?.id || "");
-    setAttachment(null); setMessageText(""); setError("");
+    setAttachment(null); setMessageText(""); setOcrEnabled(false); setError("");
   }
 
   function startNewTask() {
@@ -862,6 +863,7 @@ export function WorkflowPage() {
     setSelectedJobId("");
     setMessageText("");
     setAttachment(null);
+    setOcrEnabled(false);
     setError("");
     if (fileInputRef.current) fileInputRef.current.value = "";
     window.requestAnimationFrame(() => messageInputRef.current?.focus());
@@ -876,13 +878,14 @@ export function WorkflowPage() {
     body.set("version_id", selectedVersion.id);
     body.set("instruction", instruction);
     if (selectedModelName) body.set("model_name", selectedModelName);
+    if (ocrEnabled) body.set("ocr_enabled", "true");
     if (attachment) body.set("file", attachment);
     try {
       const job = await api<WorkflowJob>("/jobs", { method: "POST", body });
       setJobs((current) => [job, ...current.filter((item) => item.id !== job.id)]);
       setCreatingNewTask(false);
       setSelectedJobId(job.id);
-      setMessageText(""); setAttachment(null);
+      setMessageText(""); setAttachment(null); setOcrEnabled(false);
       if (fileInputRef.current) fileInputRef.current.value = "";
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "任务启动失败");
@@ -1005,8 +1008,9 @@ export function WorkflowPage() {
         {!selectedVersion.runtime_runnable && <div className="agent-context-message workflow-agent-error-message">{selectedVersion.runtime_block_reason || "当前运行环境不可用"}</div>}
         <form className="agent-composer workflow-agent-composer" onSubmit={submitAgent}>
           <label className="agent-model-picker"><span>运行模型</span><select aria-label="选择运行模型" value={selectedModelName} disabled={busy || jobActive || !availableModels.configured} onChange={(event) => setSelectedModelName(event.target.value)}>{availableModels.models.map((modelName) => <option key={modelName} value={modelName}>{modelName}</option>)}</select></label>
+          <label className={`agent-ocr-toggle workflow${ocrEnabled ? " active" : ""}`} title={availableModels.ocr_configured ? "同时使用 OCR 提取图片文字，再由视觉模型理解" : "请先在平台设置中配置 OCR 模型"}><input type="checkbox" checked={ocrEnabled} disabled={busy || jobActive || !availableModels.ocr_configured} onChange={(event) => setOcrEnabled(event.target.checked)} /><span>OCR 识别</span></label>
           <textarea ref={messageInputRef} aria-label="给 SkillGo Agent 发送消息" rows={3} maxLength={20000} value={messageText} disabled={busy || jobActive || !selectedVersion.runtime_runnable} onChange={(event) => { setMessageText(event.target.value); setError(""); }} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); event.currentTarget.form?.requestSubmit(); } }} placeholder={jobActive ? "当前任务正在独立沙箱中运行…" : `告诉 ${skill.name} 你想完成什么…`} />
-          <div><button className="agent-attach" type="button" title="添加附件" aria-label="添加附件" disabled={busy || jobActive || !selectedVersion.runtime_runnable} onClick={() => fileInputRef.current?.click()}><Paperclip /></button><input ref={fileInputRef} type="file" hidden accept=".txt,.md,.csv,.json,.yaml,.yml,.log,.html,.htm,.xml,.docx,.xlsx,.pdf,.png,.jpg,.jpeg" onChange={(event) => { const file = event.target.files?.[0] || null; if (file && file.size > 10 * 1024 * 1024) { event.target.value = ""; setAttachment(null); setError("附件不能超过 10 MB"); return; } setAttachment(file); setError(""); }} /><span className="agent-composer-hint">支持 TXT、DOCX、XLSX、PDF、图片等文件 · 最大 10 MB</span><button type="submit" aria-label="发送并开始任务" disabled={(!messageText.trim() && !attachment) || busy || jobActive || !selectedVersion.runtime_runnable}>{busy ? <RotateCw className="spin-icon" /> : <SendHorizontal />}</button></div>
+          <div><button className="agent-attach" type="button" title="添加附件" aria-label="添加附件" disabled={busy || jobActive || !selectedVersion.runtime_runnable} onClick={() => fileInputRef.current?.click()}><Paperclip /></button><input ref={fileInputRef} type="file" hidden accept=".txt,.md,.csv,.json,.yaml,.yml,.log,.html,.htm,.xml,.docx,.xlsx,.pdf,.png,.jpg,.jpeg,.webp" onChange={(event) => { const file = event.target.files?.[0] || null; if (file && file.size > 10 * 1024 * 1024) { event.target.value = ""; setAttachment(null); setError("附件不能超过 10 MB"); return; } setAttachment(file); setError(""); }} /><span className="agent-composer-hint">支持 TXT、DOCX、XLSX、PDF、图片等文件 · 最大 10 MB</span><button type="submit" aria-label="发送并开始任务" disabled={(!messageText.trim() && !attachment) || busy || jobActive || !selectedVersion.runtime_runnable}>{busy ? <RotateCw className="spin-icon" /> : <SendHorizontal />}</button></div>
         </form>
       </section>
     </div>
@@ -1051,7 +1055,7 @@ export function RunSkillPage() {
   const { skillId } = useParams();
   const { data: skill, loading } = useLoad<Skill | null>(`/skills/${skillId}`, null);
   const { data: conversations, setData: setConversations } = useLoad<Conversation[]>(`/conversations?skill_id=${encodeURIComponent(skillId || "")}`, []);
-  const { data: availableModels } = useLoad<AvailableModels>("/models/available", { configured: false, models: [], default_model: null });
+  const { data: availableModels } = useLoad<AvailableModels>("/models/available", { configured: false, models: [], default_model: null, vision_configured: false, default_vision_model: null, ocr_configured: false, default_ocr_model: null });
   const requestedVersion = new URLSearchParams(window.location.search).get("version");
   const requestedConversation = new URLSearchParams(window.location.search).get("conversation");
   const requestedPrompt = new URLSearchParams(window.location.search).get("prompt") || "";
@@ -1616,7 +1620,7 @@ export function AdminStoragePage() {
 }
 
 export function ModelSettingsPage() {
-  const emptyCatalog: ModelConnectionList = { configured: false, default_model: null, items: [] };
+  const emptyCatalog: ModelConnectionList = { configured: false, default_model: null, default_vision_model: null, default_ocr_model: null, items: [] };
   const { data: catalog, setData: setCatalog, loading } = useLoad<ModelConnectionList>("/super-admin/models", emptyCatalog);
   const [editingModel, setEditingModel] = useState<ModelConnectionItem | null>(null);
   const [baseUrl, setBaseUrl] = useState("");
@@ -1627,7 +1631,10 @@ export function ModelSettingsPage() {
   const [jsonMode, setJsonMode] = useState(true);
   const [nativeTools, setNativeTools] = useState(true);
   const [tlsVerify, setTlsVerify] = useState(true);
+  const [capabilities, setCapabilities] = useState<Array<"chat" | "vision" | "ocr">>(["chat"]);
   const [isDefault, setIsDefault] = useState(false);
+  const [isDefaultVision, setIsDefaultVision] = useState(false);
+  const [isDefaultOcr, setIsDefaultOcr] = useState(false);
   const [enabled, setEnabled] = useState(true);
   const [busyAction, setBusyAction] = useState<"save" | "test" | "">("");
   const [message, setMessage] = useState("");
@@ -1646,7 +1653,10 @@ export function ModelSettingsPage() {
     setJsonMode(item?.json_mode ?? true);
     setNativeTools(item?.native_tools ?? true);
     setTlsVerify(item?.tls_verify ?? true);
+    setCapabilities(item?.capabilities?.length ? item.capabilities : ["chat"]);
     setIsDefault(item?.is_default ?? catalog.items.length === 0);
+    setIsDefaultVision(item?.is_default_vision ?? false);
+    setIsDefaultOcr(item?.is_default_ocr ?? false);
     setEnabled(item?.enabled ?? true);
     setMessage(""); setMessageTone("");
     setTestResult(null);
@@ -1688,16 +1698,28 @@ export function ModelSettingsPage() {
       json_mode: jsonMode,
       native_tools: nativeTools,
       tls_verify: tlsVerify,
+      capabilities,
       is_default: isDefault,
+      is_default_vision: isDefaultVision,
+      is_default_ocr: isDefaultOcr,
       enabled,
       model_id: editingModel?.id || null,
     };
   }
 
+  function toggleCapability(capability: "chat" | "vision" | "ocr", checked: boolean) {
+    setCapabilities((current) => checked
+      ? [...current.filter((item) => item !== capability), capability]
+      : current.filter((item) => item !== capability));
+    if (!checked && capability === "chat") setIsDefault(false);
+    if (!checked && capability === "vision") setIsDefaultVision(false);
+    if (!checked && capability === "ocr") setIsDefaultOcr(false);
+  }
+
   async function testConnection(item?: ModelConnectionItem) {
     setBusyAction("test"); setMessage(""); setTestResult(null);
     try {
-      const candidate = item ? { base_url: item.base_url, api_key: null, clear_api_key: false, models: [item.model_name], default_model: item.model_name, timeout_seconds: item.timeout_seconds, temperature: item.temperature, json_mode: item.json_mode, native_tools: item.native_tools, tls_verify: item.tls_verify, model_id: item.id } : payload();
+      const candidate = item ? { base_url: item.base_url, api_key: null, clear_api_key: false, models: [item.model_name], default_model: item.model_name, timeout_seconds: item.timeout_seconds, temperature: item.temperature, json_mode: item.json_mode, native_tools: item.native_tools, tls_verify: item.tls_verify, capabilities: item.capabilities, model_id: item.id } : payload();
       const result = await api<ModelConnectionTestResult>("/super-admin/model/test", { method: "POST", body: JSON.stringify(candidate) });
       setTestResult(result);
       setMessageTone("success");
@@ -1712,8 +1734,8 @@ export function ModelSettingsPage() {
     try {
       const path = editingModel ? `/super-admin/models/${editingModel.id}` : "/super-admin/models";
       const updated = await api<ModelConnectionItem>(path, { method: editingModel ? "PUT" : "POST", body: JSON.stringify(payload()) });
-      const items = editingModel ? catalog.items.map((item) => item.id === updated.id ? updated : isDefault ? { ...item, is_default: false } : item) : [...catalog.items.map((item) => isDefault ? { ...item, is_default: false } : item), updated];
-      setCatalog({ configured: items.some((item) => item.enabled), default_model: items.find((item) => item.is_default)?.model_name || null, items });
+      const items = (editingModel ? catalog.items.map((item) => item.id === updated.id ? updated : item) : [...catalog.items, updated]).map((item) => item.id === updated.id ? item : ({ ...item, is_default: isDefault ? false : item.is_default, is_default_vision: isDefaultVision ? false : item.is_default_vision, is_default_ocr: isDefaultOcr ? false : item.is_default_ocr }));
+      setCatalog({ configured: items.some((item) => item.enabled && item.capabilities.includes("chat")), default_model: items.find((item) => item.is_default)?.model_name || null, default_vision_model: items.find((item) => item.is_default_vision)?.model_name || null, default_ocr_model: items.find((item) => item.is_default_ocr)?.model_name || null, items });
       setMessageTone("success");
       setMessage(editingModel ? "模型配置已更新。" : "模型已新增并可以在对话和 Skill 任务中选择。");
       setEditingModel(null); setApiKey(""); setEditorOpen(false);
@@ -1721,12 +1743,15 @@ export function ModelSettingsPage() {
     finally { setBusyAction(""); }
   }
 
-  async function makeDefault(item: ModelConnectionItem) {
+  async function makeDefault(item: ModelConnectionItem, capability: "chat" | "vision" | "ocr" = "chat") {
     setBusyAction("save"); setMessage(""); setMessageTone("");
     try {
-      const updated = await api<ModelConnectionItem>(`/super-admin/models/${item.id}/default`, { method: "POST" });
-      setCatalog({ configured: true, default_model: updated.model_name, items: catalog.items.map((current) => ({ ...current, is_default: current.id === updated.id })) });
-      setMessageTone("success"); setMessage(`${updated.model_name} 已设为平台默认模型。`);
+      const path = capability === "chat" ? `/super-admin/models/${item.id}/default` : `/super-admin/models/${item.id}/default/${capability}`;
+      const updated = await api<ModelConnectionItem>(path, { method: "POST" });
+      const flag = capability === "chat" ? "is_default" : capability === "vision" ? "is_default_vision" : "is_default_ocr";
+      const items = catalog.items.map((current) => ({ ...current, [flag]: current.id === updated.id }));
+      setCatalog({ ...catalog, configured: items.some((current) => current.enabled && current.capabilities.includes("chat")), default_model: capability === "chat" ? updated.model_name : catalog.default_model, default_vision_model: capability === "vision" ? updated.model_name : catalog.default_vision_model, default_ocr_model: capability === "ocr" ? updated.model_name : catalog.default_ocr_model, items });
+      setMessageTone("success"); setMessage(`${updated.model_name} 已设为默认${capability === "chat" ? "对话" : capability === "vision" ? "视觉" : " OCR"}模型。`);
     } catch (reason) { setMessageTone("error"); setMessage(reason instanceof Error ? reason.message : "设置默认模型失败"); }
     finally { setBusyAction(""); }
   }
@@ -1737,7 +1762,7 @@ export function ModelSettingsPage() {
     try {
       await api<void>(`/super-admin/models/${item.id}`, { method: "DELETE" });
       const items = catalog.items.filter((current) => current.id !== item.id);
-      setCatalog({ configured: items.some((current) => current.enabled), default_model: items.find((current) => current.is_default)?.model_name || items.find((current) => current.enabled)?.model_name || null, items });
+      setCatalog({ configured: items.some((current) => current.enabled && current.capabilities.includes("chat")), default_model: items.find((current) => current.is_default)?.model_name || null, default_vision_model: items.find((current) => current.is_default_vision)?.model_name || null, default_ocr_model: items.find((current) => current.is_default_ocr)?.model_name || null, items });
       if (editingModel?.id === item.id) { setEditorOpen(false); setEditingModel(null); }
     } catch (reason) { setMessage(reason instanceof Error ? reason.message : "删除模型失败"); }
     finally { setBusyAction(""); }
@@ -1745,11 +1770,17 @@ export function ModelSettingsPage() {
 
   return <>
     <Breadcrumbs items={[{ label: "工作台", to: "/app" }, { label: "平台设置" }]} />
-    <div className="workspace-section-head"><div><h1>模型</h1><p>{catalog.items.length} 个模型连接</p></div><button className="button primary compact" type="button" onClick={() => resetEditor(null)}><Plus />新增模型</button></div>
+    <div className="workspace-section-head"><div><h1>平台模型</h1><p>统一管理对话、视觉理解与 OCR 识别能力 · {catalog.items.length} 个连接</p></div><button className="button primary compact" type="button" onClick={() => resetEditor(null)}><Plus />新增模型</button></div>
+    {!loading && <section className="model-role-grid">
+      {([{"key":"chat","title":"默认对话模型","description":"负责工作台回答与 Skill 推理","value":catalog.default_model},{"key":"vision","title":"默认视觉模型","description":"默认理解用户上传的图片","value":catalog.default_vision_model},{"key":"ocr","title":"默认 OCR 模型","description":"用户开启 OCR 识别时提取文字","value":catalog.default_ocr_model}] as const).map((role) => {
+        const candidates = catalog.items.filter((item) => item.enabled && item.capabilities.includes(role.key));
+        return <article key={role.key}><header><span>{role.key === "chat" ? <MessageSquareText /> : role.key === "vision" ? <Sparkles /> : <FileText />}</span><div><strong>{role.title}</strong><small>{role.description}</small></div></header><select aria-label={role.title} value={role.value || ""} disabled={!candidates.length || Boolean(busyAction)} onChange={(event) => { const item = candidates.find((candidate) => candidate.model_name === event.target.value); if (item) void makeDefault(item, role.key); }}><option value="">{candidates.length ? "选择默认模型" : "尚未配置"}</option>{candidates.map((item) => <option key={item.id} value={item.model_name}>{item.model_name}</option>)}</select></article>;
+      })}
+    </section>}
     {loading ? <div className="detail-loading compact" /> : catalog.items.length ? <section className="model-compact-list">{catalog.items.map((item) => <article key={item.id}>
-      <div className="model-compact-identity"><span><Workflow /></span><div><strong>{item.model_name}</strong><small>{item.base_url}</small></div></div>
-      <b className={item.enabled ? item.is_default ? "default" : "available" : "disabled"}>{item.is_default ? "默认" : item.enabled ? "可用" : "停用"}</b>
-      <div className="model-row-actions"><button type="button" onClick={() => void testConnection(item)}><Zap />测试</button><button type="button" onClick={() => resetEditor(item)}><PencilLine />编辑</button>{!item.is_default && item.enabled && <button type="button" onClick={() => void makeDefault(item)}><Check />设为默认</button>}<button className="danger" type="button" onClick={() => void removeModel(item)}><Trash2 />删除</button></div>
+      <div className="model-compact-identity"><span><Workflow /></span><div><strong>{item.model_name}</strong><small>{item.base_url}</small><div className="model-capability-tags">{item.capabilities.map((capability) => <i key={capability}>{capability === "chat" ? "对话" : capability === "vision" ? "视觉" : "OCR"}</i>)}{item.is_default && <em>默认对话</em>}{item.is_default_vision && <em>默认视觉</em>}{item.is_default_ocr && <em>默认 OCR</em>}</div></div></div>
+      <b className={item.enabled ? "available" : "disabled"}>{item.enabled ? "可用" : "停用"}</b>
+      <div className="model-row-actions"><button type="button" onClick={() => void testConnection(item)}><Zap />测试</button><button type="button" onClick={() => resetEditor(item)}><PencilLine />编辑</button><button className="danger" type="button" onClick={() => void removeModel(item)}><Trash2 />删除</button></div>
     </article>)}</section> : <EmptyState icon={AlertTriangle} title="还没有模型" description="新增模型连接后，即可用于对话、Skill 任务和 API 调用。" action={<button className="button primary" type="button" onClick={() => resetEditor(null)}>新增模型</button>} />}
 
     {message && !editorOpen && <div className={`model-runtime-message ${messageTone}`} aria-live="polite">{messageTone === "success" ? <Check /> : <AlertTriangle />}<span>{message}</span></div>}
@@ -1760,7 +1791,7 @@ export function ModelSettingsPage() {
         <header className="model-editor-drawer-head"><div><span className="eyebrow">{editingModel ? "EDIT MODEL" : "ADD MODEL"}</span><strong>{editingModel ? `编辑 ${editingModel.model_name}` : "新增模型"}</strong><small>独立配置连接地址、密钥和运行参数</small></div><button className="model-editor-close" type="button" aria-label="关闭配置编辑器" onClick={closeEditor}><X /></button></header>
         <div className="model-editor-drawer-body">
           <form className="model-settings-panel" onSubmit={saveConfig}>
-            <div className="model-settings-intro"><h2>连接信息</h2><p>保存后，模型会立即出现在对话与 Skill 任务的模型选择器中。</p></div>
+            <div className="model-settings-intro"><h2>连接与能力</h2><p>只有具备对话能力的模型会出现在工作台模型选择器中；视觉和 OCR 由平台按附件处理方式自动调用。</p></div>
             <div className="model-settings-form">
               <label>模型名称<input autoFocus required value={modelName} placeholder="例如 deepseek-v4-flash" onChange={(event) => setModelName(event.target.value)} /><small>需要与模型服务实际支持的 model 参数一致。</small></label>
               <label>Base URL<input type="url" required value={baseUrl} placeholder="https://api.example.com/v1" onChange={(event) => setBaseUrl(event.target.value)} /></label>
@@ -1768,12 +1799,19 @@ export function ModelSettingsPage() {
               <label>超时时间（秒）<input type="number" min={5} max={600} value={timeoutSeconds} onChange={(event) => setTimeoutSeconds(Number(event.target.value))} /></label>
               <label>Temperature<input type="number" min={0} max={2} step={0.1} value={temperature} onChange={(event) => setTemperature(Number(event.target.value))} /></label>
             </div>
+            <section className="model-capability-editor"><header><strong>模型能力</strong><small>至少选择一种能力</small></header><div>
+              <label className={capabilities.includes("chat") ? "active" : ""}><input type="checkbox" checked={capabilities.includes("chat")} onChange={(event) => toggleCapability("chat", event.target.checked)} /><span><b>对话</b><small>回答、推理和 Skill 调度</small></span></label>
+              <label className={capabilities.includes("vision") ? "active" : ""}><input type="checkbox" checked={capabilities.includes("vision")} onChange={(event) => toggleCapability("vision", event.target.checked)} /><span><b>视觉</b><small>理解图片、图表和界面</small></span></label>
+              <label className={capabilities.includes("ocr") ? "active" : ""}><input type="checkbox" checked={capabilities.includes("ocr")} onChange={(event) => toggleCapability("ocr", event.target.checked)} /><span><b>OCR</b><small>提取图片中的准确文字</small></span></label>
+            </div></section>
             <div className="model-option-row">
-              <label><input type="checkbox" checked={nativeTools} onChange={(event) => setNativeTools(event.target.checked)} /><span>工具调用</span></label>
-              <label><input type="checkbox" checked={isDefault} onChange={(event) => setIsDefault(event.target.checked)} /><span>设为平台默认</span></label>
+              <label><input type="checkbox" checked={nativeTools} disabled={!capabilities.includes("chat")} onChange={(event) => setNativeTools(event.target.checked)} /><span>支持工具调用</span></label>
+              {capabilities.includes("chat") && <label><input type="checkbox" checked={isDefault} onChange={(event) => setIsDefault(event.target.checked)} /><span>默认对话模型</span></label>}
+              {capabilities.includes("vision") && <label><input type="checkbox" checked={isDefaultVision} onChange={(event) => setIsDefaultVision(event.target.checked)} /><span>默认视觉模型</span></label>}
+              {capabilities.includes("ocr") && <label><input type="checkbox" checked={isDefaultOcr} onChange={(event) => setIsDefaultOcr(event.target.checked)} /><span>默认 OCR 模型</span></label>}
             </div>
             {message && <div className={`model-runtime-message model-editor-message ${messageTone}`} aria-live="polite">{messageTone === "success" ? <Check /> : <AlertTriangle />}<span>{message}</span></div>}
-            <div className="model-settings-actions"><span>{editingModel ? "保存后只更新当前模型" : "保存后加入现有模型列表"}</span><div><button className="button secondary" type="button" disabled={Boolean(busyAction) || !baseUrl || !modelName} onClick={() => void testConnection()}>{busyAction === "test" ? <RotateCw className="spin-icon" /> : <Zap />}测试连接</button><button className="button primary" type="submit" disabled={Boolean(busyAction) || !baseUrl || !modelName}>{busyAction === "save" ? <RotateCw className="spin-icon" /> : <Save />}{editingModel ? "保存修改" : "新增模型"}</button></div></div>
+            <div className="model-settings-actions"><span>{editingModel ? "保存后只更新当前模型" : "保存后加入现有模型列表"}</span><div><button className="button secondary" type="button" disabled={Boolean(busyAction) || !baseUrl || !modelName || !capabilities.length} onClick={() => void testConnection()}>{busyAction === "test" ? <RotateCw className="spin-icon" /> : <Zap />}测试连接</button><button className="button primary" type="submit" disabled={Boolean(busyAction) || !baseUrl || !modelName || !capabilities.length}>{busyAction === "save" ? <RotateCw className="spin-icon" /> : <Save />}{editingModel ? "保存修改" : "新增模型"}</button></div></div>
           </form>
           <aside className="model-edit-guide"><p><ShieldCheck />API Key 只在服务端保存；点击“测试连接”可在保存前确认配置是否可用。</p></aside>
         </div>

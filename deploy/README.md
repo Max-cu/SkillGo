@@ -28,7 +28,7 @@
 ```bash
 git clone https://github.com/Max-cu/SkillGo.git
 cd SkillGo
-git checkout v0.2.3
+git checkout v0.2.4
 ```
 
 也可从 [GitHub Releases](https://github.com/Max-cu/SkillGo/releases) 下载对应版本的源码包。

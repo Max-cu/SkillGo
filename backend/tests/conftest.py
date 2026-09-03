@@ -85,6 +85,8 @@ class FakeModelGateway:
         self.routed_skills: list[dict] = []
         self.requested_models: list[str] = []
         self.chat_messages: list[list[dict[str, str]]] = []
+        self.attachment_analyses: list[dict[str, object]] = []
+        self.selected_capabilities: list[str] = []
 
     def for_model(self, model_name):
         selected = (model_name or self.model_name).strip()
@@ -95,6 +97,31 @@ class FakeModelGateway:
         self.requested_models.append(selected)
         self.model_name = selected
         return self
+
+    def for_capability(self, capability):
+        if capability not in {"vision", "ocr"}:
+            from app.model_gateway import ModelGatewayError
+
+            raise ModelGatewayError("MODEL_CAPABILITY_MISMATCH", "Unsupported capability")
+        self.selected_capabilities.append(capability)
+        return self
+
+    async def analyze_image(self, *, data, media_type, prompt, purpose):
+        self.attachment_analyses.append(
+            {
+                "data": data,
+                "media_type": media_type,
+                "prompt": prompt,
+                "purpose": purpose,
+            }
+        )
+        message = "OCR extracted text" if purpose == "ocr" else "Vision understood image"
+        return ModelResult(
+            output={"message": message},
+            model_name=f"test-{purpose}-model",
+            token_usage={"total_tokens": 9},
+            latency_ms=12,
+        )
 
     async def analyze_skill(self, *, skill_md, package_metadata):
         self.analyzed_skills.append({"skill_md": skill_md, "package_metadata": package_metadata})

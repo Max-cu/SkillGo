@@ -249,7 +249,10 @@ class ModelConnectionConfig(TimestampMixin, Base):
     json_mode: Mapped[bool] = mapped_column(Boolean, default=True)
     native_tools: Mapped[bool] = mapped_column(Boolean, default=True)
     tls_verify: Mapped[bool] = mapped_column(Boolean, default=True)
+    capabilities: Mapped[list] = mapped_column(JSON, default=lambda: ["chat"])
     is_default: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    is_default_vision: Mapped[bool] = mapped_column(Boolean, default=False)
+    is_default_ocr: Mapped[bool] = mapped_column(Boolean, default=False)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
 
 
@@ -337,6 +340,11 @@ class AgentMessageFile(Base):
     sha256: Mapped[str] = mapped_column(String(64), index=True)
     storage_path: Mapped[str] = mapped_column(String(600))
     extracted_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    analysis_mode: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    analysis_status: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    analysis_model: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    ocr_model: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    analysis_error: Mapped[str | None] = mapped_column(String(1000), nullable=True)
     purged_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
 
@@ -481,6 +489,7 @@ class WorkflowJob(TimestampMixin, Base):
     instruction: Mapped[str] = mapped_column(Text, default="")
     network_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     network_enabled_by: Mapped[list] = mapped_column(JSON, default=list)
+    attachment_analysis_mode: Mapped[str] = mapped_column(String(32), default="vision")
     error_code: Mapped[str | None] = mapped_column(String(80), nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -773,6 +782,11 @@ class JobInputFile(Base):
     storage_path: Mapped[str] = mapped_column(String(600))
     readable: Mapped[bool] = mapped_column(Boolean, default=False)
     extracted_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    analysis_mode: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    analysis_status: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    analysis_model: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    ocr_model: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    analysis_error: Mapped[str | None] = mapped_column(String(1000), nullable=True)
     purged_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
 

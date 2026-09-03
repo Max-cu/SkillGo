@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import json
 import zipfile
+import base64
 from dataclasses import replace
 
 from app import config
@@ -10,6 +11,11 @@ from app.database import SessionLocal
 from app.models import WorkflowJobSkill
 from conftest import make_email, make_password
 from test_skill_flow import sandbox_network_skill_zip, skill_zip
+
+
+ONE_PIXEL_PNG = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+)
 
 
 def create_version(client, headers, *, slug: str, package: bytes) -> tuple[dict, dict]:
@@ -144,6 +150,35 @@ def test_agent_job_accepts_natural_language_without_attachment(
     assert job["status"] == "succeeded"
     assert job["events"][-1]["event_type"] == "result"
     assert job["events"][-1]["status"] == "succeeded"
+
+
+def test_skill_job_persists_platform_image_analysis(
+    client, user_headers, fake_model_gateway
+):
+    _, version = create_version(
+        client, user_headers, slug="image-understanding-job", package=skill_zip()
+    )
+    response = client.post(
+        "/api/v1/jobs",
+        headers=user_headers,
+        data={
+            "version_id": version["id"],
+            "instruction": "根据图片给出结论",
+            "ocr_enabled": "true",
+        },
+        files={"file": ("evidence.png", ONE_PIXEL_PNG, "image/png")},
+    )
+    assert response.status_code == 201, response.text
+    job = client.get(
+        f"/api/v1/jobs/{response.json()['id']}", headers=user_headers
+    ).json()
+    assert job["attachment_analysis_mode"] == "vision_with_ocr"
+    assert job["input_files"][0]["readable"] is True
+    assert job["input_files"][0]["analysis_mode"] == "vision_with_ocr"
+    assert job["input_files"][0]["analysis_status"] == "ready"
+    assert job["input_files"][0]["analysis_model"] == "test-vision-model"
+    assert job["input_files"][0]["ocr_model"] == "test-ocr-model"
+    assert fake_model_gateway.selected_capabilities[-2:] == ["ocr", "vision"]
 
 
 def test_finished_workflow_job_can_be_deleted(

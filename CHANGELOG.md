@@ -4,6 +4,27 @@
 
 ## [Unreleased]
 
+## [0.2.4] - 2026-09-03
+
+### Added
+
+- 平台模型连接可分别声明对话、视觉和 OCR 能力，并为三类能力独立设置默认模型。
+- PNG、JPG/JPEG 和 WebP 图片附件默认由视觉模型理解；用户开启“OCR 识别”后，按 OCR、视觉理解、对话回答的顺序协同处理。
+- 附件和任务记录保存分析模式、状态、视觉模型、OCR 模型及降级错误，支持审计和问题定位。
+- Alembic 迁移为已有模型、对话附件和任务输入安全补齐附件智能字段，旧模型默认保持对话能力。
+
+### Changed
+
+- 平台设置重构为模型角色概览、独立默认项和能力配置抽屉；工作台在 OCR 模型未配置时明确禁用 OCR 开关。
+- 视觉与 OCR 使用 OpenAI-compatible 多模态 Chat Completions 接口；OCR 失败时保留警告并继续视觉理解。
+- 图片分析结果可以作为 Skill 任务的附件证据传入执行上下文，但原始图片仍由既有任务存储和沙箱边界管理。
+
+### Security
+
+- 图片扩展名必须与 PNG、JPEG 或 WebP 文件签名一致，避免仅凭 Content-Type 接受伪造图片。
+- 图片、OCR 文字和视觉分析结果始终作为不可信数据，不得覆盖平台、用户或已审核 Skill 指令。
+- 测试新模型连接时不再复用其他模型的已保存 API Key，避免跨模型服务误发凭据。
+
 ## [0.2.3] - 2026-08-26
 
 ### Added
@@ -78,7 +99,8 @@
 - 任务容器默认非 root、只读根文件系统、去除 Linux Capabilities 并限制 CPU、内存和 PID。
 - 本机密钥、运行数据、用户文件和备份默认被版本库忽略。
 
-[Unreleased]: https://github.com/Max-cu/SkillGo/compare/v0.2.3...HEAD
+[Unreleased]: https://github.com/Max-cu/SkillGo/compare/v0.2.4...HEAD
+[0.2.4]: https://github.com/Max-cu/SkillGo/compare/v0.2.3...v0.2.4
 [0.2.3]: https://github.com/Max-cu/SkillGo/compare/v0.2.2...v0.2.3
 [0.2.2]: https://github.com/Max-cu/SkillGo/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/Max-cu/SkillGo/compare/v0.2.0...v0.2.1

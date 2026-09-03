@@ -145,6 +145,11 @@ class JobInputFileRead(BaseModel):
     size_bytes: int
     sha256: str
     readable: bool
+    analysis_mode: str | None = None
+    analysis_status: str | None = None
+    analysis_model: str | None = None
+    ocr_model: str | None = None
+    analysis_error: str | None = None
     purged_at: datetime | None
     created_at: datetime
 
@@ -199,6 +204,7 @@ class WorkflowJobRead(BaseModel):
     instruction: str
     network_enabled: bool = False
     network_enabled_by: list[dict] = Field(default_factory=list)
+    attachment_analysis_mode: str = "vision"
     message_content: list[dict] = Field(default_factory=list)
     routing_mode: str = "legacy"
     model_name: str | None
@@ -249,6 +255,11 @@ class AgentMessageFileRead(BaseModel):
     content_type: str
     size_bytes: int
     sha256: str
+    analysis_mode: str | None = None
+    analysis_status: str | None = None
+    analysis_model: str | None = None
+    ocr_model: str | None = None
+    analysis_error: str | None = None
     purged_at: datetime | None
     created_at: datetime
 
@@ -520,6 +531,10 @@ class AvailableModels(BaseModel):
     configured: bool
     models: list[str] = Field(default_factory=list)
     default_model: str | None
+    vision_configured: bool = False
+    default_vision_model: str | None = None
+    ocr_configured: bool = False
+    default_ocr_model: str | None = None
 
 
 class ModelConfigRead(AvailableModels):
@@ -548,6 +563,9 @@ class ModelConfigUpdate(BaseModel):
 
 class ModelConnectionTestRequest(ModelConfigUpdate):
     model_id: str | None = Field(default=None, max_length=36)
+    capabilities: list[Literal["chat", "vision", "ocr"]] = Field(
+        default_factory=lambda: ["chat"], min_length=1, max_length=3
+    )
 
 
 class ModelConnectionTestResult(BaseModel):
@@ -567,7 +585,10 @@ class ModelConnectionItem(BaseModel):
     json_mode: bool
     native_tools: bool
     tls_verify: bool
+    capabilities: list[Literal["chat", "vision", "ocr"]] = Field(default_factory=list)
     is_default: bool
+    is_default_vision: bool = False
+    is_default_ocr: bool = False
     enabled: bool
     source: str = "database"
 
@@ -575,6 +596,8 @@ class ModelConnectionItem(BaseModel):
 class ModelConnectionList(BaseModel):
     configured: bool
     default_model: str | None
+    default_vision_model: str | None = None
+    default_ocr_model: str | None = None
     items: list[ModelConnectionItem] = Field(default_factory=list)
 
 
@@ -587,8 +610,25 @@ class ModelConnectionCreate(BaseModel):
     json_mode: bool = True
     native_tools: bool = True
     tls_verify: bool = True
+    capabilities: list[Literal["chat", "vision", "ocr"]] = Field(
+        default_factory=lambda: ["chat"], min_length=1, max_length=3
+    )
     is_default: bool = False
+    is_default_vision: bool = False
+    is_default_ocr: bool = False
     enabled: bool = True
+
+    @model_validator(mode="after")
+    def defaults_require_capabilities(self):
+        unique = list(dict.fromkeys(self.capabilities))
+        self.capabilities = unique
+        if self.is_default and "chat" not in unique:
+            raise ValueError("默认对话模型必须具备对话能力")
+        if self.is_default_vision and "vision" not in unique:
+            raise ValueError("默认视觉模型必须具备视觉能力")
+        if self.is_default_ocr and "ocr" not in unique:
+            raise ValueError("默认 OCR 模型必须具备 OCR 能力")
+        return self
 
 
 class ModelConnectionUpdate(ModelConnectionCreate):

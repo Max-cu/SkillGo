@@ -13,6 +13,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from ..attachment_analysis import AttachmentAnalysis, analyze_image_attachment, image_media_type
 from ..config import settings
 from ..conversation_service import can_run_version
 from ..database import get_db
@@ -370,6 +371,7 @@ def _add_job_input_file(
     data: bytes,
     original_filename: str | None,
     content_type: str | None,
+    analysis: AttachmentAnalysis | None = None,
 ) -> tuple[JobInputFile, str | None]:
     try:
         filename = safe_workspace_filename(original_filename)
@@ -379,6 +381,8 @@ def _add_job_input_file(
     if any(item.filename.casefold() == filename.casefold() for item in job.input_files):
         raise HTTPException(status_code=422, detail=f"附件名称重复：{filename}")
 
+    if analysis is not None:
+        extracted_text = analysis.text
     input_file = JobInputFile(
         job=job,
         user_id=user.id,
@@ -389,6 +393,11 @@ def _add_job_input_file(
         storage_path="pending",
         readable=extracted_text is not None,
         extracted_text=extracted_text,
+        analysis_mode=analysis.mode if analysis else None,
+        analysis_status=analysis.status if analysis else None,
+        analysis_model=analysis.vision_model if analysis else None,
+        ocr_model=analysis.ocr_model if analysis else None,
+        analysis_error=analysis.error if analysis else None,
     )
     db.add(input_file)
     db.flush()
@@ -407,6 +416,33 @@ def _add_job_input_file(
     return input_file, extracted_text
 
 
+async def _analyze_job_attachment(
+    *,
+    gateway: OpenAICompatibleGateway,
+    data: bytes,
+    filename: str,
+    instruction: str,
+    ocr_enabled: bool,
+) -> AttachmentAnalysis | None:
+    try:
+        if image_media_type(filename, data) is None:
+            return None
+        return await analyze_image_attachment(
+            gateway=gateway,
+            filename=filename,
+            data=data,
+            user_instruction=instruction,
+            ocr_enabled=ocr_enabled,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except ModelGatewayError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail={"code": exc.code, "message": str(exc)},
+        ) from exc
+
+
 def _prepare_file_job(
     db: Session,
     *,
@@ -423,6 +459,8 @@ def _prepare_file_job(
     message_content: list[dict] | None = None,
     routing_mode: str = "legacy",
     audit_details: dict | None = None,
+    attachment_analysis_mode: str = "vision",
+    analysis: AttachmentAnalysis | None = None,
 ) -> tuple[WorkflowJob, str | None, dict]:
     selected_versions = versions or [version]
     profile = _job_runtime_profile(selected_versions)
@@ -445,6 +483,7 @@ def _prepare_file_job(
             }
             for item in network_versions
         ],
+        attachment_analysis_mode=attachment_analysis_mode,
     )
     db.add(job)
     db.flush()
@@ -488,6 +527,7 @@ def _prepare_file_job(
         data=data,
         original_filename=original_filename,
         content_type=content_type,
+        analysis=analysis,
     )
     set_step(
         db,
@@ -622,6 +662,7 @@ async def create_workflow_job(
     existing_file_ids: Annotated[str, Form(max_length=4_000)] = "",
     instruction: Annotated[str, Form(max_length=20_000)] = "",
     model_name: Annotated[str, Form(max_length=160)] = "",
+    ocr_enabled: Annotated[bool, Form()] = False,
     agent_conversation_id: Annotated[str, Form(max_length=36)] = "",
     user: User = Depends(current_user),
     db: Session = Depends(get_db),
@@ -733,6 +774,16 @@ async def create_workflow_job(
         trigger = "chat_message"
     else:
         trigger = "file_upload"
+    analyses = [
+        await _analyze_job_attachment(
+            gateway=gateway,
+            data=input_data,
+            filename=input_name,
+            instruction=resolved_instruction,
+            ocr_enabled=ocr_enabled,
+        )
+        for input_data, input_name, _ in resolved_inputs
+    ]
     data, original_filename, content_type = resolved_inputs[0]
     job, extracted_text, profile = _prepare_file_job(
         db,
@@ -748,9 +799,13 @@ async def create_workflow_job(
         model_name=selected_gateway.model_name,
         message_content=normalized_parts,
         routing_mode=routing_mode,
+        attachment_analysis_mode="vision_with_ocr" if ocr_enabled else "vision",
+        analysis=analyses[0],
     )
     extracted_texts = [extracted_text]
-    for extra_data, extra_filename, extra_content_type in resolved_inputs[1:]:
+    for (extra_data, extra_filename, extra_content_type), analysis in zip(
+        resolved_inputs[1:], analyses[1:]
+    ):
         _, extra_text = _add_job_input_file(
             db,
             job=job,
@@ -758,6 +813,7 @@ async def create_workflow_job(
             data=extra_data,
             original_filename=extra_filename,
             content_type=extra_content_type,
+            analysis=analysis,
         )
         extracted_texts.append(extra_text)
     if len(job.input_files) > 1:
@@ -809,6 +865,11 @@ async def create_workflow_job(
                 sha256=item.sha256,
                 storage_path="pending",
                 extracted_text=item.extracted_text,
+                analysis_mode=item.analysis_mode,
+                analysis_status=item.analysis_status,
+                analysis_model=item.analysis_model,
+                ocr_model=item.ocr_model,
+                analysis_error=item.analysis_error,
             )
             db.add(message_file)
             db.flush()
@@ -1247,6 +1308,19 @@ async def retry_workflow_job(
         raise HTTPException(status_code=409, detail="原任务输入文件已经不可用") from exc
 
     first_data, first_name, first_type = stored_inputs[0]
+    source_analyses = [
+        AttachmentAnalysis(
+            text=item.extracted_text or "",
+            mode=item.analysis_mode or source.attachment_analysis_mode,
+            status=item.analysis_status or "ready",
+            vision_model=item.analysis_model,
+            ocr_model=item.ocr_model,
+            error=item.analysis_error,
+        )
+        if item.analysis_mode and item.extracted_text
+        else None
+        for item in source.input_files
+    ]
     job, first_text, profile = _prepare_file_job(
         db,
         version=selected_versions[0],
@@ -1262,9 +1336,13 @@ async def retry_workflow_job(
         message_content=source.message_content,
         routing_mode=source.routing_mode,
         audit_details={"retry_of": source.id},
+        attachment_analysis_mode=source.attachment_analysis_mode,
+        analysis=source_analyses[0],
     )
     extracted_texts = [first_text]
-    for data, filename, content_type in stored_inputs[1:]:
+    for (data, filename, content_type), analysis in zip(
+        stored_inputs[1:], source_analyses[1:]
+    ):
         _, extracted_text = _add_job_input_file(
             db,
             job=job,
@@ -1272,6 +1350,7 @@ async def retry_workflow_job(
             data=data,
             original_filename=filename,
             content_type=content_type,
+            analysis=analysis,
         )
         extracted_texts.append(extracted_text)
     if len(job.input_files) > 1:
@@ -1324,6 +1403,11 @@ async def retry_workflow_job(
                     sha256=item.sha256,
                     storage_path="pending",
                     extracted_text=item.extracted_text,
+                    analysis_mode=item.analysis_mode,
+                    analysis_status=item.analysis_status,
+                    analysis_model=item.analysis_model,
+                    ocr_model=item.ocr_model,
+                    analysis_error=item.analysis_error,
                 )
                 db.add(message_file)
                 db.flush()

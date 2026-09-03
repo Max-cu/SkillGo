@@ -117,6 +117,11 @@ export interface WorkflowJobInputFile {
   size_bytes: number;
   sha256: string;
   readable: boolean;
+  analysis_mode: string | null;
+  analysis_status: string | null;
+  analysis_model: string | null;
+  ocr_model: string | null;
+  analysis_error: string | null;
   purged_at: string | null;
   created_at: string;
 }
@@ -180,6 +185,7 @@ export interface WorkflowJob {
     skill_name: string;
     version: string;
   }>;
+  attachment_analysis_mode: "vision" | "vision_with_ocr" | string;
   message_content: WorkflowMessagePart[];
   routing_mode: "explicit" | "automatic" | "legacy" | string;
   model_name: string | null;
@@ -202,6 +208,11 @@ export interface AgentMessageFile {
   content_type: string;
   size_bytes: number;
   sha256: string;
+  analysis_mode: string | null;
+  analysis_status: string | null;
+  analysis_model: string | null;
+  ocr_model: string | null;
+  analysis_error: string | null;
   purged_at: string | null;
   created_at: string;
 }
@@ -364,6 +375,10 @@ export interface AvailableModels {
   configured: boolean;
   models: string[];
   default_model: string | null;
+  vision_configured: boolean;
+  default_vision_model: string | null;
+  ocr_configured: boolean;
+  default_ocr_model: string | null;
 }
 
 export interface ModelConfig {
@@ -397,7 +412,10 @@ export interface ModelConnectionItem {
   json_mode: boolean;
   native_tools: boolean;
   tls_verify: boolean;
+  capabilities: Array<"chat" | "vision" | "ocr">;
   is_default: boolean;
+  is_default_vision: boolean;
+  is_default_ocr: boolean;
   enabled: boolean;
   source: string;
 }
@@ -405,5 +423,7 @@ export interface ModelConnectionItem {
 export interface ModelConnectionList {
   configured: boolean;
   default_model: string | null;
+  default_vision_model: string | null;
+  default_ocr_model: string | null;
   items: ModelConnectionItem[];
 }

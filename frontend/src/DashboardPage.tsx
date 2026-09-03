@@ -240,7 +240,7 @@ export function DashboardPage() {
   const { user } = useAuth();
   const ownedSkills = useLoad<Skill[]>("/skills/mine", []);
   const communitySkills = useLoad<Skill[]>("/community/skills", []);
-  const availableModels = useLoad<AvailableModels>("/models/available", { configured: false, models: [], default_model: null });
+  const availableModels = useLoad<AvailableModels>("/models/available", { configured: false, models: [], default_model: null, vision_configured: false, default_vision_model: null, ocr_configured: false, default_ocr_model: null });
   const [conversations, setConversations] = useState<AgentWorkspaceConversation[]>([]);
   const [activeConversation, setActiveConversation] = useState<AgentWorkspaceConversationDetail | null>(null);
   const [messageParts, setMessageParts] = useState<WorkflowMessagePart[]>([]);
@@ -256,6 +256,7 @@ export function DashboardPage() {
   const [deletingConversationId, setDeletingConversationId] = useState<string | null>(null);
   const [conversationActionId, setConversationActionId] = useState<string | null>(null);
   const [selectedModelName, setSelectedModelName] = useState("");
+  const [ocrEnabled, setOcrEnabled] = useState(false);
   const [launching, setLaunching] = useState(false);
   const [streamingTurn, setStreamingTurn] = useState<StreamingTurn | null>(null);
   const [loadingConversationId, setLoadingConversationId] = useState<string | null>(null);
@@ -457,6 +458,7 @@ export function DashboardPage() {
     setMessageParts([]);
     setAttachments([]);
     setSelectedHistoryFiles([]);
+    setOcrEnabled(false);
     setLaunchError("");
     if (fileRef.current) fileRef.current.value = "";
     window.setTimeout(() => editorRef.current?.focus(), 0);
@@ -510,6 +512,7 @@ export function DashboardPage() {
     setMessageParts([]);
     setAttachments([]);
     setSelectedHistoryFiles([]);
+    setOcrEnabled(false);
     setSkillMenuOpen(false);
     setFileMenuOpen(false);
     if (fileRef.current) fileRef.current.value = "";
@@ -526,6 +529,7 @@ export function DashboardPage() {
     const submittedParts = messageParts.map((part) => ({ ...part })) as WorkflowMessagePart[];
     const submittedLocalFiles = [...attachments];
     const submittedHistoryFiles = [...selectedHistoryFiles];
+    const submittedOcrEnabled = ocrEnabled;
     let clearedBeforeRequest = false;
     let receivedStreamEvent = false;
     const focusedElement = document.activeElement;
@@ -546,6 +550,7 @@ export function DashboardPage() {
         const body = new FormData();
         body.set("message", promptText(messageParts));
         if (selectedModelName) body.set("model_name", selectedModelName);
+        if (ocrEnabled) body.set("ocr_enabled", "true");
         attachments.forEach((file) => body.append("files", file));
         if (selectedHistoryFiles.length) body.set("existing_file_ids", JSON.stringify(selectedHistoryFiles.map((file) => file.id)));
         setStreamingTurn({
@@ -597,6 +602,7 @@ export function DashboardPage() {
         body.set("version_id", selectedDetails[0].version.id);
         body.set("version_ids", JSON.stringify(selectedDetails.map((item) => item.version.id)));
         if (selectedModelName) body.set("model_name", selectedModelName);
+        if (ocrEnabled) body.set("ocr_enabled", "true");
         attachments.forEach((file) => body.append("files", file));
         if (selectedHistoryFiles.length) body.set("existing_file_ids", JSON.stringify(selectedHistoryFiles.map((file) => file.id)));
         await api<WorkflowJob>("/jobs", { method: "POST", body });
@@ -609,6 +615,7 @@ export function DashboardPage() {
         editorRef.current?.setParts(submittedParts);
         setAttachments(submittedLocalFiles);
         setSelectedHistoryFiles(submittedHistoryFiles);
+        setOcrEnabled(submittedOcrEnabled);
       }
       if (submittedConversationId) {
         try {
@@ -738,7 +745,7 @@ export function DashboardPage() {
     />
     <footer>
       <button className="agent-start-attach" type="button" title="添加附件" aria-label="添加附件" disabled={composerDisabled} onClick={() => fileRef.current?.click()}><Paperclip /></button>
-      <input ref={fileRef} type="file" multiple hidden accept=".txt,.md,.csv,.json,.yaml,.yml,.log,.html,.htm,.xml,.docx,.xlsx,.pdf,.png,.jpg,.jpeg" onChange={(event) => { addLocalFiles(Array.from(event.target.files || [])); event.target.value = ""; }} />
+      <input ref={fileRef} type="file" multiple hidden accept=".txt,.md,.csv,.json,.yaml,.yml,.log,.html,.htm,.xml,.docx,.xlsx,.pdf,.png,.jpg,.jpeg,.webp" onChange={(event) => { addLocalFiles(Array.from(event.target.files || [])); event.target.value = ""; }} />
       {activeConversation && historyFiles.length > 0 && <div className="agent-file-reuse-wrap" ref={fileMenuRef}>
         <button className={`agent-start-add${fileMenuOpen ? " active" : ""}`} type="button" title="使用本会话文件" aria-label="使用本会话文件" aria-expanded={fileMenuOpen} disabled={composerDisabled} onClick={() => { setFileMenuOpen((open) => !open); setSkillMenuOpen(false); setModelMenuOpen(false); }}><FolderClock /></button>
         {fileMenuOpen && <div className="agent-file-popover"><header><strong>本会话文件</strong><small>无需重新上传</small></header><div>{historyFiles.map((file) => { const selected = selectedHistoryFiles.some((item) => item.id === file.id); return <button type="button" className={selected ? "selected" : ""} key={file.id} onClick={() => toggleHistoryFile(file)}><FileText /><span><strong>{file.filename}</strong><small>{formatSize(file.size_bytes)}</small></span>{selected && <Check />}</button>; })}</div></div>}
@@ -751,6 +758,7 @@ export function DashboardPage() {
         </div>}
       </div>
       {selectedSkillIds.length > 0 && <span className="agent-start-route-mode">明确执行 · {selectedSkillIds.length} 个 Skill</span>}
+      <label className={`agent-ocr-toggle${ocrEnabled ? " active" : ""}`} title={availableModels.ocr_configured ? "同时使用 OCR 提取图片文字，再由视觉模型理解" : "请先在平台设置中配置 OCR 模型"}><input type="checkbox" checked={ocrEnabled} disabled={composerDisabled || !availableModels.ocr_configured} onChange={(event) => setOcrEnabled(event.target.checked)} /><span>OCR 识别</span></label>
       <div className="agent-start-model-wrap" ref={modelMenuRef}>
         <button type="button" className="agent-start-model" disabled={composerDisabled || !availableModels.configured} aria-expanded={modelMenuOpen} onClick={() => { setModelMenuOpen((open) => !open); setSkillMenuOpen(false); setFileMenuOpen(false); }}><span>{selectedModelName || "默认模型"}</span><ChevronDown /></button>
         {modelMenuOpen && <div className="agent-model-popover">{availableModels.models.map((model) => <button type="button" key={model} className={model === selectedModelName ? "selected" : ""} onClick={() => { setSelectedModelName(model); setModelMenuOpen(false); }}>{model}<Check /></button>)}</div>}

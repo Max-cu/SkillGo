@@ -9,6 +9,7 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from ..attachment_analysis import analyze_image_attachment, image_media_type
 from ..config import settings
 from ..database import get_db
 from ..deps import current_user
@@ -54,6 +55,11 @@ class ResolvedMessageFile:
     content_type: str
     data: bytes
     extracted_text: str
+    analysis_mode: str | None = None
+    analysis_status: str | None = None
+    analysis_model: str | None = None
+    ocr_model: str | None = None
+    analysis_error: str | None = None
 
 
 def _parse_existing_file_ids(raw: str) -> list[str]:
@@ -79,6 +85,9 @@ async def _resolve_message_files(
     legacy_file: UploadFile | None,
     uploads: list[UploadFile] | None,
     existing_file_ids: str,
+    gateway: OpenAICompatibleGateway,
+    user_instruction: str,
+    ocr_enabled: bool,
 ) -> list[ResolvedMessageFile]:
     incoming = ([legacy_file] if legacy_file is not None else []) + list(uploads or [])
     existing_ids = _parse_existing_file_ids(existing_file_ids)
@@ -95,17 +104,40 @@ async def _resolve_message_files(
             extracted_text = extract_workspace_text(filename, data)
         except WorkspaceFileError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
+        analysis = None
         if extracted_text is None:
-            raise HTTPException(
-                status_code=422,
-                detail=f"普通对话无法直接读取《{filename}》，请插入支持该格式的 Skill 后再发送",
-            )
+            try:
+                if image_media_type(filename, data) is None:
+                    raise HTTPException(
+                        status_code=422,
+                        detail=f"普通对话暂时无法理解《{filename}》的文件格式",
+                    )
+                analysis = await analyze_image_attachment(
+                    gateway=gateway,
+                    filename=filename,
+                    data=data,
+                    user_instruction=user_instruction,
+                    ocr_enabled=ocr_enabled,
+                )
+                extracted_text = analysis.text
+            except ValueError as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
+            except ModelGatewayError as exc:
+                raise HTTPException(
+                    status_code=502,
+                    detail={"code": exc.code, "message": str(exc)},
+                ) from exc
         resolved.append(
             ResolvedMessageFile(
                 filename=filename,
                 content_type=safe_content_type(upload.content_type),
                 data=data,
                 extracted_text=extracted_text,
+                analysis_mode=analysis.mode if analysis else None,
+                analysis_status=analysis.status if analysis else None,
+                analysis_model=analysis.vision_model if analysis else None,
+                ocr_model=analysis.ocr_model if analysis else None,
+                analysis_error=analysis.error if analysis else None,
             )
         )
 
@@ -123,17 +155,42 @@ async def _resolve_message_files(
             raise HTTPException(status_code=410, detail="历史附件已超过 15 天保留期，请重新上传")
         for file_id in existing_ids:
             item = by_id[file_id]
-            if item.extracted_text is None:
-                raise HTTPException(
-                    status_code=422,
-                    detail=f"普通对话无法直接读取《{item.filename}》，请插入支持该格式的 Skill 后再发送",
-                )
+            data = storage.read(item.storage_path)
+            extracted_text = item.extracted_text
+            analysis = None
+            try:
+                is_image = image_media_type(item.filename, data) is not None
+            except ValueError as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
+            if is_image:
+                try:
+                    analysis = await analyze_image_attachment(
+                        gateway=gateway,
+                        filename=item.filename,
+                        data=data,
+                        user_instruction=user_instruction,
+                        ocr_enabled=ocr_enabled,
+                    )
+                    extracted_text = analysis.text
+                except (ValueError, ModelGatewayError) as exc:
+                    code = getattr(exc, "code", "ATTACHMENT_ANALYSIS_FAILED")
+                    raise HTTPException(
+                        status_code=502,
+                        detail={"code": code, "message": str(exc)},
+                    ) from exc
+            if extracted_text is None:
+                raise HTTPException(status_code=422, detail=f"普通对话暂时无法理解《{item.filename}》的文件格式")
             resolved.append(
                 ResolvedMessageFile(
                     filename=item.filename,
                     content_type=item.content_type,
-                    data=storage.read(item.storage_path),
-                    extracted_text=item.extracted_text,
+                    data=data,
+                    extracted_text=extracted_text,
+                    analysis_mode=analysis.mode if analysis else item.analysis_mode,
+                    analysis_status=analysis.status if analysis else item.analysis_status,
+                    analysis_model=analysis.vision_model if analysis else item.analysis_model,
+                    ocr_model=analysis.ocr_model if analysis else item.ocr_model,
+                    analysis_error=analysis.error if analysis else item.analysis_error,
                 )
             )
     filenames = [item.filename.casefold() for item in resolved]
@@ -182,6 +239,11 @@ def _persist_message_files(
             sha256=file_sha256(item.data),
             storage_path="pending",
             extracted_text=item.extracted_text,
+            analysis_mode=item.analysis_mode,
+            analysis_status=item.analysis_status,
+            analysis_model=item.analysis_model,
+            ocr_model=item.ocr_model,
+            analysis_error=item.analysis_error,
         )
         db.add(message_file)
         db.flush()
@@ -437,6 +499,7 @@ async def send_agent_message(
     conversation_id: str,
     message: Annotated[str, Form(max_length=20_000)] = "",
     model_name: Annotated[str, Form(max_length=160)] = "",
+    ocr_enabled: Annotated[bool, Form()] = False,
     file: UploadFile | None = File(None),
     files: list[UploadFile] | None = File(None),
     existing_file_ids: Annotated[str, Form(max_length=4_000)] = "",
@@ -453,6 +516,9 @@ async def send_agent_message(
         legacy_file=file,
         uploads=files,
         existing_file_ids=existing_file_ids,
+        gateway=gateway,
+        user_instruction=clean_message,
+        ocr_enabled=ocr_enabled,
     )
     if not clean_message and not resolved_files:
         raise HTTPException(status_code=422, detail="请输入消息或添加附件")
@@ -499,7 +565,10 @@ async def send_agent_message(
         user_id=user.id,
         role="user",
         kind="text",
-        content={"message": clean_message or "请阅读并说明附件的主要内容。"},
+        content={
+            "message": clean_message or "请阅读并说明附件的主要内容。",
+            "attachment_analysis_mode": "vision_with_ocr" if ocr_enabled else "vision",
+        },
     )
     db.add(user_message)
     db.flush()
@@ -532,7 +601,11 @@ async def send_agent_message(
         action="agent_conversation.message",
         resource_type="agent_conversation",
         resource_id=conversation.id,
-        details={"model_name": result.model_name, "file_count": len(resolved_files)},
+        details={
+            "model_name": result.model_name,
+            "file_count": len(resolved_files),
+            "attachment_analysis_mode": "vision_with_ocr" if ocr_enabled else "vision",
+        },
     )
     complete_run(
         db,
@@ -555,6 +628,7 @@ async def stream_agent_message(
     conversation_id: str,
     message: Annotated[str, Form(max_length=20_000)] = "",
     model_name: Annotated[str, Form(max_length=160)] = "",
+    ocr_enabled: Annotated[bool, Form()] = False,
     file: UploadFile | None = File(None),
     files: list[UploadFile] | None = File(None),
     existing_file_ids: Annotated[str, Form(max_length=4_000)] = "",
@@ -572,6 +646,9 @@ async def stream_agent_message(
         legacy_file=file,
         uploads=files,
         existing_file_ids=existing_file_ids,
+        gateway=gateway,
+        user_instruction=clean_message,
+        ocr_enabled=ocr_enabled,
     )
     if not clean_message and not resolved_files:
         raise HTTPException(status_code=422, detail="请输入消息或添加附件")
@@ -601,7 +678,10 @@ async def stream_agent_message(
         user_id=user.id,
         role="user",
         kind="text",
-        content={"message": clean_message or "请阅读并说明附件的主要内容。"},
+        content={
+            "message": clean_message or "请阅读并说明附件的主要内容。",
+            "attachment_analysis_mode": "vision_with_ocr" if ocr_enabled else "vision",
+        },
     )
     db.add(user_message)
     db.flush()
@@ -679,6 +759,7 @@ async def stream_agent_message(
             details={
                 "model_name": assistant.model_name,
                 "file_count": len(resolved_files),
+                "attachment_analysis_mode": "vision_with_ocr" if ocr_enabled else "vision",
                 "streamed": True,
                 "latency_ms": completion.get("latency_ms"),
             },

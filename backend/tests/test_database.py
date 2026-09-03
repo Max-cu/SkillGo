@@ -25,7 +25,7 @@ def test_blank_database_is_created_and_stamped_at_head():
     assert set(Base.metadata.tables).issubset(tables)
     assert "alembic_version" in tables
     with target.connect() as connection:
-        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "20260826_0004"
+        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "20260903_0005"
 
 
 def test_complete_legacy_database_is_adopted_without_losing_rows():
@@ -47,7 +47,7 @@ def test_complete_legacy_database_is_adopted_without_losing_rows():
     assert "favorites" in inspect(target).get_table_names()
     with target.connect() as connection:
         assert connection.scalar(text("SELECT count(*) FROM users")) == 1
-        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "20260826_0004"
+        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "20260903_0005"
 
 
 def test_v010_database_receives_storage_lifecycle_migration_without_data_loss():
@@ -79,7 +79,7 @@ def test_v010_database_receives_storage_lifecycle_migration_without_data_loss():
         assert column_name in {column["name"] for column in inspector.get_columns(table_name)}
     with target.connect() as connection:
         assert connection.scalar(text("SELECT count(*) FROM users")) == 1
-        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "20260826_0004"
+        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "20260903_0005"
 
 
 def test_v022_database_receives_network_policy_columns_with_safe_defaults():
@@ -131,7 +131,63 @@ def test_v022_database_receives_network_policy_columns_with_safe_defaults():
         assert connection.scalar(
             text("SELECT network_enabled FROM skill_versions WHERE id='v1'")
         ) == 0
-        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "20260826_0004"
+        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "20260903_0005"
+
+
+def test_v023_database_receives_attachment_intelligence_columns_safely():
+    target = create_engine("sqlite://")
+    Base.metadata.create_all(target)
+    attachment_columns = (
+        "analysis_mode",
+        "analysis_status",
+        "analysis_model",
+        "ocr_model",
+        "analysis_error",
+    )
+    with target.begin() as connection:
+        connection.execute(
+            text(
+                "INSERT INTO model_connection_configs "
+                "(id, model_name, base_url, api_key, timeout_seconds, temperature_milli, "
+                "json_mode, native_tools, tls_verify, capabilities, is_default, "
+                "is_default_vision, is_default_ocr, enabled, created_at, updated_at) "
+                "VALUES ('m1', 'legacy-chat', 'https://model.example.com/v1', NULL, 120, "
+                "200, 1, 1, 1, '[\"chat\"]', 1, 0, 0, 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+            )
+        )
+        connection.execute(text('ALTER TABLE "model_connection_configs" DROP COLUMN "capabilities"'))
+        connection.execute(text('ALTER TABLE "model_connection_configs" DROP COLUMN "is_default_vision"'))
+        connection.execute(text('ALTER TABLE "model_connection_configs" DROP COLUMN "is_default_ocr"'))
+        connection.execute(text('ALTER TABLE "workflow_jobs" DROP COLUMN "attachment_analysis_mode"'))
+        for table_name in ("agent_message_files", "job_input_files"):
+            for column_name in attachment_columns:
+                connection.execute(
+                    text(f'ALTER TABLE "{table_name}" DROP COLUMN "{column_name}"')
+                )
+        connection.execute(text("CREATE TABLE alembic_version (version_num VARCHAR(32) NOT NULL)"))
+        connection.execute(text("INSERT INTO alembic_version VALUES ('20260826_0004')"))
+
+    initialize_schema(target)
+
+    inspector = inspect(target)
+    assert {"capabilities", "is_default_vision", "is_default_ocr"}.issubset(
+        {column["name"] for column in inspector.get_columns("model_connection_configs")}
+    )
+    assert "attachment_analysis_mode" in {
+        column["name"] for column in inspector.get_columns("workflow_jobs")
+    }
+    for table_name in ("agent_message_files", "job_input_files"):
+        assert set(attachment_columns).issubset(
+            {column["name"] for column in inspector.get_columns(table_name)}
+        )
+    with target.connect() as connection:
+        assert connection.scalar(
+            text("SELECT capabilities FROM model_connection_configs WHERE id='m1'")
+        ) == '["chat"]'
+        assert connection.scalar(
+            text("SELECT is_default_vision FROM model_connection_configs WHERE id='m1'")
+        ) == 0
+        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "20260903_0005"
 
 
 def test_incomplete_legacy_table_is_not_falsely_stamped():

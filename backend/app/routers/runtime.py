@@ -17,7 +17,7 @@ from ..conversation_service import (
 from ..database import get_db
 from ..deps import admin_user, current_user
 from ..execution import RunValidationError, execute_instruction_run, validate_input
-from ..model_config_service import DEFAULT_CONFIG_ID, ensure_model_connection_rows, model_connection_from_db, normalize_models
+from ..model_config_service import DEFAULT_CONFIG_ID, ensure_model_connection_rows, model_connection_from_db, normalize_capabilities, normalize_models
 from ..model_gateway import ModelConnection, ModelGatewayError, OpenAICompatibleGateway, get_model_gateway
 from ..models import (
     Conversation,
@@ -411,11 +411,22 @@ async def invoke_endpoint(
 
 def _model_config_read(db: Session) -> ModelConfigRead:
     connection, source, api_key_configured = model_connection_from_db(db)
+    rows = ensure_model_connection_rows(db)
+    default_vision = next(
+        (item.model_name for item in rows if item.enabled and item.is_default_vision), None
+    )
+    default_ocr = next(
+        (item.model_name for item in rows if item.enabled and item.is_default_ocr), None
+    )
     return ModelConfigRead(
         configured=bool(connection.base_url and connection.model_name),
         base_url=connection.base_url,
         models=list(connection.models),
         default_model=connection.model_name,
+        vision_configured=default_vision is not None,
+        default_vision_model=default_vision,
+        ocr_configured=default_ocr is not None,
+        default_ocr_model=default_ocr,
         api_key_configured=api_key_configured,
         timeout_seconds=round(connection.timeout_seconds),
         temperature=connection.temperature,
@@ -437,7 +448,10 @@ def _model_connection_item(row: ModelConnectionConfig) -> ModelConnectionItem:
         json_mode=row.json_mode,
         native_tools=row.native_tools,
         tls_verify=row.tls_verify,
+        capabilities=list(normalize_capabilities(row.capabilities)),
         is_default=row.is_default,
+        is_default_vision=row.is_default_vision,
+        is_default_ocr=row.is_default_ocr,
         enabled=row.enabled,
     )
 
@@ -454,12 +468,57 @@ def _saved_model_rows(db: Session) -> list[ModelConnectionConfig]:
 
 
 def _ensure_default_model(db: Session, preferred: ModelConnectionConfig | None = None) -> None:
-    enabled = [row for row in _saved_model_rows(db) if row.enabled]
+    rows = _saved_model_rows(db)
+    enabled = [
+        row
+        for row in rows
+        if row.enabled and "chat" in normalize_capabilities(row.capabilities)
+    ]
     if not enabled:
+        for row in rows:
+            row.is_default = False
         return
-    selected = preferred if preferred is not None and preferred.enabled else next((row for row in enabled if row.is_default), enabled[0])
-    for row in enabled:
+    selected = (
+        preferred
+        if preferred is not None and preferred in enabled
+        else next((row for row in enabled if row.is_default), enabled[0])
+    )
+    for row in rows:
         row.is_default = row.id == selected.id
+
+
+def _ensure_capability_default(
+    db: Session,
+    capability: str,
+    preferred: ModelConnectionConfig | None = None,
+) -> None:
+    attribute = {"vision": "is_default_vision", "ocr": "is_default_ocr"}[capability]
+    rows = _saved_model_rows(db)
+    enabled = [
+        row
+        for row in rows
+        if row.enabled and capability in normalize_capabilities(row.capabilities)
+    ]
+    selected = (
+        preferred
+        if preferred is not None
+        and preferred in enabled
+        else next((row for row in enabled if getattr(row, attribute)), enabled[0] if enabled else None)
+    )
+    for row in rows:
+        setattr(row, attribute, selected is not None and row.id == selected.id)
+
+
+def _normalize_all_defaults(
+    db: Session, preferred: ModelConnectionConfig | None = None
+) -> None:
+    _ensure_default_model(db, preferred if preferred and preferred.is_default else None)
+    _ensure_capability_default(
+        db, "vision", preferred if preferred and preferred.is_default_vision else None
+    )
+    _ensure_capability_default(
+        db, "ocr", preferred if preferred and preferred.is_default_ocr else None
+    )
 
 
 @router.get("/super-admin/models", response_model=ModelConnectionList)
@@ -471,7 +530,17 @@ def list_model_connections(
     if rows:
         db.commit()
     default = next((row.model_name for row in rows if row.is_default and row.enabled), None)
-    return ModelConnectionList(configured=bool(default), default_model=default, items=[_model_connection_item(row) for row in rows])
+    return ModelConnectionList(
+        configured=bool(default),
+        default_model=default,
+        default_vision_model=next(
+            (row.model_name for row in rows if row.enabled and row.is_default_vision), None
+        ),
+        default_ocr_model=next(
+            (row.model_name for row in rows if row.enabled and row.is_default_ocr), None
+        ),
+        items=[_model_connection_item(row) for row in rows],
+    )
 
 
 def _validated_connection_values(payload: ModelConnectionCreate | ModelConnectionUpdate) -> tuple[str, str]:
@@ -500,12 +569,15 @@ def create_model_connection(
         json_mode=payload.json_mode,
         native_tools=payload.native_tools,
         tls_verify=payload.tls_verify,
+        capabilities=list(normalize_capabilities(payload.capabilities)),
         is_default=payload.is_default,
+        is_default_vision=payload.is_default_vision,
+        is_default_ocr=payload.is_default_ocr,
         enabled=payload.enabled,
     )
     db.add(row)
     db.flush()
-    _ensure_default_model(db, row if payload.is_default else None)
+    _normalize_all_defaults(db, row)
     add_audit(db, actor=user, action="system.model.create", resource_type="model_connection", resource_id=row.id, details={"model_name": row.model_name, "base_url": row.base_url})
     db.commit()
     db.refresh(row)
@@ -533,13 +605,16 @@ def update_model_connection(
     row.json_mode = payload.json_mode
     row.native_tools = payload.native_tools
     row.tls_verify = payload.tls_verify
+    row.capabilities = list(normalize_capabilities(payload.capabilities))
     row.enabled = payload.enabled
-    row.is_default = payload.is_default and payload.enabled
+    row.is_default = payload.is_default and payload.enabled and "chat" in row.capabilities
+    row.is_default_vision = payload.is_default_vision and payload.enabled and "vision" in row.capabilities
+    row.is_default_ocr = payload.is_default_ocr and payload.enabled and "ocr" in row.capabilities
     if payload.clear_api_key:
         row.api_key = None
     elif payload.api_key and payload.api_key.strip():
         row.api_key = payload.api_key.strip()
-    _ensure_default_model(db, row if payload.is_default else None)
+    _normalize_all_defaults(db, row)
     add_audit(db, actor=user, action="system.model.update", resource_type="model_connection", resource_id=row.id, details={"model_name": row.model_name, "base_url": row.base_url})
     db.commit()
     db.refresh(row)
@@ -553,10 +628,47 @@ def set_default_model_connection(
     db: Session = Depends(get_db),
 ) -> ModelConnectionItem:
     row = db.get(ModelConnectionConfig, model_id)
-    if row is None or not row.enabled:
+    if (
+        row is None
+        or not row.enabled
+        or "chat" not in normalize_capabilities(row.capabilities)
+    ):
         raise HTTPException(status_code=404, detail="可用模型不存在")
     _ensure_default_model(db, row)
     add_audit(db, actor=user, action="system.model.set_default", resource_type="model_connection", resource_id=row.id, details={"model_name": row.model_name})
+    db.commit()
+    db.refresh(row)
+    return _model_connection_item(row)
+
+
+@router.post(
+    "/super-admin/models/{model_id}/default/{capability}",
+    response_model=ModelConnectionItem,
+)
+def set_default_capability_model(
+    model_id: str,
+    capability: str,
+    user: User = Depends(admin_user),
+    db: Session = Depends(get_db),
+) -> ModelConnectionItem:
+    if capability not in {"vision", "ocr"}:
+        raise HTTPException(status_code=404, detail="模型能力不存在")
+    row = db.get(ModelConnectionConfig, model_id)
+    if (
+        row is None
+        or not row.enabled
+        or capability not in normalize_capabilities(row.capabilities)
+    ):
+        raise HTTPException(status_code=404, detail="具备该能力的可用模型不存在")
+    _ensure_capability_default(db, capability, row)
+    add_audit(
+        db,
+        actor=user,
+        action=f"system.model.set_default_{capability}",
+        resource_type="model_connection",
+        resource_id=row.id,
+        details={"model_name": row.model_name, "capability": capability},
+    )
     db.commit()
     db.refresh(row)
     return _model_connection_item(row)
@@ -572,13 +684,13 @@ def delete_model_connection(
     if row is None:
         raise HTTPException(status_code=404, detail="模型不存在")
     was_default = row.is_default
+    was_default_vision = row.is_default_vision
+    was_default_ocr = row.is_default_ocr
     add_audit(db, actor=user, action="system.model.delete", resource_type="model_connection", resource_id=row.id, details={"model_name": row.model_name})
     db.delete(row)
     db.flush()
-    if was_default:
-        remaining = list(db.scalars(select(ModelConnectionConfig).where(ModelConnectionConfig.enabled.is_(True)).order_by(ModelConnectionConfig.created_at)))
-        if remaining:
-            remaining[0].is_default = True
+    if was_default or was_default_vision or was_default_ocr:
+        _normalize_all_defaults(db)
     db.commit()
 
 
@@ -592,6 +704,10 @@ def available_models(
         configured=config.configured,
         models=config.models,
         default_model=config.default_model,
+        vision_configured=config.vision_configured,
+        default_vision_model=config.default_vision_model,
+        ocr_configured=config.ocr_configured,
+        default_ocr_model=config.default_ocr_model,
     )
 
 
@@ -663,9 +779,12 @@ async def test_model_connection(
     db: Session = Depends(get_db),
 ) -> ModelConnectionTestResult:
     base_url, models = _validated_model_values(payload)
-    current, _, _ = model_connection_from_db(db)
     saved = db.get(ModelConnectionConfig, payload.model_id) if payload.model_id else None
-    api_key = None if payload.clear_api_key else (payload.api_key or "").strip() or (saved.api_key if saved else None) or current.api_key
+    api_key = (
+        None
+        if payload.clear_api_key
+        else (payload.api_key or "").strip() or (saved.api_key if saved else None)
+    )
     gateway = OpenAICompatibleGateway(
         ModelConnection(
             base_url=base_url,
@@ -677,6 +796,8 @@ async def test_model_connection(
             json_mode=payload.json_mode,
             native_tools=payload.native_tools,
             tls_verify=payload.tls_verify,
+            capabilities=normalize_capabilities(payload.capabilities),
+            default_capabilities=tuple(payload.capabilities),
         )
     )
     try:

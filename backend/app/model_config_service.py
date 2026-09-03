@@ -10,6 +10,7 @@ from .models import ModelConnectionConfig, ModelProviderConfig
 
 
 DEFAULT_CONFIG_ID = "default"
+MODEL_CAPABILITIES = frozenset({"chat", "vision", "ocr"})
 
 
 def normalize_models(values: list[str] | tuple[str, ...]) -> tuple[str, ...]:
@@ -19,6 +20,42 @@ def normalize_models(values: list[str] | tuple[str, ...]) -> tuple[str, ...]:
         if model and model not in normalized:
             normalized.append(model)
     return tuple(normalized)
+
+
+def normalize_capabilities(values: list[str] | tuple[str, ...] | None) -> tuple[str, ...]:
+    normalized: list[str] = []
+    for value in values or ("chat",):
+        capability = str(value).strip().casefold()
+        if capability in MODEL_CAPABILITIES and capability not in normalized:
+            normalized.append(capability)
+    return tuple(normalized or ["chat"])
+
+
+def _row_connection(
+    row: ModelConnectionConfig,
+    *,
+    available_chat_models: tuple[str, ...],
+) -> ModelConnection:
+    defaults: list[str] = []
+    if row.is_default:
+        defaults.append("chat")
+    if row.is_default_vision:
+        defaults.append("vision")
+    if row.is_default_ocr:
+        defaults.append("ocr")
+    return ModelConnection(
+        base_url=row.base_url,
+        api_key=row.api_key or settings.model_api_key,
+        model_name=row.model_name,
+        models=available_chat_models,
+        timeout_seconds=float(row.timeout_seconds),
+        temperature=max(0, min(row.temperature_milli, 2000)) / 1000,
+        json_mode=row.json_mode,
+        native_tools=row.native_tools,
+        tls_verify=row.tls_verify,
+        capabilities=normalize_capabilities(row.capabilities),
+        default_capabilities=tuple(defaults),
+    )
 
 
 def ensure_model_connection_rows(db: Session) -> list[ModelConnectionConfig]:
@@ -54,6 +91,7 @@ def ensure_model_connection_rows(db: Session) -> list[ModelConnectionConfig]:
                 json_mode=connection.json_mode,
                 native_tools=connection.native_tools,
                 tls_verify=connection.tls_verify,
+                capabilities=["chat"],
                 is_default=name == connection.model_name,
                 enabled=True,
             )
@@ -65,20 +103,12 @@ def ensure_model_connection_rows(db: Session) -> list[ModelConnectionConfig]:
 def model_connection_from_db(db: Session) -> tuple[ModelConnection, str, bool]:
     ensure_model_connection_rows(db)
     rows = list(db.scalars(select(ModelConnectionConfig).where(ModelConnectionConfig.enabled.is_(True)).order_by(ModelConnectionConfig.is_default.desc(), ModelConnectionConfig.created_at)))
-    if rows:
-        selected = next((item for item in rows if item.is_default), rows[0])
+    chat_rows = [item for item in rows if "chat" in normalize_capabilities(item.capabilities)]
+    if chat_rows:
+        selected = next((item for item in chat_rows if item.is_default), chat_rows[0])
+        available = tuple(item.model_name for item in chat_rows)
         return (
-            ModelConnection(
-                base_url=selected.base_url,
-                api_key=selected.api_key or settings.model_api_key,
-                model_name=selected.model_name,
-                models=tuple(item.model_name for item in rows),
-                timeout_seconds=float(selected.timeout_seconds),
-                temperature=max(0, min(selected.temperature_milli, 2000)) / 1000,
-                json_mode=selected.json_mode,
-                native_tools=selected.native_tools,
-                tls_verify=selected.tls_verify,
-            ),
+            _row_connection(selected, available_chat_models=available),
             "database",
             bool(selected.api_key or settings.model_api_key),
         )
@@ -127,19 +157,13 @@ def active_model_connections() -> dict[str, ModelConnection]:
         if not rows:
             connection, _, _ = model_connection_from_db(db)
             return {name: connection for name in connection.models}
-        available = tuple(item.model_name for item in rows)
+        available = tuple(
+            item.model_name
+            for item in rows
+            if "chat" in normalize_capabilities(item.capabilities)
+        )
         return {
-            item.model_name: ModelConnection(
-                base_url=item.base_url,
-                api_key=item.api_key or settings.model_api_key,
-                model_name=item.model_name,
-                models=available,
-                timeout_seconds=float(item.timeout_seconds),
-                temperature=max(0, min(item.temperature_milli, 2000)) / 1000,
-                json_mode=item.json_mode,
-                native_tools=item.native_tools,
-                tls_verify=item.tls_verify,
-            )
+            item.model_name: _row_connection(item, available_chat_models=available)
             for item in rows
         }
 
@@ -154,23 +178,18 @@ def connection_for_model(db: Session, model_name: str | None) -> ModelConnection
             )
         )
         if row is not None:
-            available = tuple(
+            enabled_rows = list(
                 db.scalars(
-                    select(ModelConnectionConfig.model_name)
+                    select(ModelConnectionConfig)
                     .where(ModelConnectionConfig.enabled.is_(True))
                     .order_by(ModelConnectionConfig.is_default.desc(), ModelConnectionConfig.created_at)
                 )
             )
-            return ModelConnection(
-                base_url=row.base_url,
-                api_key=row.api_key or settings.model_api_key,
-                model_name=row.model_name,
-                models=available,
-                timeout_seconds=float(row.timeout_seconds),
-                temperature=max(0, min(row.temperature_milli, 2000)) / 1000,
-                json_mode=row.json_mode,
-                native_tools=row.native_tools,
-                tls_verify=row.tls_verify,
+            available = tuple(
+                item.model_name
+                for item in enabled_rows
+                if "chat" in normalize_capabilities(item.capabilities)
             )
+            return _row_connection(row, available_chat_models=available)
     connection, _, _ = model_connection_from_db(db)
     return connection

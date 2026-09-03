@@ -57,6 +57,8 @@ SKILLGO_CONVERSATION_LOCK_SECONDS=180
 
 如果模型不支持 `response_format: {"type":"json_object"}`，把 `SKILLGO_MODEL_JSON_MODE` 设为 `false`。内网 HTTPS 使用自签名证书时，优先把企业 CA 安装到运行环境；不要在生产环境关闭 TLS 校验。
 
+平台设置中的每个模型连接可以声明“对话”“视觉”“OCR”一种或多种能力，并分别设置默认模型。视觉与 OCR 当前都使用 OpenAI-compatible `chat/completions` 多模态消息格式，图片以内联 `image_url` Data URL 发送给私有模型服务。视觉模型是图片附件的默认理解链路；工作台的“开启 OCR 识别”默认关闭，开启后平台先提取文字，再把 OCR 结果连同原图交给视觉模型，最后仍由用户选择的对话模型组织回答。OCR 失败时视觉理解继续执行并记录警告，视觉模型不可用且没有 OCR 结果时请求硬失败，不会假装已经理解图片。
+
 网页运行 Skill 时使用 Agent 式自然语言会话，无需填写 JSON。会话固定到创建时选择的 Skill 版本；只有成功运行的输入与输出会进入后续上下文。清空或删除会话不会删除 Run 审计记录。Endpoint 调用仍需提交符合 Skill 输入 Schema 的 JSON。
 
 ### 会话文件工作区
@@ -64,7 +66,8 @@ SKILLGO_CONVERSATION_LOCK_SECONDS=180
 在 Agent 输入框点击回形针即可给当前会话上传文件。文件只保存在平台管理的 `storage/workspaces/<用户>/<会话>/` 路径，所属用户之外的账号（包括管理员）不能列出、读取、下载或删除；平台不会读取用户电脑上的其他文件。
 
 - 可提取文字并交给 Skill：TXT、Markdown、CSV、JSON、YAML、日志、HTML、XML、DOCX、XLSX；
-- 可安全保存和下载，但暂不自动交给模型：PDF、PNG、JPG 等其他非脚本文件；
+- PNG、JPG/JPEG、WebP 会先校验文件签名，再由平台默认视觉模型理解；用户开启 OCR 时会追加 OCR 识别，解析结果及所用模型写入附件记录；
+- PDF 等其他非脚本文件可安全保存和下载，但当前暂不自动交给模型；
 - EXE、DLL、MSI、BAT、CMD、PowerShell、Shell、Python、JavaScript、JAR、快捷方式等可执行或脚本文件会被拒绝；
 - 默认每个会话最多 30 个文件、单文件 10 MB；每次模型运行最多注入 40000 字符，防止文件把上下文无限撑大；
 - 助手回复旁的“保存为文件”可把结果写入同一工作区，并供用户下载。

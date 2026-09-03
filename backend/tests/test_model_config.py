@@ -43,6 +43,10 @@ def test_model_config_is_editable_without_exposing_secret(
         "configured": True,
         "models": ["review-pro", "review-fast"],
         "default_model": "review-pro",
+        "vision_configured": False,
+        "default_vision_model": None,
+        "ocr_configured": False,
+        "default_ocr_model": None,
     }
 
     forbidden = client.put(
@@ -114,6 +118,20 @@ def test_model_connection_can_be_tested_before_saving(
         "has_key": True,
     }
 
+    saved = client.post(
+        "/api/v1/super-admin/models",
+        headers=owner_headers,
+        json=connection_payload("saved-model", "https://saved.example.com/v1"),
+    )
+    assert saved.status_code == 201, saved.text
+    tested_without_key = client.post(
+        "/api/v1/super-admin/model/test",
+        headers=owner_headers,
+        json=model_payload(api_key=None, base_url="https://new.example.com/v1"),
+    )
+    assert tested_without_key.status_code == 200, tested_without_key.text
+    assert observed["has_key"] is False
+
 
 def connection_payload(name, url, **overrides):
     payload = {
@@ -161,6 +179,10 @@ def test_models_are_managed_as_independent_connections(client, owner_headers, us
         "configured": True,
         "models": ["model-one", "model-two"],
         "default_model": "model-one",
+        "vision_configured": False,
+        "default_vision_model": None,
+        "ocr_configured": False,
+        "default_ocr_model": None,
     }
 
     gateway = get_model_gateway()
@@ -184,3 +206,57 @@ def test_models_are_managed_as_independent_connections(client, owner_headers, us
     remaining = client.get("/api/v1/super-admin/models", headers=owner_headers).json()
     assert remaining["default_model"] == "model-one"
     assert [item["model_name"] for item in remaining["items"]] == ["model-one"]
+
+
+def test_visual_and_ocr_models_have_independent_defaults(
+    client, owner_headers, user_headers
+):
+    chat = client.post(
+        "/api/v1/super-admin/models",
+        headers=owner_headers,
+        json=connection_payload("chat-only", "https://chat.example.com/v1"),
+    )
+    vision = client.post(
+        "/api/v1/super-admin/models",
+        headers=owner_headers,
+        json=connection_payload(
+            "vision-private",
+            "https://vision.example.com/v1",
+            capabilities=["vision"],
+            native_tools=False,
+        ),
+    )
+    ocr = client.post(
+        "/api/v1/super-admin/models",
+        headers=owner_headers,
+        json=connection_payload(
+            "ocr-private",
+            "https://ocr.example.com/v1",
+            capabilities=["ocr"],
+            native_tools=False,
+        ),
+    )
+    assert chat.status_code == 201, chat.text
+    assert vision.status_code == 201, vision.text
+    assert ocr.status_code == 201, ocr.text
+    assert vision.json()["is_default_vision"] is True
+    assert ocr.json()["is_default_ocr"] is True
+
+    available = client.get("/api/v1/models/available", headers=user_headers).json()
+    assert available == {
+        "configured": True,
+        "models": ["chat-only"],
+        "default_model": "chat-only",
+        "vision_configured": True,
+        "default_vision_model": "vision-private",
+        "ocr_configured": True,
+        "default_ocr_model": "ocr-private",
+    }
+
+    gateway = get_model_gateway()
+    assert gateway.for_capability("vision").model_name == "vision-private"
+    assert gateway.for_capability("ocr").model_name == "ocr-private"
+    assert client.post(
+        f"/api/v1/super-admin/models/{vision.json()['id']}/default",
+        headers=owner_headers,
+    ).status_code == 404
