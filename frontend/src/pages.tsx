@@ -1008,7 +1008,7 @@ export function WorkflowPage() {
         {!selectedVersion.runtime_runnable && <div className="agent-context-message workflow-agent-error-message">{selectedVersion.runtime_block_reason || "当前运行环境不可用"}</div>}
         <form className="agent-composer workflow-agent-composer" onSubmit={submitAgent}>
           <label className="agent-model-picker"><span>运行模型</span><select aria-label="选择运行模型" value={selectedModelName} disabled={busy || jobActive || !availableModels.configured} onChange={(event) => setSelectedModelName(event.target.value)}>{availableModels.models.map((modelName) => <option key={modelName} value={modelName}>{modelName}</option>)}</select></label>
-          <label className={`agent-ocr-toggle workflow${ocrEnabled ? " active" : ""}`} title={availableModels.ocr_configured ? "同时使用 OCR 提取图片文字，再由视觉模型理解" : "请先在平台设置中配置 OCR 模型"}><input type="checkbox" checked={ocrEnabled} disabled={busy || jobActive || !availableModels.ocr_configured} onChange={(event) => setOcrEnabled(event.target.checked)} /><span>OCR 识别</span></label>
+          <label className={`agent-ocr-toggle workflow${ocrEnabled ? " active" : ""}`} title={availableModels.ocr_configured ? "同时使用 OCR 提取图片文字，再由视觉模型理解" : "请先在平台设置中配置 OCR 模型"}><input type="checkbox" checked={ocrEnabled} disabled={busy || jobActive || !availableModels.ocr_configured} onChange={(event) => setOcrEnabled(event.target.checked)} /><span className="agent-ocr-switch" aria-hidden="true"><i /></span><span className="agent-ocr-label">OCR 识别</span></label>
           <textarea ref={messageInputRef} aria-label="给 SkillGo Agent 发送消息" rows={3} maxLength={20000} value={messageText} disabled={busy || jobActive || !selectedVersion.runtime_runnable} onChange={(event) => { setMessageText(event.target.value); setError(""); }} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); event.currentTarget.form?.requestSubmit(); } }} placeholder={jobActive ? "当前任务正在独立沙箱中运行…" : `告诉 ${skill.name} 你想完成什么…`} />
           <div><button className="agent-attach" type="button" title="添加附件" aria-label="添加附件" disabled={busy || jobActive || !selectedVersion.runtime_runnable} onClick={() => fileInputRef.current?.click()}><Paperclip /></button><input ref={fileInputRef} type="file" hidden accept=".txt,.md,.csv,.json,.yaml,.yml,.log,.html,.htm,.xml,.docx,.xlsx,.pdf,.png,.jpg,.jpeg,.webp" onChange={(event) => { const file = event.target.files?.[0] || null; if (file && file.size > 10 * 1024 * 1024) { event.target.value = ""; setAttachment(null); setError("附件不能超过 10 MB"); return; } setAttachment(file); setError(""); }} /><span className="agent-composer-hint">支持 TXT、DOCX、XLSX、PDF、图片等文件 · 最大 10 MB</span><button type="submit" aria-label="发送并开始任务" disabled={(!messageText.trim() && !attachment) || busy || jobActive || !selectedVersion.runtime_runnable}>{busy ? <RotateCw className="spin-icon" /> : <SendHorizontal />}</button></div>
         </form>
@@ -1625,6 +1625,7 @@ export function ModelSettingsPage() {
   const [editingModel, setEditingModel] = useState<ModelConnectionItem | null>(null);
   const [baseUrl, setBaseUrl] = useState("");
   const [modelName, setModelName] = useState("");
+  const [apiFormat, setApiFormat] = useState<"openai" | "mineru">("openai");
   const [apiKey, setApiKey] = useState("");
   const [timeoutSeconds, setTimeoutSeconds] = useState(120);
   const [temperature, setTemperature] = useState(0.2);
@@ -1647,6 +1648,7 @@ export function ModelSettingsPage() {
     setEditingModel(item);
     setModelName(item?.model_name || "");
     setBaseUrl(item?.base_url || "");
+    setApiFormat(item?.api_format || "openai");
     setApiKey("");
     setTimeoutSeconds(item?.timeout_seconds ?? 120);
     setTemperature(item?.temperature ?? 0.2);
@@ -1688,6 +1690,7 @@ export function ModelSettingsPage() {
   function payload() {
     return {
       base_url: baseUrl.trim(),
+      api_format: apiFormat,
       api_key: apiKey.trim() || null,
       clear_api_key: false,
       model_name: modelName.trim(),
@@ -1716,10 +1719,23 @@ export function ModelSettingsPage() {
     if (!checked && capability === "ocr") setIsDefaultOcr(false);
   }
 
+  function changeApiFormat(next: "openai" | "mineru") {
+    setApiFormat(next);
+    if (next === "mineru") {
+      setCapabilities(["ocr"]);
+      setNativeTools(false);
+      setJsonMode(false);
+      setIsDefault(false);
+      setIsDefaultVision(false);
+      setIsDefaultOcr(true);
+      if (!modelName.trim()) setModelName("MinerU OCR");
+    }
+  }
+
   async function testConnection(item?: ModelConnectionItem) {
     setBusyAction("test"); setMessage(""); setTestResult(null);
     try {
-      const candidate = item ? { base_url: item.base_url, api_key: null, clear_api_key: false, models: [item.model_name], default_model: item.model_name, timeout_seconds: item.timeout_seconds, temperature: item.temperature, json_mode: item.json_mode, native_tools: item.native_tools, tls_verify: item.tls_verify, capabilities: item.capabilities, model_id: item.id } : payload();
+      const candidate = item ? { base_url: item.base_url, api_format: item.api_format, api_key: null, clear_api_key: false, models: [item.model_name], default_model: item.model_name, timeout_seconds: item.timeout_seconds, temperature: item.temperature, json_mode: item.json_mode, native_tools: item.native_tools, tls_verify: item.tls_verify, capabilities: item.capabilities, model_id: item.id } : payload();
       const result = await api<ModelConnectionTestResult>("/super-admin/model/test", { method: "POST", body: JSON.stringify(candidate) });
       setTestResult(result);
       setMessageTone("success");
@@ -1778,7 +1794,7 @@ export function ModelSettingsPage() {
       })}
     </section>}
     {loading ? <div className="detail-loading compact" /> : catalog.items.length ? <section className="model-compact-list">{catalog.items.map((item) => <article key={item.id}>
-      <div className="model-compact-identity"><span><Workflow /></span><div><strong>{item.model_name}</strong><small>{item.base_url}</small><div className="model-capability-tags">{item.capabilities.map((capability) => <i key={capability}>{capability === "chat" ? "对话" : capability === "vision" ? "视觉" : "OCR"}</i>)}{item.is_default && <em>默认对话</em>}{item.is_default_vision && <em>默认视觉</em>}{item.is_default_ocr && <em>默认 OCR</em>}</div></div></div>
+      <div className="model-compact-identity"><span><Workflow /></span><div><strong>{item.model_name}</strong><small>{item.base_url}</small><div className="model-capability-tags"><i>{item.api_format === "mineru" ? "MinerU" : "OpenAI 兼容"}</i>{item.capabilities.map((capability) => <i key={capability}>{capability === "chat" ? "对话" : capability === "vision" ? "视觉" : "OCR"}</i>)}{item.is_default && <em>默认对话</em>}{item.is_default_vision && <em>默认视觉</em>}{item.is_default_ocr && <em>默认 OCR</em>}</div></div></div>
       <b className={item.enabled ? "available" : "disabled"}>{item.enabled ? "可用" : "停用"}</b>
       <div className="model-row-actions"><button type="button" onClick={() => void testConnection(item)}><Zap />测试</button><button type="button" onClick={() => resetEditor(item)}><PencilLine />编辑</button><button className="danger" type="button" onClick={() => void removeModel(item)}><Trash2 />删除</button></div>
     </article>)}</section> : <EmptyState icon={AlertTriangle} title="还没有模型" description="新增模型连接后，即可用于对话、Skill 任务和 API 调用。" action={<button className="button primary" type="button" onClick={() => resetEditor(null)}>新增模型</button>} />}
@@ -1793,16 +1809,17 @@ export function ModelSettingsPage() {
           <form className="model-settings-panel" onSubmit={saveConfig}>
             <div className="model-settings-intro"><h2>连接与能力</h2><p>只有具备对话能力的模型会出现在工作台模型选择器中；视觉和 OCR 由平台按附件处理方式自动调用。</p></div>
             <div className="model-settings-form">
-              <label>模型名称<input autoFocus required value={modelName} placeholder="例如 deepseek-v4-flash" onChange={(event) => setModelName(event.target.value)} /><small>需要与模型服务实际支持的 model 参数一致。</small></label>
-              <label>Base URL<input type="url" required value={baseUrl} placeholder="https://api.example.com/v1" onChange={(event) => setBaseUrl(event.target.value)} /></label>
+              <label>接口类型<select value={apiFormat} onChange={(event) => changeApiFormat(event.target.value as "openai" | "mineru")}><option value="openai">OpenAI 兼容接口</option><option value="mineru">MinerU 文件解析</option></select><small>{apiFormat === "mineru" ? "调用 MinerU /file_parse，仅用于 OCR。" : "调用 Chat Completions，支持对话、视觉或 OCR。"}</small></label>
+              <label>{apiFormat === "mineru" ? "连接名称" : "模型名称"}<input autoFocus required value={modelName} placeholder={apiFormat === "mineru" ? "例如 MinerU OCR" : "例如 deepseek-v4-flash"} onChange={(event) => setModelName(event.target.value)} /><small>{apiFormat === "mineru" ? "用于平台展示和审计，不会作为 model 参数发送。" : "需要与模型服务实际支持的 model 参数一致。"}</small></label>
+              <label className="model-field-wide">Base URL<input type="url" required value={baseUrl} placeholder={apiFormat === "mineru" ? "http://10.2.98.237:8511" : "https://api.example.com/v1"} onChange={(event) => setBaseUrl(event.target.value)} /><small>{apiFormat === "mineru" ? "可填写服务根地址或完整 /file_parse 地址。" : "可填写服务根地址或完整 /chat/completions 地址。"}</small></label>
               <label className="model-field-wide">API Key<input type="password" value={apiKey} autoComplete="new-password" placeholder={editingModel?.api_key_configured ? "已保存；留空保持不变" : "输入该模型的服务密钥"} onChange={(event) => setApiKey(event.target.value)} /><small>仅保存在服务端，页面不会回显原文。</small></label>
               <label>超时时间（秒）<input type="number" min={5} max={600} value={timeoutSeconds} onChange={(event) => setTimeoutSeconds(Number(event.target.value))} /></label>
-              <label>Temperature<input type="number" min={0} max={2} step={0.1} value={temperature} onChange={(event) => setTemperature(Number(event.target.value))} /></label>
+              {apiFormat === "openai" && <label>Temperature<input type="number" min={0} max={2} step={0.1} value={temperature} onChange={(event) => setTemperature(Number(event.target.value))} /></label>}
             </div>
-            <section className="model-capability-editor"><header><strong>模型能力</strong><small>至少选择一种能力</small></header><div>
-              <label className={capabilities.includes("chat") ? "active" : ""}><input type="checkbox" checked={capabilities.includes("chat")} onChange={(event) => toggleCapability("chat", event.target.checked)} /><span><b>对话</b><small>回答、推理和 Skill 调度</small></span></label>
-              <label className={capabilities.includes("vision") ? "active" : ""}><input type="checkbox" checked={capabilities.includes("vision")} onChange={(event) => toggleCapability("vision", event.target.checked)} /><span><b>视觉</b><small>理解图片、图表和界面</small></span></label>
-              <label className={capabilities.includes("ocr") ? "active" : ""}><input type="checkbox" checked={capabilities.includes("ocr")} onChange={(event) => toggleCapability("ocr", event.target.checked)} /><span><b>OCR</b><small>提取图片中的准确文字</small></span></label>
+            <section className="model-capability-editor"><header><strong>模型能力</strong><small>{apiFormat === "mineru" ? "MinerU 固定用于 OCR" : "至少选择一种能力"}</small></header><div>
+              <label className={capabilities.includes("chat") ? "active" : ""}><input type="checkbox" checked={capabilities.includes("chat")} disabled={apiFormat === "mineru"} onChange={(event) => toggleCapability("chat", event.target.checked)} /><span><b>对话</b><small>回答、推理和 Skill 调度</small></span></label>
+              <label className={capabilities.includes("vision") ? "active" : ""}><input type="checkbox" checked={capabilities.includes("vision")} disabled={apiFormat === "mineru"} onChange={(event) => toggleCapability("vision", event.target.checked)} /><span><b>视觉</b><small>理解图片、图表和界面</small></span></label>
+              <label className={capabilities.includes("ocr") ? "active" : ""}><input type="checkbox" checked={capabilities.includes("ocr")} disabled={apiFormat === "mineru"} onChange={(event) => toggleCapability("ocr", event.target.checked)} /><span><b>OCR</b><small>提取图片中的准确文字</small></span></label>
             </div></section>
             <div className="model-option-row">
               <label><input type="checkbox" checked={nativeTools} disabled={!capabilities.includes("chat")} onChange={(event) => setNativeTools(event.target.checked)} /><span>支持工具调用</span></label>

@@ -758,7 +758,7 @@ export function DashboardPage() {
         </div>}
       </div>
       {selectedSkillIds.length > 0 && <span className="agent-start-route-mode">明确执行 · {selectedSkillIds.length} 个 Skill</span>}
-      <label className={`agent-ocr-toggle${ocrEnabled ? " active" : ""}`} title={availableModels.ocr_configured ? "同时使用 OCR 提取图片文字，再由视觉模型理解" : "请先在平台设置中配置 OCR 模型"}><input type="checkbox" checked={ocrEnabled} disabled={composerDisabled || !availableModels.ocr_configured} onChange={(event) => setOcrEnabled(event.target.checked)} /><span>OCR 识别</span></label>
+      <label className={`agent-ocr-toggle${ocrEnabled ? " active" : ""}`} title={availableModels.ocr_configured ? "同时使用 OCR 提取图片文字，再由视觉模型理解" : "请先在平台设置中配置 OCR 模型"}><input type="checkbox" checked={ocrEnabled} disabled={composerDisabled || !availableModels.ocr_configured} onChange={(event) => setOcrEnabled(event.target.checked)} /><span className="agent-ocr-switch" aria-hidden="true"><i /></span><span className="agent-ocr-label">OCR 识别</span></label>
       <div className="agent-start-model-wrap" ref={modelMenuRef}>
         <button type="button" className="agent-start-model" disabled={composerDisabled || !availableModels.configured} aria-expanded={modelMenuOpen} onClick={() => { setModelMenuOpen((open) => !open); setSkillMenuOpen(false); setFileMenuOpen(false); }}><span>{selectedModelName || "默认模型"}</span><ChevronDown /></button>
         {modelMenuOpen && <div className="agent-model-popover">{availableModels.models.map((model) => <button type="button" key={model} className={model === selectedModelName ? "selected" : ""} onClick={() => { setSelectedModelName(model); setModelMenuOpen(false); }}>{model}<Check /></button>)}</div>}

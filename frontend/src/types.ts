@@ -406,6 +406,7 @@ export interface ModelConnectionItem {
   id: string;
   model_name: string;
   base_url: string;
+  api_format: "openai" | "mineru";
   api_key_configured: boolean;
   timeout_seconds: number;
   temperature: number;

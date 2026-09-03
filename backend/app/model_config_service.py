@@ -45,8 +45,9 @@ def _row_connection(
         defaults.append("ocr")
     return ModelConnection(
         base_url=row.base_url,
-        api_key=row.api_key or settings.model_api_key,
+        api_key=row.api_key or (settings.model_api_key if row.api_format == "openai" else None),
         model_name=row.model_name,
+        api_format=row.api_format,
         models=available_chat_models,
         timeout_seconds=float(row.timeout_seconds),
         temperature=max(0, min(row.temperature_milli, 2000)) / 1000,

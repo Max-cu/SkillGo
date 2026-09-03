@@ -4,6 +4,24 @@
 
 ## [Unreleased]
 
+## [0.2.5] - 2026-09-03
+
+### Added
+
+- 模型连接新增明确的接口类型，OCR 可直接选择 MinerU 文件解析协议并调用 `/file_parse`，不再要求服务兼容 OpenAI Chat Completions。
+- MinerU 返回的 Markdown OCR 内容会被规范化为附件文字证据，并移除只在 MinerU 临时目录中有效的图片引用。
+- 新增 Alembic 迁移保存模型接口类型，已有连接安全默认为 OpenAI 兼容协议。
+
+### Changed
+
+- 工作台“OCR 识别”改为左右滑动开关，补齐开启、关闭、禁用和键盘焦点状态。
+- MinerU 连接测试通过 OpenAPI 验证 `/file_parse` 协议，不再为测试连接触发一次耗时的完整 OCR 推理。
+- 平台设置会根据接口类型调整字段说明；MinerU 固定声明为 OCR 能力，避免误配为对话或视觉模型。
+
+### Fixed
+
+- 修复将 MinerU 根地址错误拼接为 `/chat/completions` 后导致模型配置测试失败的问题。
+
 ## [0.2.4] - 2026-09-03
 
 ### Added
@@ -99,7 +117,8 @@
 - 任务容器默认非 root、只读根文件系统、去除 Linux Capabilities 并限制 CPU、内存和 PID。
 - 本机密钥、运行数据、用户文件和备份默认被版本库忽略。
 
-[Unreleased]: https://github.com/Max-cu/SkillGo/compare/v0.2.4...HEAD
+[Unreleased]: https://github.com/Max-cu/SkillGo/compare/v0.2.5...HEAD
+[0.2.5]: https://github.com/Max-cu/SkillGo/compare/v0.2.4...v0.2.5
 [0.2.4]: https://github.com/Max-cu/SkillGo/compare/v0.2.3...v0.2.4
 [0.2.3]: https://github.com/Max-cu/SkillGo/compare/v0.2.2...v0.2.3
 [0.2.2]: https://github.com/Max-cu/SkillGo/compare/v0.2.1...v0.2.2

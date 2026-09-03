@@ -96,6 +96,7 @@ def test_model_connection_can_be_tested_before_saving(
     async def fake_test_connection(self):
         observed["model_name"] = self.model_name
         observed["base_url"] = self.connection.base_url
+        observed["api_format"] = self.connection.api_format
         observed["has_key"] = bool(self.connection.api_key)
         return {"model_name": self.model_name, "latency_ms": 37}
 
@@ -115,6 +116,7 @@ def test_model_connection_can_be_tested_before_saving(
     assert observed == {
         "model_name": "review-fast",
         "base_url": "https://models.example.com/v1",
+        "api_format": "openai",
         "has_key": True,
     }
 
@@ -131,6 +133,39 @@ def test_model_connection_can_be_tested_before_saving(
     )
     assert tested_without_key.status_code == 200, tested_without_key.text
     assert observed["has_key"] is False
+
+
+def test_mineru_connection_is_ocr_only_and_preserves_api_format(client, owner_headers):
+    created = client.post(
+        "/api/v1/super-admin/models",
+        headers=owner_headers,
+        json=connection_payload(
+            "MinerU OCR",
+            "http://10.2.98.237:8511",
+            api_key=None,
+            api_format="mineru",
+            capabilities=["ocr"],
+            native_tools=False,
+            json_mode=False,
+            is_default_ocr=True,
+        ),
+    )
+    assert created.status_code == 201, created.text
+    assert created.json()["api_format"] == "mineru"
+    assert created.json()["capabilities"] == ["ocr"]
+    assert created.json()["is_default_ocr"] is True
+
+    invalid = client.post(
+        "/api/v1/super-admin/models",
+        headers=owner_headers,
+        json=connection_payload(
+            "Bad MinerU",
+            "http://mineru.example.com",
+            api_format="mineru",
+            capabilities=["vision", "ocr"],
+        ),
+    )
+    assert invalid.status_code == 422, invalid.text
 
 
 def connection_payload(name, url, **overrides):

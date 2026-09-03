@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import json
+import re
 import time
 from dataclasses import dataclass, replace
 from typing import Any, AsyncIterator
@@ -40,6 +41,7 @@ class ModelConnection:
     base_url: str | None
     api_key: str | None
     model_name: str | None
+    api_format: str = "openai"
     models: tuple[str, ...] = ()
     timeout_seconds: float = 120
     temperature: float = 0.2
@@ -441,9 +443,26 @@ class OpenAICompatibleGateway:
             return base_url
         return f"{base_url}/chat/completions"
 
+    def _mineru_file_parse_url(self) -> str:
+        if not self.connection.base_url:
+            raise ModelGatewayError("MODEL_NOT_CONFIGURED", "MinerU 服务地址尚未配置")
+        base_url = self.connection.base_url.rstrip("/")
+        parsed = urlparse(base_url)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            raise ModelGatewayError("MODEL_CONFIG_INVALID", "MinerU 服务地址必须使用 HTTP 或 HTTPS")
+        if base_url.endswith("/file_parse"):
+            return base_url
+        return f"{base_url}/file_parse"
+
+    def _mineru_openapi_url(self) -> str:
+        file_parse_url = self._mineru_file_parse_url()
+        return f"{file_parse_url.removesuffix('/file_parse')}/openapi.json"
+
     async def test_connection(self) -> dict[str, Any]:
         if not self.configured or not self.connection.model_name:
             raise ModelGatewayError("MODEL_NOT_CONFIGURED", "请先填写模型地址和默认模型")
+        if self.connection.api_format == "mineru":
+            return await self._test_mineru_connection()
         attachment_capability = next(
             (
                 capability
@@ -505,6 +524,38 @@ class OpenAICompatibleGateway:
             "latency_ms": round((time.perf_counter() - started) * 1000),
         }
 
+    async def _test_mineru_connection(self) -> dict[str, Any]:
+        headers: dict[str, str] = {}
+        if self.connection.api_key:
+            headers["Authorization"] = f"Bearer {self.connection.api_key}"
+        started = time.perf_counter()
+        try:
+            async with httpx.AsyncClient(
+                timeout=min(self.connection.timeout_seconds, 30),
+                verify=self.connection.tls_verify,
+            ) as client:
+                response = await client.get(self._mineru_openapi_url(), headers=headers)
+                response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            raise ModelGatewayError(
+                "MODEL_HTTP_ERROR", f"MinerU 服务返回 HTTP {exc.response.status_code}"
+            ) from exc
+        except httpx.HTTPError as exc:
+            raise ModelGatewayError("MODEL_UNAVAILABLE", "无法连接到 MinerU 服务") from exc
+        try:
+            payload = response.json()
+            file_parse = payload["paths"]["/file_parse"]["post"]
+            if not isinstance(file_parse, dict):
+                raise TypeError("file_parse operation is invalid")
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise ModelGatewayError(
+                "MODEL_RESPONSE_INVALID", "目标服务不是兼容的 MinerU 文件解析接口"
+            ) from exc
+        return {
+            "model_name": self.connection.model_name,
+            "latency_ms": round((time.perf_counter() - started) * 1000),
+        }
+
     async def analyze_image(
         self,
         *,
@@ -525,6 +576,12 @@ class OpenAICompatibleGateway:
                 f"{purpose.upper()}_MODEL_NOT_CONFIGURED",
                 "平台尚未配置可用的附件分析模型",
             )
+        if self.connection.api_format == "mineru":
+            if purpose != "ocr":
+                raise ModelGatewayError(
+                    "MODEL_CAPABILITY_MISMATCH", "MinerU 连接只能用于 OCR 识别"
+                )
+            return await self._analyze_image_with_mineru(data=data, media_type=media_type)
         headers = {"Content-Type": "application/json"}
         if self.connection.api_key:
             headers["Authorization"] = f"Bearer {self.connection.api_key}"
@@ -595,6 +652,78 @@ class OpenAICompatibleGateway:
             output={"message": content.strip()},
             model_name=model_name if isinstance(model_name, str) else self.connection.model_name,
             token_usage=usage if isinstance(usage, dict) else {},
+            latency_ms=round((time.perf_counter() - started_at) * 1000),
+        )
+
+    async def _analyze_image_with_mineru(
+        self, *, data: bytes, media_type: str
+    ) -> ModelResult:
+        """Upload one image to MinerU and normalize its Markdown OCR response."""
+
+        headers: dict[str, str] = {}
+        if self.connection.api_key:
+            headers["Authorization"] = f"Bearer {self.connection.api_key}"
+        suffix = {"image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".webp"}.get(
+            media_type, ".bin"
+        )
+        started_at = time.perf_counter()
+        try:
+            async with httpx.AsyncClient(
+                timeout=self.connection.timeout_seconds,
+                verify=self.connection.tls_verify,
+            ) as client:
+                response = await client.post(
+                    self._mineru_file_parse_url(),
+                    headers=headers,
+                    files={"files": (f"attachment{suffix}", data, media_type)},
+                    data={
+                        "return_md": "true",
+                        "return_images": "false",
+                        "return_middle_json": "false",
+                        "return_model_output": "false",
+                        "return_content_list": "false",
+                    },
+                )
+                response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            raise ModelGatewayError(
+                "ATTACHMENT_MODEL_HTTP_ERROR",
+                f"MinerU 服务返回 HTTP {exc.response.status_code}",
+            ) from exc
+        except httpx.HTTPError as exc:
+            raise ModelGatewayError(
+                "ATTACHMENT_MODEL_UNAVAILABLE", "无法连接到 MinerU 服务"
+            ) from exc
+        try:
+            payload = response.json()
+            results = payload["results"]
+            if not isinstance(results, dict) or not results:
+                raise TypeError("results is empty")
+            markdown_parts: list[str] = []
+            for item in results.values():
+                if not isinstance(item, dict) or not isinstance(item.get("md_content"), str):
+                    raise TypeError("md_content is missing")
+                markdown_parts.append(item["md_content"])
+            content = "\n\n".join(markdown_parts)
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise ModelGatewayError(
+                "ATTACHMENT_MODEL_RESPONSE_INVALID", "MinerU 服务响应格式不兼容"
+            ) from exc
+        # MinerU image references point to its own temporary output directory and
+        # are not useful as OCR evidence inside SkillGo. Keep only readable text.
+        content = re.sub(r"!\[[^\]]*\]\([^)]*\)", "", content)
+        content = re.sub(r"\n{3,}", "\n\n", content).strip()
+        backend = payload.get("backend")
+        version = payload.get("version")
+        metadata = {
+            "provider": "mineru",
+            **({"backend": backend} if isinstance(backend, str) else {}),
+            **({"version": version} if isinstance(version, str) else {}),
+        }
+        return ModelResult(
+            output={"message": content, **metadata},
+            model_name=self.connection.model_name,
+            token_usage={},
             latency_ms=round((time.perf_counter() - started_at) * 1000),
         )
 

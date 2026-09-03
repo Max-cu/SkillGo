@@ -243,6 +243,9 @@ class ModelConnectionConfig(TimestampMixin, Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
     model_name: Mapped[str] = mapped_column(String(160), index=True)
     base_url: Mapped[str] = mapped_column(String(500))
+    api_format: Mapped[str] = mapped_column(
+        String(32), default="openai", server_default="openai"
+    )
     api_key: Mapped[str | None] = mapped_column(String(1000), nullable=True)
     timeout_seconds: Mapped[int] = mapped_column(Integer, default=120)
     temperature_milli: Mapped[int] = mapped_column(Integer, default=200)

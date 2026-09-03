@@ -442,7 +442,10 @@ def _model_connection_item(row: ModelConnectionConfig) -> ModelConnectionItem:
         id=row.id,
         model_name=row.model_name,
         base_url=row.base_url,
-        api_key_configured=bool(row.api_key or settings.model_api_key),
+        api_format=row.api_format,
+        api_key_configured=bool(
+            row.api_key or (settings.model_api_key if row.api_format == "openai" else None)
+        ),
         timeout_seconds=row.timeout_seconds,
         temperature=max(0, min(row.temperature_milli, 2000)) / 1000,
         json_mode=row.json_mode,
@@ -563,6 +566,7 @@ def create_model_connection(
     row = ModelConnectionConfig(
         model_name=model_name,
         base_url=base_url,
+        api_format=payload.api_format,
         api_key=(payload.api_key or "").strip() or None,
         timeout_seconds=payload.timeout_seconds,
         temperature_milli=round(payload.temperature * 1000),
@@ -578,7 +582,7 @@ def create_model_connection(
     db.add(row)
     db.flush()
     _normalize_all_defaults(db, row)
-    add_audit(db, actor=user, action="system.model.create", resource_type="model_connection", resource_id=row.id, details={"model_name": row.model_name, "base_url": row.base_url})
+    add_audit(db, actor=user, action="system.model.create", resource_type="model_connection", resource_id=row.id, details={"model_name": row.model_name, "base_url": row.base_url, "api_format": row.api_format})
     db.commit()
     db.refresh(row)
     return _model_connection_item(row)
@@ -600,6 +604,7 @@ def update_model_connection(
         raise HTTPException(status_code=409, detail="同名模型已经存在")
     row.model_name = model_name
     row.base_url = base_url
+    row.api_format = payload.api_format
     row.timeout_seconds = payload.timeout_seconds
     row.temperature_milli = round(payload.temperature * 1000)
     row.json_mode = payload.json_mode
@@ -615,7 +620,7 @@ def update_model_connection(
     elif payload.api_key and payload.api_key.strip():
         row.api_key = payload.api_key.strip()
     _normalize_all_defaults(db, row)
-    add_audit(db, actor=user, action="system.model.update", resource_type="model_connection", resource_id=row.id, details={"model_name": row.model_name, "base_url": row.base_url})
+    add_audit(db, actor=user, action="system.model.update", resource_type="model_connection", resource_id=row.id, details={"model_name": row.model_name, "base_url": row.base_url, "api_format": row.api_format})
     db.commit()
     db.refresh(row)
     return _model_connection_item(row)
@@ -790,6 +795,7 @@ async def test_model_connection(
             base_url=base_url,
             api_key=api_key,
             model_name=payload.default_model.strip(),
+            api_format=payload.api_format,
             models=models,
             timeout_seconds=payload.timeout_seconds,
             temperature=payload.temperature,

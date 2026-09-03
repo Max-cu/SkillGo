@@ -1,8 +1,15 @@
 from __future__ import annotations
 
+import asyncio
 import pytest
+import httpx
 
-from app.model_gateway import _parse_agent_tool_response, _parse_json_object
+from app.model_gateway import (
+    ModelConnection,
+    OpenAICompatibleGateway,
+    _parse_agent_tool_response,
+    _parse_json_object,
+)
 
 
 @pytest.mark.parametrize(
@@ -121,3 +128,96 @@ def test_parse_native_tool_call_requires_finish_to_be_alone():
 
     with pytest.raises(ValueError, match="finish must be the only tool call"):
         _parse_agent_tool_response(payload)
+
+
+def test_mineru_ocr_uses_file_parse_and_normalizes_markdown(monkeypatch):
+    observed: dict[str, object] = {}
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        observed["url"] = str(request.url)
+        observed["content_type"] = request.headers["content-type"]
+        observed["body"] = await request.aread()
+        return httpx.Response(
+            200,
+            json={
+                "backend": "hybrid-auto-engine",
+                "version": "2.7.6",
+                "results": {
+                    "attachment": {
+                        "md_content": "![](images/temp.jpg)\n\n发票号码：12345"
+                    }
+                },
+            },
+        )
+
+    transport = httpx.MockTransport(handler)
+    async_client = httpx.AsyncClient
+
+    def client_factory(**kwargs):
+        return async_client(transport=transport, timeout=kwargs.get("timeout"))
+
+    monkeypatch.setattr("app.model_gateway.httpx.AsyncClient", client_factory)
+    gateway = OpenAICompatibleGateway(
+        ModelConnection(
+            base_url="http://mineru.example.com",
+            api_key=None,
+            model_name="MinerU OCR",
+            api_format="mineru",
+            capabilities=("ocr",),
+        )
+    )
+
+    result = asyncio.run(
+        gateway.analyze_image(
+            data=b"png-bytes",
+            media_type="image/png",
+            prompt="extract text",
+            purpose="ocr",
+        )
+    )
+
+    assert observed["url"] == "http://mineru.example.com/file_parse"
+    assert str(observed["content_type"]).startswith("multipart/form-data; boundary=")
+    assert b'filename="attachment.png"' in observed["body"]
+    assert b'name="return_images"' in observed["body"]
+    assert result.output == {
+        "message": "发票号码：12345",
+        "provider": "mineru",
+        "backend": "hybrid-auto-engine",
+        "version": "2.7.6",
+    }
+    assert result.model_name == "MinerU OCR"
+
+
+def test_mineru_connection_test_checks_openapi_without_running_ocr(monkeypatch):
+    observed: dict[str, object] = {}
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        observed["method"] = request.method
+        observed["url"] = str(request.url)
+        return httpx.Response(200, json={"paths": {"/file_parse": {"post": {}}}})
+
+    transport = httpx.MockTransport(handler)
+    async_client = httpx.AsyncClient
+
+    def client_factory(**kwargs):
+        return async_client(transport=transport, timeout=kwargs.get("timeout"))
+
+    monkeypatch.setattr("app.model_gateway.httpx.AsyncClient", client_factory)
+    gateway = OpenAICompatibleGateway(
+        ModelConnection(
+            base_url="http://mineru.example.com/file_parse",
+            api_key=None,
+            model_name="MinerU OCR",
+            api_format="mineru",
+            capabilities=("ocr",),
+        )
+    )
+
+    result = asyncio.run(gateway.test_connection())
+
+    assert observed == {
+        "method": "GET",
+        "url": "http://mineru.example.com/openapi.json",
+    }
+    assert result["model_name"] == "MinerU OCR"

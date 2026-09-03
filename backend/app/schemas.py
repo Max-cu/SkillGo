@@ -563,9 +563,17 @@ class ModelConfigUpdate(BaseModel):
 
 class ModelConnectionTestRequest(ModelConfigUpdate):
     model_id: str | None = Field(default=None, max_length=36)
+    api_format: Literal["openai", "mineru"] = "openai"
     capabilities: list[Literal["chat", "vision", "ocr"]] = Field(
         default_factory=lambda: ["chat"], min_length=1, max_length=3
     )
+
+    @model_validator(mode="after")
+    def mineru_requires_ocr_only(self):
+        self.capabilities = list(dict.fromkeys(self.capabilities))
+        if self.api_format == "mineru" and self.capabilities != ["ocr"]:
+            raise ValueError("MinerU 接口只能配置 OCR 能力")
+        return self
 
 
 class ModelConnectionTestResult(BaseModel):
@@ -579,6 +587,7 @@ class ModelConnectionItem(BaseModel):
     id: str
     model_name: str
     base_url: str
+    api_format: Literal["openai", "mineru"] = "openai"
     api_key_configured: bool
     timeout_seconds: int
     temperature: float
@@ -604,6 +613,7 @@ class ModelConnectionList(BaseModel):
 class ModelConnectionCreate(BaseModel):
     model_name: str = Field(min_length=1, max_length=160)
     base_url: str = Field(min_length=8, max_length=500)
+    api_format: Literal["openai", "mineru"] = "openai"
     api_key: str | None = Field(default=None, max_length=1000)
     timeout_seconds: int = Field(default=120, ge=5, le=600)
     temperature: float = Field(default=0.2, ge=0, le=2)
@@ -622,6 +632,8 @@ class ModelConnectionCreate(BaseModel):
     def defaults_require_capabilities(self):
         unique = list(dict.fromkeys(self.capabilities))
         self.capabilities = unique
+        if self.api_format == "mineru" and unique != ["ocr"]:
+            raise ValueError("MinerU 接口只能配置 OCR 能力")
         if self.is_default and "chat" not in unique:
             raise ValueError("默认对话模型必须具备对话能力")
         if self.is_default_vision and "vision" not in unique:
