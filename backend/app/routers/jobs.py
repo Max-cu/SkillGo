@@ -13,7 +13,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from ..attachment_analysis import AttachmentAnalysis, analyze_image_attachment, image_media_type
+from ..attachment_analysis import AttachmentAnalysis, analyze_attachment, attachment_media_type
 from ..config import settings
 from ..conversation_service import can_run_version
 from ..database import get_db
@@ -425,9 +425,10 @@ async def _analyze_job_attachment(
     ocr_enabled: bool,
 ) -> AttachmentAnalysis | None:
     try:
-        if image_media_type(filename, data) is None:
+        media_type = attachment_media_type(filename, data)
+        if media_type is None or (media_type == "application/pdf" and not ocr_enabled):
             return None
-        return await analyze_image_attachment(
+        return await analyze_attachment(
             gateway=gateway,
             filename=filename,
             data=data,
@@ -784,6 +785,16 @@ async def create_workflow_job(
         )
         for input_data, input_name, _ in resolved_inputs
     ]
+    analysis_modes = {item.mode for item in analyses if item is not None}
+    job_analysis_mode = (
+        next(iter(analysis_modes))
+        if len(analysis_modes) == 1
+        else "mixed"
+        if len(analysis_modes) > 1
+        else "vision_with_ocr"
+        if ocr_enabled
+        else "vision"
+    )
     data, original_filename, content_type = resolved_inputs[0]
     job, extracted_text, profile = _prepare_file_job(
         db,
@@ -799,7 +810,7 @@ async def create_workflow_job(
         model_name=selected_gateway.model_name,
         message_content=normalized_parts,
         routing_mode=routing_mode,
-        attachment_analysis_mode="vision_with_ocr" if ocr_enabled else "vision",
+        attachment_analysis_mode=job_analysis_mode,
         analysis=analyses[0],
     )
     extracted_texts = [extracted_text]

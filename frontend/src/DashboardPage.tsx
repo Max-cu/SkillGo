@@ -5,7 +5,7 @@ import { useGSAP } from "@gsap/react";
 import { gsap } from "gsap";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { api, apiBlob, apiNdjson } from "./api";
+import { api, apiBlob, apiNdjson, apiNdjsonUpload, apiUpload } from "./api";
 import { useAuth } from "./auth";
 import { SkillPromptEditor, type SkillPromptEditorHandle } from "./SkillPromptEditor";
 import { Link } from "./router";
@@ -50,6 +50,17 @@ function formatSize(size: number) {
   if (size < 1024) return `${size} B`;
   if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
   return `${(size / 1024 / 1024).toFixed(1)} MB`;
+}
+
+function attachmentAnalysisLabel(file: AgentMessageFile) {
+  if (file.analysis_mode === "ocr") return "OCR 已识别";
+  if (file.analysis_mode === "vision_with_ocr") {
+    if (file.analysis_model && file.ocr_model) return "视觉 + OCR 已完成";
+    if (file.ocr_model) return "OCR 已识别 · 视觉未完成";
+    return "视觉已完成 · OCR 未完成";
+  }
+  if (file.analysis_mode === "vision") return "视觉分析已完成";
+  return "";
 }
 
 function formatTime(value: string) {
@@ -236,6 +247,24 @@ interface StreamingTurn {
   latencyMs?: number;
 }
 
+interface AttachmentProgress {
+  phase: "uploading" | "processing";
+  percent: number;
+  label: string;
+  detail: string;
+}
+
+function AttachmentProgressView({ progress }: { progress: AttachmentProgress }) {
+  return <div className={`agent-upload-progress ${progress.phase}`} role="status" aria-live="polite">
+    <span className="agent-upload-progress-icon">{progress.phase === "uploading" ? <Paperclip /> : <FileCheck2 />}</span>
+    <span className="agent-upload-progress-copy">
+      <strong>{progress.label}</strong>
+      <small>{progress.detail}</small>
+      <i className="agent-upload-progress-track"><b style={{ width: `${progress.percent}%` }} /></i>
+    </span>
+  </div>;
+}
+
 export function DashboardPage() {
   const { user } = useAuth();
   const ownedSkills = useLoad<Skill[]>("/skills/mine", []);
@@ -258,6 +287,7 @@ export function DashboardPage() {
   const [selectedModelName, setSelectedModelName] = useState("");
   const [ocrEnabled, setOcrEnabled] = useState(false);
   const [launching, setLaunching] = useState(false);
+  const [attachmentProgress, setAttachmentProgress] = useState<AttachmentProgress | null>(null);
   const [streamingTurn, setStreamingTurn] = useState<StreamingTurn | null>(null);
   const [loadingConversationId, setLoadingConversationId] = useState<string | null>(null);
   const [launchError, setLaunchError] = useState("");
@@ -530,6 +560,34 @@ export function DashboardPage() {
     const submittedLocalFiles = [...attachments];
     const submittedHistoryFiles = [...selectedHistoryFiles];
     const submittedOcrEnabled = ocrEnabled;
+    const submittedFileCount = submittedLocalFiles.length + submittedHistoryFiles.length;
+    const submittedHasPdf = [...submittedLocalFiles.map((file) => file.name), ...submittedHistoryFiles.map((file) => file.filename)]
+      .some((name) => name.toLocaleLowerCase().endsWith(".pdf"));
+    const processingLabel = submittedOcrEnabled
+      ? (submittedHasPdf ? "正在进行 PDF OCR 识别…" : "正在进行 OCR 与视觉分析…")
+      : "附件已上传，正在解析…";
+    const beginAttachmentProgress = () => {
+      if (!submittedFileCount) return;
+      setAttachmentProgress(submittedLocalFiles.length ? {
+        phase: "uploading",
+        percent: 0,
+        label: "正在上传附件 · 0%",
+        detail: `${submittedFileCount} 个附件`,
+      } : {
+        phase: "processing",
+        percent: 100,
+        label: processingLabel,
+        detail: `${submittedFileCount} 个会话附件，无需重复上传`,
+      });
+    };
+    const trackUpload = (loaded: number, total: number) => {
+      const percent = total > 0 ? Math.min(100, Math.round((loaded / total) * 100)) : 0;
+      if (percent >= 100) {
+        setAttachmentProgress({ phase: "processing", percent: 100, label: processingLabel, detail: `${submittedFileCount} 个附件已安全送达` });
+      } else {
+        setAttachmentProgress({ phase: "uploading", percent, label: `正在上传附件 · ${percent}%`, detail: `${submittedFileCount} 个附件` });
+      }
+    };
     let clearedBeforeRequest = false;
     let receivedStreamEvent = false;
     const focusedElement = document.activeElement;
@@ -564,8 +622,10 @@ export function DashboardPage() {
         clearComposer();
         clearedBeforeRequest = true;
         let streamError = "";
-        await apiNdjson<WorkspaceStreamEvent>(`/agent/conversations/${conversationId}/messages/stream`, { method: "POST", body }, (streamEvent) => {
+        beginAttachmentProgress();
+        const handleStreamEvent = (streamEvent: WorkspaceStreamEvent) => {
           receivedStreamEvent = true;
+          setAttachmentProgress(null);
           if (streamEvent.type === "delta") {
             setStreamingTurn((current) => current ? { ...current, answer: current.answer + streamEvent.text } : current);
           } else if (streamEvent.type === "done") {
@@ -577,7 +637,12 @@ export function DashboardPage() {
           } else if (streamEvent.type === "error") {
             streamError = streamEvent.message;
           }
-        });
+        };
+        if (submittedLocalFiles.length) {
+          await apiNdjsonUpload<WorkspaceStreamEvent>(`/agent/conversations/${conversationId}/messages/stream`, body, trackUpload, handleStreamEvent);
+        } else {
+          await apiNdjson<WorkspaceStreamEvent>(`/agent/conversations/${conversationId}/messages/stream`, { method: "POST", body }, handleStreamEvent);
+        }
         if (streamError) throw new Error(streamError);
         syncConversation(await api<AgentWorkspaceConversationDetail>(`/agent/conversations/${conversationId}`));
         setStreamingTurn(null);
@@ -605,7 +670,10 @@ export function DashboardPage() {
         if (ocrEnabled) body.set("ocr_enabled", "true");
         attachments.forEach((file) => body.append("files", file));
         if (selectedHistoryFiles.length) body.set("existing_file_ids", JSON.stringify(selectedHistoryFiles.map((file) => file.id)));
-        await api<WorkflowJob>("/jobs", { method: "POST", body });
+        beginAttachmentProgress();
+        if (submittedLocalFiles.length) await apiUpload<WorkflowJob>("/jobs", body, trackUpload);
+        else await api<WorkflowJob>("/jobs", { method: "POST", body });
+        setAttachmentProgress(null);
         syncConversation(await api<AgentWorkspaceConversationDetail>(`/agent/conversations/${conversationId}`));
         clearComposer();
       }
@@ -626,6 +694,7 @@ export function DashboardPage() {
         }
       }
     } finally {
+      setAttachmentProgress(null);
       setLaunching(false);
     }
   }
@@ -790,7 +859,7 @@ export function DashboardPage() {
           <div className="agent-workspace-messages" ref={messagesScrollerRef} aria-live="polite" onScroll={handleMessagesScroll}>
             {conversationMessages.map((message) => message.role === "user" ? <article className="agent-workspace-message user" key={message.id}>
               <div className="agent-workspace-bubble"><StructuredPrompt parts={message.content.parts} fallback={String(message.content.message || "")} />
-                {(message.files.length > 0 || (message.content.files?.length || 0) > 0) && <div className="agent-workspace-files">{message.files.length > 0 ? message.files.map((file) => <span className={file.purged_at ? "expired" : ""} key={file.id}><Paperclip />{file.filename}<small>{file.purged_at ? "已到期" : formatSize(file.size_bytes)}</small></span>) : message.content.files?.map((file, index) => <span key={`${file.filename}-${index}`}><Paperclip />{file.filename}<small>{formatSize(file.size_bytes)}</small></span>)}</div>}
+                {(message.files.length > 0 || (message.content.files?.length || 0) > 0) && <div className="agent-workspace-files">{message.files.length > 0 ? message.files.map((file) => <span className={file.purged_at ? "expired" : ""} key={file.id}><Paperclip />{file.filename}<small>{file.purged_at ? "已到期" : formatSize(file.size_bytes)}</small>{!file.purged_at && attachmentAnalysisLabel(file) && <em><Check />{attachmentAnalysisLabel(file)}</em>}</span>) : message.content.files?.map((file, index) => <span key={`${file.filename}-${index}`}><Paperclip />{file.filename}<small>{formatSize(file.size_bytes)}</small></span>)}</div>}
               </div><time>{formatTime(message.created_at)}</time>
             </article> : <article className="agent-workspace-message assistant" key={message.id}><div>{message.kind === "workflow" && message.job ? <WorkflowReply job={message.job} onDownload={(job, artifact) => void downloadArtifact(job, artifact)} onRetry={(job) => void retryJob(job)} onEdit={editFailedJob} /> : <><MarkdownContent className="agent-workspace-answer">{String(message.content.message || "")}</MarkdownContent><time>{formatTime(message.created_at)}{message.model_name ? ` · ${message.model_name}` : ""}{typeof message.content.latency_ms === "number" ? ` · ${formatDuration(message.content.latency_ms)}` : ""}</time></>}</div></article>)}
             {streamingTurn?.conversationId === activeConversation.id && <>
@@ -798,9 +867,9 @@ export function DashboardPage() {
                 <div className="agent-workspace-bubble">{streamingTurn.prompt}{streamingTurn.attachments.length > 0 && <div className="agent-workspace-files">{streamingTurn.attachments.map((file, index) => <span key={`${file.name}-${index}`}><Paperclip />{file.name}<small>{formatSize(file.size)}</small></span>)}</div>}</div>
                 <time>{new Date(streamingTurn.startedAt).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}</time>
               </article>
-              <article className="agent-workspace-message assistant streaming-assistant"><div>{streamingTurn.answer ? <MarkdownContent className="agent-workspace-answer">{streamingTurn.answer}</MarkdownContent> : <div className="agent-workspace-answer"><span className="agent-stream-waiting"><i /><span>正在思考</span></span></div>}{streamingTurn.answer && <time>{streamingTurn.modelName || "默认模型"}{streamingTurn.latencyMs ? ` · ${formatDuration(streamingTurn.latencyMs)}` : " · 正在生成"}</time>}</div></article>
+              <article className="agent-workspace-message assistant streaming-assistant"><div>{streamingTurn.answer ? <MarkdownContent className="agent-workspace-answer">{streamingTurn.answer}</MarkdownContent> : attachmentProgress ? <AttachmentProgressView progress={attachmentProgress} /> : <div className="agent-workspace-answer"><span className="agent-stream-waiting"><i /><span>正在思考</span></span></div>}{streamingTurn.answer && <time>{streamingTurn.modelName || "默认模型"}{streamingTurn.latencyMs ? ` · ${formatDuration(streamingTurn.latencyMs)}` : " · 正在生成"}</time>}</div></article>
             </>}
-            {launching && !streamingTurn && <article className="agent-workspace-message assistant pending"><div className="agent-workspace-answer"><RotateCw className="spin-icon" />正在准备任务…</div></article>}
+            {launching && !streamingTurn && <article className="agent-workspace-message assistant pending">{attachmentProgress ? <AttachmentProgressView progress={attachmentProgress} /> : <div className="agent-workspace-answer"><RotateCw className="spin-icon" />正在准备任务…</div>}</article>}
           </div>
           {showScrollToLatest && <button className="agent-scroll-latest" type="button" onClick={() => followLatestMessages("smooth")}><ArrowDown />{launching ? "查看最新回复" : "回到最新消息"}</button>}
         </div>

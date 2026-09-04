@@ -564,7 +564,7 @@ class OpenAICompatibleGateway:
         prompt: str,
         purpose: str,
     ) -> ModelResult:
-        """Send one trusted attachment to a private OpenAI-compatible multimodal model."""
+        """Send one trusted attachment to a configured vision or OCR model."""
 
         if purpose not in {"vision", "ocr"} or purpose not in self.connection.capabilities:
             raise ModelGatewayError(
@@ -582,6 +582,11 @@ class OpenAICompatibleGateway:
                     "MODEL_CAPABILITY_MISMATCH", "MinerU 连接只能用于 OCR 识别"
                 )
             return await self._analyze_image_with_mineru(data=data, media_type=media_type)
+        if media_type == "application/pdf":
+            raise ModelGatewayError(
+                "MODEL_CAPABILITY_MISMATCH",
+                "PDF OCR 当前需要配置 MinerU 文件解析服务",
+            )
         headers = {"Content-Type": "application/json"}
         if self.connection.api_key:
             headers["Authorization"] = f"Bearer {self.connection.api_key}"
@@ -658,14 +663,17 @@ class OpenAICompatibleGateway:
     async def _analyze_image_with_mineru(
         self, *, data: bytes, media_type: str
     ) -> ModelResult:
-        """Upload one image to MinerU and normalize its Markdown OCR response."""
+        """Upload one image or PDF to MinerU and normalize its Markdown OCR response."""
 
         headers: dict[str, str] = {}
         if self.connection.api_key:
             headers["Authorization"] = f"Bearer {self.connection.api_key}"
-        suffix = {"image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".webp"}.get(
-            media_type, ".bin"
-        )
+        suffix = {
+            "image/png": ".png",
+            "image/jpeg": ".jpg",
+            "image/webp": ".webp",
+            "application/pdf": ".pdf",
+        }.get(media_type, ".bin")
         started_at = time.perf_counter()
         try:
             async with httpx.AsyncClient(

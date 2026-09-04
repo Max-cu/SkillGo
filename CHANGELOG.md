@@ -4,6 +4,25 @@
 
 ## [Unreleased]
 
+## [0.2.6] - 2026-09-04
+
+### Added
+
+- 工作台附件上传展示真实字节进度；上传完成后继续显示 OCR、视觉分析或附件解析阶段，不再把耗时处理笼统显示为“发送中”。
+- 对话附件完成后展示“OCR 已识别”“视觉 + OCR 已完成”等可审计状态；部分能力失败时明确区分 OCR 与视觉结果。
+- PDF 附件开启 OCR 后可直接交给 MinerU `/file_parse`，识别结果进入普通对话或 Skill 任务上下文。
+
+### Changed
+
+- PDF OCR 只调用 OCR 文件解析模型，不会把 PDF 错误发送给视觉 Chat Completions；图片继续使用视觉理解，并按用户选择叠加 OCR。
+- 任务和对话记录按附件真实处理结果保存 `ocr`、`vision`、`vision_with_ocr` 或 `mixed` 模式。
+
+### Fixed
+
+- 修复开启 OCR 后上传 PDF 仍因“普通对话无法理解文件格式”而无法发送的问题。
+- 扩展 MinerU multipart 文件名与媒体类型映射，PDF 使用 `.pdf` 和 `application/pdf`，不再退化为未知二进制文件。
+- 扫描型 PDF 未开启 OCR 时返回可操作的提示，避免用户无法判断失败原因。
+
 ## [0.2.5] - 2026-09-03
 
 ### Added
@@ -117,7 +136,8 @@
 - 任务容器默认非 root、只读根文件系统、去除 Linux Capabilities 并限制 CPU、内存和 PID。
 - 本机密钥、运行数据、用户文件和备份默认被版本库忽略。
 
-[Unreleased]: https://github.com/Max-cu/SkillGo/compare/v0.2.5...HEAD
+[Unreleased]: https://github.com/Max-cu/SkillGo/compare/v0.2.6...HEAD
+[0.2.6]: https://github.com/Max-cu/SkillGo/compare/v0.2.5...v0.2.6
 [0.2.5]: https://github.com/Max-cu/SkillGo/compare/v0.2.4...v0.2.5
 [0.2.4]: https://github.com/Max-cu/SkillGo/compare/v0.2.3...v0.2.4
 [0.2.3]: https://github.com/Max-cu/SkillGo/compare/v0.2.2...v0.2.3

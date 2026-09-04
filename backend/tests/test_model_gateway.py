@@ -130,7 +130,13 @@ def test_parse_native_tool_call_requires_finish_to_be_alone():
         _parse_agent_tool_response(payload)
 
 
-def test_mineru_ocr_uses_file_parse_and_normalizes_markdown(monkeypatch):
+@pytest.mark.parametrize(
+    ("media_type", "expected_filename"),
+    [("image/png", b'filename="attachment.png"'), ("application/pdf", b'filename="attachment.pdf"')],
+)
+def test_mineru_ocr_uses_file_parse_and_normalizes_markdown(
+    monkeypatch, media_type, expected_filename
+):
     observed: dict[str, object] = {}
 
     async def handler(request: httpx.Request) -> httpx.Response:
@@ -169,8 +175,8 @@ def test_mineru_ocr_uses_file_parse_and_normalizes_markdown(monkeypatch):
 
     result = asyncio.run(
         gateway.analyze_image(
-            data=b"png-bytes",
-            media_type="image/png",
+            data=b"attachment-bytes",
+            media_type=media_type,
             prompt="extract text",
             purpose="ocr",
         )
@@ -178,7 +184,7 @@ def test_mineru_ocr_uses_file_parse_and_normalizes_markdown(monkeypatch):
 
     assert observed["url"] == "http://mineru.example.com/file_parse"
     assert str(observed["content_type"]).startswith("multipart/form-data; boundary=")
-    assert b'filename="attachment.png"' in observed["body"]
+    assert expected_filename in observed["body"]
     assert b'name="return_images"' in observed["body"]
     assert result.output == {
         "message": "发票号码：12345",

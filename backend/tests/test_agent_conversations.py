@@ -272,6 +272,45 @@ def test_workspace_image_uses_vision_only_by_default(
     ]
 
 
+def test_workspace_pdf_uses_ocr_without_vision_when_enabled(
+    client, user_headers, fake_model_gateway
+):
+    conversation = client.post(
+        "/api/v1/agent/conversations", headers=user_headers, json={}
+    ).json()
+    response = client.post(
+        f"/api/v1/agent/conversations/{conversation['id']}/messages",
+        headers=user_headers,
+        data={"message": "识别这份扫描件", "ocr_enabled": "true"},
+        files={"file": ("scan.pdf", b"%PDF-1.4\nscan", "application/pdf")},
+    )
+    assert response.status_code == 200, response.text
+    stored = response.json()["messages"][0]["files"][0]
+    assert stored["analysis_mode"] == "ocr"
+    assert stored["analysis_status"] == "ready"
+    assert stored["analysis_model"] is None
+    assert stored["ocr_model"] == "test-ocr-model"
+    assert fake_model_gateway.selected_capabilities == ["ocr"]
+    assert fake_model_gateway.attachment_analyses[0]["media_type"] == "application/pdf"
+    assert "OCR extracted text" in fake_model_gateway.chat_messages[-1][-1]["content"]
+
+
+def test_workspace_scanned_pdf_explains_that_ocr_is_required(
+    client, user_headers
+):
+    conversation = client.post(
+        "/api/v1/agent/conversations", headers=user_headers, json={}
+    ).json()
+    response = client.post(
+        f"/api/v1/agent/conversations/{conversation['id']}/messages",
+        headers=user_headers,
+        data={"message": "读一下"},
+        files={"file": ("scan.pdf", b"%PDF-1.4\nscan", "application/pdf")},
+    )
+    assert response.status_code == 422
+    assert "开启 OCR" in response.text
+
+
 def test_workspace_image_rejects_extension_signature_mismatch(
     client, user_headers, fake_model_gateway
 ):

@@ -181,6 +181,34 @@ def test_skill_job_persists_platform_image_analysis(
     assert fake_model_gateway.selected_capabilities[-2:] == ["ocr", "vision"]
 
 
+def test_skill_job_persists_pdf_ocr_without_vision(
+    client, user_headers, fake_model_gateway
+):
+    _, version = create_version(
+        client, user_headers, slug="pdf-ocr-job", package=skill_zip()
+    )
+    response = client.post(
+        "/api/v1/jobs",
+        headers=user_headers,
+        data={
+            "version_id": version["id"],
+            "instruction": "读取扫描 PDF",
+            "ocr_enabled": "true",
+        },
+        files={"file": ("evidence.pdf", b"%PDF-1.4\nscan", "application/pdf")},
+    )
+    assert response.status_code == 201, response.text
+    job = client.get(
+        f"/api/v1/jobs/{response.json()['id']}", headers=user_headers
+    ).json()
+    assert job["attachment_analysis_mode"] == "ocr"
+    assert job["input_files"][0]["readable"] is True
+    assert job["input_files"][0]["analysis_mode"] == "ocr"
+    assert job["input_files"][0]["analysis_model"] is None
+    assert job["input_files"][0]["ocr_model"] == "test-ocr-model"
+    assert fake_model_gateway.selected_capabilities[-1:] == ["ocr"]
+
+
 def test_finished_workflow_job_can_be_deleted(
     client, user_headers, fake_model_gateway
 ):
