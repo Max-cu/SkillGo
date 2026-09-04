@@ -38,6 +38,7 @@ class ValidatedPackage:
     metadata_name: str
     metadata_description: str
     file_names: tuple[str, ...]
+    warnings: tuple[str, ...]
 
 
 def _safe_path(name: str) -> PurePosixPath:
@@ -52,6 +53,41 @@ def _safe_path(name: str) -> PurePosixPath:
     if len(path.parts) > 12:
         raise PackageValidationError(f"archive path is too deep: {name!r}")
     return path
+
+
+def _inferred_skill_name(skill_md: str, skill_path: PurePosixPath) -> str:
+    parent_name = skill_path.parent.name if str(skill_path.parent) != "." else ""
+    if parent_name and parent_name.casefold() not in {"skill", "skills"}:
+        return parent_name
+    heading = re.search(r"^#\s+(.+?)\s*$", skill_md, flags=re.MULTILINE)
+    if heading:
+        return re.sub(r"[*_`#]", "", heading.group(1)).strip()
+    return "Imported Skill"
+
+
+def _inferred_skill_description(skill_md: str, name: str) -> str:
+    paragraph: list[str] = []
+    lines = skill_md.splitlines()
+    if lines and lines[0].strip() == "---":
+        closing = next(
+            (index for index, line in enumerate(lines[1:], 1) if line.strip() == "---"),
+            None,
+        )
+        if closing is not None:
+            lines = lines[closing + 1 :]
+    for raw_line in lines:
+        line = raw_line.strip()
+        if not line:
+            if paragraph:
+                break
+            continue
+        if line.startswith(("#", "---", "```", "|", ">")):
+            continue
+        cleaned = re.sub(r"[*_`\[\]()]", "", line).strip(" -")
+        if cleaned:
+            paragraph.append(cleaned)
+    description = " ".join(paragraph).strip()
+    return description[:1024] or f"{name}：从非标准 SKILL.md 兼容导入，请在发布前确认用途说明。"
 
 
 def validate_skill_package(data: bytes) -> ValidatedPackage:
@@ -88,16 +124,35 @@ def validate_skill_package(data: bytes) -> ValidatedPackage:
     if total_size > settings.max_uncompressed_bytes:
         raise PackageValidationError("archive expands beyond the allowed size")
 
-    roots = {path.split("/", 1)[0] for path in files}
-    prefix = next(iter(roots)) + "/" if len(roots) == 1 and "SKILL.md" not in files else ""
-    skill_key = prefix + "SKILL.md"
-    if skill_key not in files:
+    warnings: list[str] = []
+    skill_candidates = [
+        name
+        for name in files
+        if PurePosixPath(name).name.casefold() == "skill.md"
+        and "__macosx" not in {part.casefold() for part in PurePosixPath(name).parts}
+        and not any(part.startswith("._") for part in PurePosixPath(name).parts)
+    ]
+    if not skill_candidates:
         raise PackageValidationError("SKILL.md is required")
+    if len(skill_candidates) > 1:
+        raise PackageValidationError(
+            "package contains multiple SKILL.md files; upload one Skill at a time"
+        )
+    skill_key = skill_candidates[0]
+    skill_path = PurePosixPath(skill_key)
+    prefix = "" if str(skill_path.parent) == "." else f"{skill_path.parent.as_posix()}/"
+    if skill_path.name != "SKILL.md":
+        warnings.append("入口文件不是标准大写 SKILL.md，已按兼容模式识别。")
 
     try:
-        skill_md = archive.read(files[skill_key]).decode("utf-8")
+        skill_bytes = archive.read(files[skill_key])
+        skill_md = skill_bytes.decode("utf-8-sig")
     except UnicodeDecodeError as exc:
         raise PackageValidationError("SKILL.md must be UTF-8") from exc
+    except (NotImplementedError, RuntimeError) as exc:
+        raise PackageValidationError("SKILL.md uses an unsupported ZIP compression method") from exc
+    if skill_bytes.startswith(b"\xef\xbb\xbf"):
+        warnings.append("SKILL.md 含 UTF-8 BOM，已自动规范化。")
     if not skill_md.strip() or len(skill_md) > 200_000:
         raise PackageValidationError("SKILL.md is empty or too large")
 
@@ -110,29 +165,44 @@ def validate_skill_package(data: bytes) -> ValidatedPackage:
 
     manifest: dict | None = None
     for filename in ("skillgo.yaml", "manifest.skillgo.yaml", "manifest.yaml"):
-        manifest_key = prefix + filename
-        if manifest_key not in files:
-            continue
-        try:
-            candidate = yaml.safe_load(archive.read(files[manifest_key]))
-        except UnicodeDecodeError as exc:
-            raise PackageValidationError(f"{filename} must be UTF-8") from exc
-        except yaml.YAMLError as exc:
-            raise PackageValidationError(f"{filename} is invalid YAML") from exc
-        if not isinstance(candidate, dict):
-            raise PackageValidationError(f"{filename} must contain an object")
-        # A generic manifest from another ecosystem must not accidentally become
-        # a SkillGo deployment manifest.
-        is_skillgo = filename != "manifest.yaml" or str(candidate.get("apiVersion", "")).startswith("skillgo.io/")
-        if is_skillgo:
-            manifest = candidate
+        manifest_keys = [prefix + filename]
+        if prefix and filename != "manifest.yaml":
+            manifest_keys.append(filename)
+        for manifest_key in dict.fromkeys(manifest_keys):
+            if manifest_key not in files:
+                continue
+            try:
+                candidate = yaml.safe_load(archive.read(files[manifest_key]))
+            except UnicodeDecodeError as exc:
+                raise PackageValidationError(f"{filename} must be UTF-8") from exc
+            except yaml.YAMLError as exc:
+                raise PackageValidationError(f"{filename} is invalid YAML") from exc
+            except (NotImplementedError, RuntimeError) as exc:
+                raise PackageValidationError(
+                    f"{filename} uses an unsupported ZIP compression method"
+                ) from exc
+            if not isinstance(candidate, dict):
+                raise PackageValidationError(f"{filename} must contain an object")
+            # A generic manifest from another ecosystem must not accidentally become
+            # a SkillGo deployment manifest.
+            is_skillgo = filename != "manifest.yaml" or str(candidate.get("apiVersion", "")).startswith("skillgo.io/")
+            if is_skillgo:
+                manifest = candidate
+                break
+        if manifest is not None:
             break
 
     package_format = "skillgo" if manifest is not None else "agent-skill"
     if manifest is None:
         if not standard_name or not standard_description:
-            raise PackageValidationError(
-                "standard Skill packages require name and description in SKILL.md frontmatter"
+            inferred_name = standard_name or _inferred_skill_name(skill_md, skill_path)
+            inferred_description = standard_description or _inferred_skill_description(
+                skill_md, inferred_name
+            )
+            standard_name = inferred_name
+            standard_description = inferred_description
+            warnings.append(
+                "SKILL.md 缺少标准 name/description Frontmatter；已从目录、标题和正文推断资料，请在发布前确认。"
             )
         manifest = {
             "apiVersion": "skillgo.io/v1alpha1",
@@ -186,4 +256,5 @@ def validate_skill_package(data: bytes) -> ValidatedPackage:
         metadata_name=str(metadata.get("displayName") or standard_name or metadata.get("name") or "").strip(),
         metadata_description=standard_description,
         file_names=tuple(sorted(files)),
+        warnings=tuple(warnings),
     )

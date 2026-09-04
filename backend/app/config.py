@@ -56,6 +56,9 @@ class Settings:
     model_api_key: str | None = os.getenv("SKILLGO_MODEL_API_KEY")
     model_name: str | None = os.getenv("SKILLGO_MODEL_NAME")
     model_timeout_seconds: float = float(os.getenv("SKILLGO_MODEL_TIMEOUT_SECONDS", "120"))
+    skill_analysis_timeout_seconds: float = float(
+        os.getenv("SKILLGO_SKILL_ANALYSIS_TIMEOUT_SECONDS", "45")
+    )
     model_temperature: float = float(os.getenv("SKILLGO_MODEL_TEMPERATURE", "0.2"))
     model_json_mode: bool = _bool("SKILLGO_MODEL_JSON_MODE", True)
     model_native_tools: bool = _bool("SKILLGO_MODEL_NATIVE_TOOLS", True)

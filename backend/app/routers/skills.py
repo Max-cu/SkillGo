@@ -28,6 +28,18 @@ def _can_manage(skill: Skill, user: User) -> bool:
     return skill.owner_id == user.id or user.role in (Role.ADMIN, Role.SUPER_ADMIN)
 
 
+def _available_skill_slug(db: Session, preferred: str) -> str:
+    if db.scalar(select(Skill.id).where(Skill.slug == preferred)) is None:
+        return preferred
+    for index in range(2, 10_000):
+        suffix = f"-{index}"
+        stem = preferred[: 80 - len(suffix)].rstrip("-")
+        candidate = f"{stem}{suffix}"
+        if db.scalar(select(Skill.id).where(Skill.slug == candidate)) is None:
+            return candidate
+    raise HTTPException(status_code=409, detail="无法生成可用的 Skill 唯一标识，请手动修改")
+
+
 @router.get("/community/skills", response_model=list[SkillRead])
 def community_skills(
     query: str | None = None,
@@ -81,7 +93,14 @@ def create_skill(
     db: Session = Depends(get_db),
 ) -> SkillRead:
     if db.scalar(select(Skill).where(Skill.slug == payload.slug)):
-        raise HTTPException(status_code=409, detail="Skill slug is already in use")
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "SKILL_SLUG_CONFLICT",
+                "message": "这个唯一标识已被使用，请更换后重试",
+                "suggested_slug": _available_skill_slug(db, payload.slug),
+            },
+        )
     skill = Skill(owner_id=user.id, **payload.model_dump())
     db.add(skill)
     db.flush()
@@ -103,14 +122,28 @@ async def analyze_skill_package(
     package: UploadFile = File(...),
     user: User = Depends(current_user),
     gateway: OpenAICompatibleGateway = Depends(get_model_gateway),
+    db: Session = Depends(get_db),
 ) -> SkillPackageAnalysis:
-    del user  # Authentication is required; package analysis does not persist user data.
     data = await package.read(settings.max_upload_bytes + 1)
     try:
         validated = validate_skill_package(data)
     except PackageValidationError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     suggestion = await analyze_package(validated, gateway)
+    preferred_slug = suggestion["slug"]
+    available_slug = _available_skill_slug(db, preferred_slug)
+    if available_slug != preferred_slug:
+        suggestion["slug"] = available_slug
+        suggestion["warnings"].append(
+            f"唯一标识 {preferred_slug} 已被占用，已为本次新建建议 {available_slug}。"
+        )
+        owned = db.scalar(
+            select(Skill.id).where(Skill.slug == preferred_slug, Skill.owner_id == user.id)
+        )
+        if owned is not None:
+            suggestion["warnings"].append(
+                "你已经拥有原标识对应的 Skill；如果这是同一能力的更新，也可以在原 Skill 中上传新版本。"
+            )
     return SkillPackageAnalysis(
         **suggestion,
         version=validated.version,

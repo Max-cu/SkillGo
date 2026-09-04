@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import asyncio
 import io
 import zipfile
+from types import SimpleNamespace
 
+from app import skill_analysis
 from app.model_gateway import ModelResult
 from conftest import login, make_email, make_password
 
@@ -60,6 +63,19 @@ Read the supplied content, identify the objective, and return a concise summary.
     return output.getvalue()
 
 
+def nonstandard_skill_zip(*, nested: bool = False) -> bytes:
+    output = io.BytesIO()
+    skill_path = "repository-main/skills/interview-simulator/SKILL.md" if nested else "SKILL.md"
+    with zipfile.ZipFile(output, "w") as archive:
+        if nested:
+            archive.writestr("repository-main/README.md", "Repository wrapper")
+        archive.writestr(
+            skill_path,
+            "# Interview Simulator\n\nPractice realistic interviews and receive actionable feedback.\n",
+        )
+    return output.getvalue()
+
+
 def sandbox_network_skill_zip() -> bytes:
     output = io.BytesIO()
     with zipfile.ZipFile(output, "w") as archive:
@@ -96,7 +112,7 @@ def test_analyze_standard_package_with_configured_model(
     assert result["source"] == "ai"
     assert result["package_format"] == "agent-skill"
     assert result["name"] == "智能内容总结"
-    assert result["slug"] == "smart-summary"
+    assert result["slug"] == "summary-writer"
     assert result["category"] == "writing"
     assert result["version"] == "0.1.0"
     assert len(fake_model_gateway.analyzed_skills) == 1
@@ -129,9 +145,126 @@ def test_analyze_package_replaces_invalid_ai_slug_with_safe_fallback(
     assert response.status_code == 200, response.text
     result = response.json()
     assert result["name"] == "孔板计算"
-    assert result["slug"].replace("-", "").isalnum()
-    assert result["slug"].isascii()
-    assert len(result["slug"]) >= 3
+    assert result["slug"] == "summary-writer"
+
+
+def test_analyze_nonstandard_package_infers_missing_frontmatter(
+    client, user_headers, fake_model_gateway
+):
+    fake_model_gateway.configured = False
+    response = client.post(
+        "/api/v1/skills/analyze-package",
+        headers=user_headers,
+        files={"package": ("interview-simulator.zip", nonstandard_skill_zip(), "application/zip")},
+    )
+
+    assert response.status_code == 200, response.text
+    result = response.json()
+    assert result["name"] == "Interview Simulator"
+    assert result["slug"] == "interview-simulator"
+    assert any("缺少标准" in warning for warning in result["warnings"])
+
+
+def test_analyze_finds_single_skill_inside_repository_wrapper(
+    client, user_headers, fake_model_gateway
+):
+    fake_model_gateway.configured = False
+    response = client.post(
+        "/api/v1/skills/analyze-package",
+        headers=user_headers,
+        files={"package": ("nested.zip", nonstandard_skill_zip(nested=True), "application/zip")},
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["slug"] == "interview-simulator"
+
+
+def test_analyze_rejects_ambiguous_multi_skill_package(client, user_headers):
+    output = io.BytesIO()
+    with zipfile.ZipFile(output, "w") as archive:
+        archive.writestr("skills/first/SKILL.md", "# First\n\nFirst workflow description.\n")
+        archive.writestr("skills/second/SKILL.md", "# Second\n\nSecond workflow description.\n")
+
+    response = client.post(
+        "/api/v1/skills/analyze-package",
+        headers=user_headers,
+        files={"package": ("plugin.zip", output.getvalue(), "application/zip")},
+    )
+
+    assert response.status_code == 422
+    assert "multiple SKILL.md" in response.json()["detail"]
+
+
+def test_analyze_timeout_falls_back_without_blocking_import(
+    client, user_headers, fake_model_gateway, monkeypatch
+):
+    async def slow_analysis(**kwargs):
+        del kwargs
+        await asyncio.sleep(0.2)
+        raise AssertionError("cancelled analysis must not finish")
+
+    fake_model_gateway.analyze_skill = slow_analysis
+    monkeypatch.setattr(
+        skill_analysis,
+        "settings",
+        SimpleNamespace(skill_analysis_timeout_seconds=0.01),
+    )
+    response = client.post(
+        "/api/v1/skills/analyze-package",
+        headers=user_headers,
+        files={"package": ("summary.zip", standard_skill_zip(), "application/zip")},
+    )
+
+    assert response.status_code == 200, response.text
+    result = response.json()
+    assert result["source"] == "package"
+    assert result["slug"] == "summary-writer"
+    assert any("AI 资料预填超时" in warning for warning in result["warnings"])
+
+
+def test_analyze_suggests_available_slug_when_package_slug_is_taken(
+    client, user_headers, fake_model_gateway
+):
+    created = client.post(
+        "/api/v1/skills",
+        headers=user_headers,
+        json={
+            "slug": "summary-writer",
+            "name": "Existing Summary Writer",
+            "summary": "An existing Skill used to verify identifier conflict handling.",
+        },
+    )
+    assert created.status_code == 201, created.text
+
+    response = client.post(
+        "/api/v1/skills/analyze-package",
+        headers=user_headers,
+        files={"package": ("summary.zip", standard_skill_zip(), "application/zip")},
+    )
+
+    assert response.status_code == 200, response.text
+    result = response.json()
+    assert result["slug"] == "summary-writer-2"
+    assert any("已被占用" in warning for warning in result["warnings"])
+    assert any("上传新版本" in warning for warning in result["warnings"])
+
+
+def test_create_skill_conflict_returns_chinese_message_and_suggestion(client, user_headers):
+    payload = {
+        "slug": "duplicate-skill",
+        "name": "Duplicate Skill",
+        "summary": "A duplicate Skill used to verify clear conflict messages.",
+    }
+    assert client.post("/api/v1/skills", headers=user_headers, json=payload).status_code == 201
+
+    response = client.post("/api/v1/skills", headers=user_headers, json=payload)
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == {
+        "code": "SKILL_SLUG_CONFLICT",
+        "message": "这个唯一标识已被使用，请更换后重试",
+        "suggested_slug": "duplicate-skill-2",
+    }
 
 
 def test_standard_package_upload_gets_platform_versions(client, user_headers):

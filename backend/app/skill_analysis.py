@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 import re
 
+from .config import settings
 from .model_gateway import ModelGatewayError, OpenAICompatibleGateway
 from .skill_package import ValidatedPackage
 
@@ -15,11 +17,15 @@ def _text(value: object, *, limit: int) -> str:
     return re.sub(r"\s+", " ", value).strip()[:limit]
 
 
-def _slug(value: object, fallback: str) -> str:
+def _normalized_slug(value: object) -> str:
     source = value if isinstance(value, str) else ""
-    slug = re.sub(r"[^a-z0-9]+", "-", source.lower()).strip("-")[:80].rstrip("-")
+    return re.sub(r"[^a-z0-9]+", "-", source.lower()).strip("-")[:80].rstrip("-")
+
+
+def _slug(value: object, fallback: str) -> str:
+    slug = _normalized_slug(value)
     if len(slug) < 3:
-        slug = re.sub(r"[^a-z0-9]+", "-", fallback.lower()).strip("-")[:80].rstrip("-")
+        slug = _normalized_slug(fallback)
     return slug if len(slug) >= 3 else f"skill-{fallback[:8].lower()}"
 
 
@@ -61,7 +67,12 @@ def package_fallback(validated: ValidatedPackage) -> dict[str, str]:
     }
 
 
-def _merge_suggestion(fallback: dict[str, str], suggestion: dict) -> dict[str, str]:
+def _merge_suggestion(
+    fallback: dict[str, str],
+    suggestion: dict,
+    *,
+    preferred_package_slug: str | None = None,
+) -> dict[str, str]:
     name = _text(suggestion.get("name"), limit=120)
     if len(name) < 2:
         name = fallback["name"]
@@ -77,7 +88,7 @@ def _merge_suggestion(fallback: dict[str, str], suggestion: dict) -> dict[str, s
 
     return {
         "name": name,
-        "slug": _slug(suggestion.get("slug"), fallback["slug"]),
+        "slug": preferred_package_slug or _slug(suggestion.get("slug"), fallback["slug"]),
         "summary": summary,
         "description": description,
         "category": category,
@@ -89,7 +100,9 @@ async def analyze_package(
     gateway: OpenAICompatibleGateway,
 ) -> dict:
     fallback = package_fallback(validated)
-    warnings: list[str] = []
+    warnings: list[str] = list(validated.warnings)
+    declared_slug = _normalized_slug(validated.metadata_name)
+    preferred_package_slug = declared_slug if len(declared_slug) >= 3 else None
     if validated.package_format == "agent-skill":
         warnings.append("这是标准 Agent Skill 包；SkillGo 已生成默认运行配置和 0.1.0 版本号。")
 
@@ -103,17 +116,28 @@ async def analyze_package(
         }
 
     try:
-        result = await gateway.analyze_skill(
-            skill_md=validated.skill_md,
-            package_metadata={
-                "name": validated.metadata_name,
-                "description": validated.metadata_description,
-                "version": validated.version,
-                "format": validated.package_format,
-                "type": validated.skill_type.value,
-                "permissions": validated.permissions,
-            },
+        result = await asyncio.wait_for(
+            gateway.analyze_skill(
+                skill_md=validated.skill_md,
+                package_metadata={
+                    "name": validated.metadata_name,
+                    "description": validated.metadata_description,
+                    "version": validated.version,
+                    "format": validated.package_format,
+                    "type": validated.skill_type.value,
+                    "permissions": validated.permissions,
+                },
+            ),
+            timeout=max(0.1, float(settings.skill_analysis_timeout_seconds)),
         )
+    except TimeoutError:
+        warnings.append("AI 资料预填超时，已使用包内资料继续导入；你仍可手动修改。")
+        return {
+            **fallback,
+            "source": "package",
+            "model_name": None,
+            "warnings": warnings,
+        }
     except ModelGatewayError:
         warnings.append("大模型分析暂时不可用，已回退到包内元数据，你可以继续创建。")
         return {
@@ -124,7 +148,11 @@ async def analyze_package(
         }
 
     return {
-        **_merge_suggestion(fallback, result.output),
+        **_merge_suggestion(
+            fallback,
+            result.output,
+            preferred_package_slug=preferred_package_slug,
+        ),
         "source": "ai",
         "model_name": result.model_name,
         "warnings": warnings,
