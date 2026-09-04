@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import zipfile
 
+from app.model_gateway import ModelResult
 from conftest import login, make_email, make_password
 
 
@@ -99,6 +100,38 @@ def test_analyze_standard_package_with_configured_model(
     assert result["category"] == "writing"
     assert result["version"] == "0.1.0"
     assert len(fake_model_gateway.analyzed_skills) == 1
+
+
+def test_analyze_package_replaces_invalid_ai_slug_with_safe_fallback(
+    client, user_headers, fake_model_gateway
+):
+    async def analyze_skill(*, skill_md, package_metadata):
+        del skill_md, package_metadata
+        return ModelResult(
+            output={
+                "name": "孔板计算",
+                "slug": "孔板计算",
+                "summary": "根据输入参数完成孔板流量与尺寸计算。",
+                "description": "读取输入参数并生成孔板计算结果。",
+                "category": "productivity",
+            },
+            model_name="test-private-model",
+            token_usage={"total_tokens": 12},
+        )
+
+    fake_model_gateway.analyze_skill = analyze_skill
+    response = client.post(
+        "/api/v1/skills/analyze-package",
+        headers=user_headers,
+        files={"package": ("孔板计算_skill.zip", standard_skill_zip(), "application/zip")},
+    )
+
+    assert response.status_code == 200, response.text
+    result = response.json()
+    assert result["name"] == "孔板计算"
+    assert result["slug"].replace("-", "").isalnum()
+    assert result["slug"].isascii()
+    assert len(result["slug"]) >= 3
 
 
 def test_standard_package_upload_gets_platform_versions(client, user_headers):

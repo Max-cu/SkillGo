@@ -19,12 +19,57 @@ export class ApiError extends Error {
   }
 }
 
+type ValidationIssue = {
+  loc?: unknown[];
+  msg?: string;
+  type?: string;
+  ctx?: Record<string, unknown>;
+};
+
+const FIELD_LABELS: Record<string, string> = {
+  slug: "唯一标识",
+  name: "Skill 名称",
+  summary: "一句话简介",
+  description: "详细说明",
+  category: "分类",
+  visibility: "可见性",
+  package: "Skill 包",
+};
+
+function validationIssueMessage(issue: ValidationIssue): string {
+  const field = [...(issue.loc || [])].reverse().find((item): item is string => typeof item === "string" && item !== "body");
+  const label = field ? FIELD_LABELS[field] || field : "提交内容";
+  if (field === "slug") return "唯一标识只能使用小写英文字母、数字和连字符，且不能以连字符开头或结尾";
+  if (issue.type === "string_too_short" && typeof issue.ctx?.min_length === "number") {
+    return `${label}至少需要 ${issue.ctx.min_length} 个字符`;
+  }
+  if (issue.type === "string_too_long" && typeof issue.ctx?.max_length === "number") {
+    return `${label}不能超过 ${issue.ctx.max_length} 个字符`;
+  }
+  if (issue.type === "missing") return `请填写${label}`;
+  return issue.msg ? `${label}：${issue.msg}` : `${label}填写不正确`;
+}
+
+function errorMessage(body: unknown, fallback: string): string {
+  if (!body || typeof body !== "object" || !("detail" in body)) return fallback;
+  const detail = (body as { detail?: unknown }).detail;
+  if (typeof detail === "string") return detail;
+  if (Array.isArray(detail)) {
+    const messages = detail
+      .filter((item): item is ValidationIssue => Boolean(item) && typeof item === "object")
+      .map(validationIssueMessage);
+    if (messages.length) return [...new Set(messages)].slice(0, 3).join("；");
+  }
+  if (detail && typeof detail === "object" && "message" in detail && typeof detail.message === "string") {
+    return detail.message;
+  }
+  return fallback;
+}
+
 function responseError(xhr: XMLHttpRequest, fallback = "请求失败"): ApiError {
   let message = `${fallback} (${xhr.status || 0})`;
   try {
-    const body = JSON.parse(xhr.responseText) as { detail?: string | { message?: string } };
-    if (typeof body.detail === "string") message = body.detail;
-    else if (body.detail && typeof body.detail.message === "string") message = body.detail.message;
+    message = errorMessage(JSON.parse(xhr.responseText), message);
   } catch {
     // Keep the safe generic message.
   }
@@ -136,9 +181,7 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
   if (!response.ok) {
     let message = `请求失败 (${response.status})`;
     try {
-      const body = await response.json();
-      if (typeof body.detail === "string") message = body.detail;
-      else if (body.detail && typeof body.detail.message === "string") message = body.detail.message;
+      message = errorMessage(await response.json(), message);
     } catch {
       // Keep the safe generic message.
     }
@@ -156,8 +199,7 @@ export async function apiBlob(path: string): Promise<Blob> {
   if (!response.ok) {
     let message = `下载失败 (${response.status})`;
     try {
-      const body = await response.json();
-      if (typeof body.detail === "string") message = body.detail;
+      message = errorMessage(await response.json(), message);
     } catch {
       // Keep the safe generic message.
     }
@@ -180,9 +222,7 @@ export async function apiNdjson<T>(
   if (!response.ok) {
     let message = `请求失败 (${response.status})`;
     try {
-      const body = await response.json();
-      if (typeof body.detail === "string") message = body.detail;
-      else if (body.detail && typeof body.detail.message === "string") message = body.detail.message;
+      message = errorMessage(await response.json(), message);
     } catch {
       // Keep the safe generic message.
     }

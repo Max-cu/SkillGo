@@ -51,6 +51,7 @@ import { api, apiBlob, ApiError } from "./api";
 import { useAuth } from "./auth";
 import { Breadcrumbs, categoryLabel, EmptyState, PageTitle, PublicHeader, roleLabels, SkillCard, skillTypeLabels, StatusBadge, TiltSurface, visibilityLabels } from "./components";
 import { Link, Navigate, useNavigate, useParams } from "./router";
+import { isValidSkillSlug, normalizeSkillSlug } from "./skillMetadata";
 import type { AvailableModels, Conversation, ConversationDetail, ConversationMessage, Endpoint, EndpointCreated, ModelConnectionItem, ModelConnectionList, ModelConnectionTestResult, Role, RunStatus, Skill, SkillPackageAnalysis, SkillRun, SkillVersion, StorageOverview, User, Visibility, WorkflowArtifact, WorkflowJob, WorkflowJobStatus, WorkspaceFile } from "./types";
 
 gsap.registerPlugin(useGSAP);
@@ -427,7 +428,7 @@ export function NewSkillPage() {
       setDraft((current) => ({
         ...current,
         name: result.name,
-        slug: result.slug,
+        slug: normalizeSkillSlug(result.slug, result.name, file.name),
         summary: result.summary,
         description: result.description,
         category: result.category
@@ -443,7 +444,9 @@ export function NewSkillPage() {
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault(); setBusy(true); setError("");
     try {
-      const skill = await api<Skill>("/skills", { method: "POST", body: JSON.stringify({ ...draft, icon: "sparkles" }) });
+      const normalizedSlug = normalizeSkillSlug(draft.slug, draft.name, packageFile?.name || "");
+      if (normalizedSlug !== draft.slug) setDraft((current) => ({ ...current, slug: normalizedSlug }));
+      const skill = await api<Skill>("/skills", { method: "POST", body: JSON.stringify({ ...draft, slug: normalizedSlug, icon: "sparkles" }) });
       if (packageFile) {
         const upload = new FormData(); upload.set("package", packageFile);
         try { await api(`/skills/${skill.id}/versions`, { method: "POST", body: upload }); }
@@ -477,7 +480,7 @@ export function NewSkillPage() {
         <div><span className="form-step">02</span><h2>确认基本信息</h2><p>AI 生成的内容只是建议，发布前你可以修改任何字段。</p></div>
         <div className="form-fields">
           <label>Skill 名称<input name="name" required minLength={2} value={draft.name} onChange={(event) => updateDraft("name", event.target.value)} placeholder="选择 ZIP 后自动生成" /></label>
-          <label>唯一标识<input name="slug" required pattern="[a-z0-9][a-z0-9-]*[a-z0-9]" value={draft.slug} onChange={(event) => updateDraft("slug", event.target.value)} placeholder="skill-name" /></label>
+          <label>唯一标识<input name="slug" required minLength={3} maxLength={80} value={draft.slug} aria-invalid={Boolean(draft.slug) && !isValidSkillSlug(draft.slug)} onChange={(event) => updateDraft("slug", event.target.value)} onBlur={() => updateDraft("slug", normalizeSkillSlug(draft.slug, draft.name, packageFile?.name || ""))} placeholder="skill-name" /><small className="field-hint">仅使用小写英文字母、数字和连字符；非法内容会自动转换。</small></label>
           <label className="wide">一句话简介<textarea name="summary" required minLength={10} maxLength={280} rows={2} value={draft.summary} onChange={(event) => updateDraft("summary", event.target.value)} placeholder="选择 ZIP 后由 AI 总结它解决的问题和输出。" /></label>
           <label>分类<select name="category" value={draft.category} onChange={(event) => updateDraft("category", event.target.value)}><option value="productivity">效率工具</option><option value="writing">内容写作</option><option value="document">文档处理</option><option value="development">研发工程</option><option value="data">数据分析</option><option value="other">其他</option></select></label>
           <label>可见性<select name="visibility" value={draft.visibility} onChange={(event) => updateDraft("visibility", event.target.value)}><option value="private">私有</option><option value="unlisted">链接分享</option><option value="internal">实例内部</option><option value="public">公开社区</option></select></label>

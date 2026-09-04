@@ -698,6 +698,8 @@ input:focus, textarea:focus, select:focus { border-color: #8c7af7; box-shadow: 0
 .upload-first-section { border-color: #dcd7fb; background: linear-gradient(135deg, #fff 58%, #faf9ff); box-shadow: 0 10px 30px rgba(81,68,174,.045); }
 .form-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 17px; }
 .form-fields .wide { grid-column: 1 / -1; }
+.field-hint { color: var(--muted); font-size: 11px; font-weight: 500; line-height: 1.45; }
+.form-fields input[aria-invalid="true"] { border-color: #df8797; background: #fffafb; }
 .upload-drop { min-height: 150px; position: relative; padding: 22px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 7px; overflow: hidden; text-align: center; border: 1px dashed #cbd1df; border-radius: 14px; color: #525d73; background: #fafbfe; transition: border-color .18s ease, background .18s ease, box-shadow .18s ease, transform .18s ease; }
 .upload-drop:hover, .upload-drop.dragging { border-color: #9587f4; background: #f7f5ff; box-shadow: 0 9px 24px rgba(105,87,238,.08); transform: translateY(-1px); }
 .upload-drop:focus-within { outline: 3px solid rgba(105,87,238,.18); outline-offset: 2px; }
