@@ -68,6 +68,22 @@ function useLoad<T>(path: string, initial: T) {
 
 const maxSkillPackageBytes = 20 * 1024 * 1024;
 
+const skillPackageNetworkHint =
+  "Skill 包上传连接被中断或被网关拒绝。这通常不是 ZIP 格式错误：当前网络可能会拦截包含 .py、.js、.sh 等脚本的压缩包。请检查网络后重试，或改用不含可执行脚本的纯指令型 Skill。";
+
+function skillPackageErrorMessage(reason: unknown, fallback = "Skill 包上传失败") {
+  if (reason instanceof ApiError) {
+    if (reason.status === 0 || (reason.status === 400 && reason.message === "请求失败 (400)")) {
+      return skillPackageNetworkHint;
+    }
+    return reason.message;
+  }
+  if (reason instanceof TypeError || (reason instanceof Error && /failed to fetch|networkerror|network request failed/i.test(reason.message))) {
+    return skillPackageNetworkHint;
+  }
+  return reason instanceof Error ? reason.message : fallback;
+}
+
 function formatStorageBytes(size: number) {
   if (size < 1024) return `${size} B`;
   if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
@@ -435,7 +451,7 @@ export function NewSkillPage() {
       }));
     } catch (reason) {
       if (analysisRequest.current !== requestId) return;
-      setError(reason instanceof Error ? `无法识别这个 ZIP：${reason.message}` : "无法识别这个 ZIP");
+      setError(skillPackageErrorMessage(reason, "无法识别这个 ZIP"));
     } finally {
       if (analysisRequest.current === requestId) setAnalysisBusy(false);
     }
@@ -451,7 +467,7 @@ export function NewSkillPage() {
         const upload = new FormData(); upload.set("package", packageFile);
         try { await api(`/skills/${skill.id}/versions`, { method: "POST", body: upload }); }
         catch (reason) {
-          const uploadError = reason instanceof Error ? reason.message : "版本上传失败";
+          const uploadError = skillPackageErrorMessage(reason, "版本上传失败");
           navigate(`/app/skills/${skill.id}?upload_error=${encodeURIComponent(`Skill 已创建，但 ZIP 上传失败：${uploadError}`)}`);
           return;
         }
@@ -526,7 +542,7 @@ export function ManageSkillPage() {
       setMessage("版本已上传并通过基础校验");
       setPackageFile(null);
       formElement.reset();
-    } catch (reason) { setMessage(reason instanceof Error ? reason.message : "上传失败"); }
+    } catch (reason) { setMessage(skillPackageErrorMessage(reason, "上传失败")); }
     finally { setUploadBusy(false); }
   }
   async function deploy(version: SkillVersion) {
