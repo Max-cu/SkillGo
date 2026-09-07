@@ -832,7 +832,11 @@ export function DashboardPage() {
         </div>}
       </div>
       {selectedSkillIds.length > 0 && <span className="agent-start-route-mode">明确执行 · {selectedSkillIds.length} 个 Skill</span>}
-      <label className="agent-ocr-toggle" title="根据任务目标自动匹配可运行的 Skill；手动插入的 Skill 优先"><input type="checkbox" checked={automaticSkills} disabled={composerDisabled} onChange={(event) => setAutomaticSkills(event.target.checked)} /><span>自动选择 Skill</span></label>
+      <label className={`agent-ocr-toggle${automaticSkills ? " active" : ""}`} title="根据任务目标自动匹配可运行的 Skill；手动插入的 Skill 优先">
+        <input type="checkbox" role="switch" checked={automaticSkills} disabled={composerDisabled} onChange={(event) => setAutomaticSkills(event.target.checked)} />
+        <span className="agent-ocr-switch" aria-hidden="true"><i /></span>
+        <span className="agent-ocr-label">自动选择 Skill</span>
+      </label>
       <label className={`agent-ocr-toggle${ocrEnabled ? " active" : ""}`} title={availableModels.ocr_configured ? "同时使用 OCR 提取图片文字，再由视觉模型理解" : "请先在平台设置中配置 OCR 模型"}><input type="checkbox" checked={ocrEnabled} disabled={composerDisabled || !availableModels.ocr_configured} onChange={(event) => setOcrEnabled(event.target.checked)} /><span className="agent-ocr-switch" aria-hidden="true"><i /></span><span className="agent-ocr-label">OCR 识别</span></label>
       <div className="agent-start-model-wrap" ref={modelMenuRef}>
         <button type="button" className="agent-start-model" disabled={composerDisabled || !availableModels.configured} aria-expanded={modelMenuOpen} onClick={() => { setModelMenuOpen((open) => !open); setSkillMenuOpen(false); setFileMenuOpen(false); }}><span>{selectedModelName || "默认模型"}</span><ChevronDown /></button>
