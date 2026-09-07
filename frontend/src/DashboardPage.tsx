@@ -1,3 +1,4 @@
+import { WorkflowQuestion } from "./WorkflowQuestion";
 import { AlertTriangle, ArrowDown, ArrowRight, Check, ChevronDown, ChevronRight, Download, FileCheck2, FileText, FolderClock, MessageSquareText, Paperclip, PencilLine, Plus, RotateCw, Trash2, Workflow, X, Zap } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { createPortal } from "react-dom";
@@ -158,7 +159,7 @@ function TraceEvent({ event, forceComplete = false }: { event: WorkflowJobEvent;
   </details>;
 }
 
-function WorkflowReply({ job, onDownload, onRetry, onEdit }: { job: WorkflowJob; onDownload: (job: WorkflowJob, artifact: WorkflowArtifact) => void; onRetry: (job: WorkflowJob) => void; onEdit: (job: WorkflowJob) => void }) {
+function WorkflowReply({ job, onDownload, onRetry, onEdit, onAnswered }: { onAnswered: (job: WorkflowJob) => void; job: WorkflowJob; onDownload: (job: WorkflowJob, artifact: WorkflowArtifact) => void; onRetry: (job: WorkflowJob) => void; onEdit: (job: WorkflowJob) => void }) {
   const running = activeStatuses.has(job.status);
   const now = useLiveNow(running);
   const [traceOpen, setTraceOpen] = useState(running);
@@ -196,6 +197,8 @@ function WorkflowReply({ job, onDownload, onRetry, onEdit }: { job: WorkflowJob;
       <ChevronDown />
     </button>
 
+    <WorkflowQuestion job={job} onAnswered={onAnswered} />
+    {job.execution_plan && <details className="panel"><summary>执行计划 · {job.execution_plan.goal}</summary><ol>{job.execution_plan.steps.map((step) => <li key={step.id}><strong>{step.title}</strong> · {{ pending: "待执行", in_progress: "执行中", completed: "已完成", skipped: "已跳过" }[step.status] || step.status}{step.evidence && <p>{step.evidence}</p>}</li>)}</ol></details>}
     {traceOpen && <div className="agent-run-trace">
       {preludeEvents.map((event) => <TraceEvent event={event} forceComplete={!running} key={event.id} />)}
       {turns.length > 0 && <details className="agent-trace-process" open={running}>
@@ -286,6 +289,7 @@ export function DashboardPage() {
   const [conversationActionId, setConversationActionId] = useState<string | null>(null);
   const [selectedModelName, setSelectedModelName] = useState("");
   const [ocrEnabled, setOcrEnabled] = useState(false);
+  const [automaticSkills, setAutomaticSkills] = useState(false);
   const [launching, setLaunching] = useState(false);
   const [attachmentProgress, setAttachmentProgress] = useState<AttachmentProgress | null>(null);
   const [streamingTurn, setStreamingTurn] = useState<StreamingTurn | null>(null);
@@ -599,7 +603,7 @@ export function DashboardPage() {
     try {
       const conversationId = await ensureConversation();
       submittedConversationId = conversationId;
-      if (!selectedSkillIds.length) {
+      if (!selectedSkillIds.length && !automaticSkills) {
         const submittedPrompt = promptText(messageParts) || "请阅读并说明这些附件的主要内容。";
         const submittedAttachments = [
           ...attachments.map((file) => ({ name: file.name, size: file.size })),
@@ -664,7 +668,8 @@ export function DashboardPage() {
         body.set("agent_conversation_id", conversationId);
         body.set("message_content", JSON.stringify(normalizedParts));
         body.set("instruction", promptText(normalizedParts));
-        body.set("version_id", selectedDetails[0].version.id);
+        if (selectedDetails.length) body.set("version_id", selectedDetails[0].version.id);
+        else body.set("automatic", "true");
         body.set("version_ids", JSON.stringify(selectedDetails.map((item) => item.version.id)));
         if (selectedModelName) body.set("model_name", selectedModelName);
         if (ocrEnabled) body.set("ocr_enabled", "true");
@@ -827,6 +832,7 @@ export function DashboardPage() {
         </div>}
       </div>
       {selectedSkillIds.length > 0 && <span className="agent-start-route-mode">明确执行 · {selectedSkillIds.length} 个 Skill</span>}
+      <label className="agent-ocr-toggle" title="根据任务目标自动匹配可运行的 Skill；手动插入的 Skill 优先"><input type="checkbox" checked={automaticSkills} disabled={composerDisabled} onChange={(event) => setAutomaticSkills(event.target.checked)} /><span>自动选择 Skill</span></label>
       <label className={`agent-ocr-toggle${ocrEnabled ? " active" : ""}`} title={availableModels.ocr_configured ? "同时使用 OCR 提取图片文字，再由视觉模型理解" : "请先在平台设置中配置 OCR 模型"}><input type="checkbox" checked={ocrEnabled} disabled={composerDisabled || !availableModels.ocr_configured} onChange={(event) => setOcrEnabled(event.target.checked)} /><span className="agent-ocr-switch" aria-hidden="true"><i /></span><span className="agent-ocr-label">OCR 识别</span></label>
       <div className="agent-start-model-wrap" ref={modelMenuRef}>
         <button type="button" className="agent-start-model" disabled={composerDisabled || !availableModels.configured} aria-expanded={modelMenuOpen} onClick={() => { setModelMenuOpen((open) => !open); setSkillMenuOpen(false); setFileMenuOpen(false); }}><span>{selectedModelName || "默认模型"}</span><ChevronDown /></button>
@@ -861,7 +867,7 @@ export function DashboardPage() {
               <div className="agent-workspace-bubble"><StructuredPrompt parts={message.content.parts} fallback={String(message.content.message || "")} />
                 {(message.files.length > 0 || (message.content.files?.length || 0) > 0) && <div className="agent-workspace-files">{message.files.length > 0 ? message.files.map((file) => <span className={file.purged_at ? "expired" : ""} key={file.id}><Paperclip />{file.filename}<small>{file.purged_at ? "已到期" : formatSize(file.size_bytes)}</small>{!file.purged_at && attachmentAnalysisLabel(file) && <em><Check />{attachmentAnalysisLabel(file)}</em>}</span>) : message.content.files?.map((file, index) => <span key={`${file.filename}-${index}`}><Paperclip />{file.filename}<small>{formatSize(file.size_bytes)}</small></span>)}</div>}
               </div><time>{formatTime(message.created_at)}</time>
-            </article> : <article className="agent-workspace-message assistant" key={message.id}><div>{message.kind === "workflow" && message.job ? <WorkflowReply job={message.job} onDownload={(job, artifact) => void downloadArtifact(job, artifact)} onRetry={(job) => void retryJob(job)} onEdit={editFailedJob} /> : <><MarkdownContent className="agent-workspace-answer">{String(message.content.message || "")}</MarkdownContent><time>{formatTime(message.created_at)}{message.model_name ? ` · ${message.model_name}` : ""}{typeof message.content.latency_ms === "number" ? ` · ${formatDuration(message.content.latency_ms)}` : ""}</time></>}</div></article>)}
+            </article> : <article className="agent-workspace-message assistant" key={message.id}><div>{message.kind === "workflow" && message.job ? <WorkflowReply job={message.job} onDownload={(job, artifact) => void downloadArtifact(job, artifact)} onRetry={(job) => void retryJob(job)} onEdit={editFailedJob} onAnswered={(updated) => { setActiveConversation((current) => current ? { ...current, messages: current.messages.map((item) => item.job?.id === updated.id ? { ...item, job: updated } : item) } : current); }} /> : <><MarkdownContent className="agent-workspace-answer">{String(message.content.message || "")}</MarkdownContent><time>{formatTime(message.created_at)}{message.model_name ? ` · ${message.model_name}` : ""}{typeof message.content.latency_ms === "number" ? ` · ${formatDuration(message.content.latency_ms)}` : ""}</time></>}</div></article>)}
             {streamingTurn?.conversationId === activeConversation.id && <>
               <article className="agent-workspace-message user streaming-user">
                 <div className="agent-workspace-bubble">{streamingTurn.prompt}{streamingTurn.attachments.length > 0 && <div className="agent-workspace-files">{streamingTurn.attachments.map((file, index) => <span key={`${file.name}-${index}`}><Paperclip />{file.name}<small>{formatSize(file.size)}</small></span>)}</div>}</div>

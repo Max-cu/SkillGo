@@ -35,12 +35,14 @@ def _record_verifier(state: AgentExecutionState, stdout: str = "PARAGRAPHS=4\nTI
         {"action": "command", "argv": ["python3", "verify.py"]},
         {"exit_code": 0, "stdout": stdout, "stderr": ""},
     )
+    state.verification = {"ok": True, "verification_id": "verified-1", "checks": [{"requirement_id": "r1", "passed": True, "observed": stdout}], "artifacts": ARTIFACT_SNAPSHOT, "tool": "run_verifier", "operation": 1}
 
 
 def _pass_validation(state: AgentExecutionState) -> dict:
     return state.record_validation(
         {
             "action": "record_validation",
+            "verification_id": "verified-1",
             "status": "passed",
             "summary": "The concentrated verifier passed",
             "evidence": "verify.py exit 0 with observed values",
@@ -125,7 +127,7 @@ def test_validation_requires_output_artifacts_and_binds_verifier_operation():
 
     passed = _pass_validation(state)
     assert passed["validation"]["artifacts"] == ARTIFACT_SNAPSHOT
-    assert passed["validation"]["verifier"]["tool"] == "command"
+    assert passed["validation"]["verifier"]["tool"] == "run_verifier"
     assert passed["validation"]["verifier"]["operation"] == 1
 
 
@@ -205,6 +207,7 @@ def test_failed_validation_allows_only_two_targeted_corrections():
     _record_verifier(state, "PARAGRAPHS=1")
     action = {
         "action": "record_validation",
+            "verification_id": "verified-1",
         "status": "failed",
         "summary": "Semantic paragraphing is missing",
         "evidence": "verify.py reported PARAGRAPHS=1",

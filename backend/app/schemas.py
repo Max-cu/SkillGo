@@ -202,6 +202,8 @@ class WorkflowJobRead(BaseModel):
     execution_mode: str
     trigger: str
     instruction: str
+    pending_question: dict | None = None
+    execution_plan: dict | None = None
     network_enabled: bool = False
     network_enabled_by: list[dict] = Field(default_factory=list)
     attachment_analysis_mode: str = "vision"
@@ -548,6 +550,19 @@ class ModelConfigRead(AvailableModels):
     source: str
 
 
+class AgentModelOptions(BaseModel):
+    adapter: Literal['compatible', 'openai_reasoning'] = 'compatible'
+    reasoning_effort: Literal['low', 'medium', 'high', 'xhigh', 'max'] | None = None
+    context_tokens: int = Field(default=64000, ge=16000, le=1100000)
+    max_output_tokens: int = Field(default=16000, ge=1000, le=128000)
+
+    @model_validator(mode='after')
+    def enough_input_budget(self):
+        if self.context_tokens - self.max_output_tokens < 8000:
+            raise ValueError('Context must reserve at least 8000 tokens for input')
+        return self
+
+
 class ModelConfigUpdate(BaseModel):
     base_url: str = Field(min_length=8, max_length=500)
     api_key: str | None = Field(default=None, max_length=1000)
@@ -562,6 +577,7 @@ class ModelConfigUpdate(BaseModel):
 
 
 class ModelConnectionTestRequest(ModelConfigUpdate):
+    agent_options: AgentModelOptions = Field(default_factory=AgentModelOptions)
     model_id: str | None = Field(default=None, max_length=36)
     api_format: Literal["openai", "mineru"] = "openai"
     capabilities: list[Literal["chat", "vision", "ocr"]] = Field(
@@ -600,6 +616,7 @@ class ModelConnectionItem(BaseModel):
     is_default_ocr: bool = False
     enabled: bool
     source: str = "database"
+    agent_options: AgentModelOptions = Field(default_factory=AgentModelOptions)
 
 
 class ModelConnectionList(BaseModel):
@@ -627,6 +644,7 @@ class ModelConnectionCreate(BaseModel):
     is_default_vision: bool = False
     is_default_ocr: bool = False
     enabled: bool = True
+    agent_options: AgentModelOptions = Field(default_factory=AgentModelOptions)
 
     @model_validator(mode="after")
     def defaults_require_capabilities(self):

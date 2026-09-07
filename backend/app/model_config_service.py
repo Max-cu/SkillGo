@@ -56,6 +56,7 @@ def _row_connection(
         tls_verify=row.tls_verify,
         capabilities=normalize_capabilities(row.capabilities),
         default_capabilities=tuple(defaults),
+        agent_options=row.agent_options or {},
     )
 
 

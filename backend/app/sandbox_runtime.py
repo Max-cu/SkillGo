@@ -269,10 +269,12 @@ class DockerSandbox:
         except DockerException as exc:
             raise SandboxRuntimeError("SANDBOX_COMMAND_FAILED", f"Command transport failed: {exc}") from exc
         stdout, stderr = result.output if isinstance(result.output, tuple) else (result.output, b"")
+        if len(stdout or b'') + len(stderr or b'') > 8 * 1024 * 1024:
+            raise SandboxRuntimeError('SANDBOX_OUTPUT_TOO_LARGE', 'Command output exceeds 8 MiB; write large observations to workspace files instead.')
         return SandboxCommandResult(
             exit_code=int(result.exit_code),
-            stdout=_decode(stdout)[:40_000],
-            stderr=_decode(stderr)[:20_000],
+            stdout=_decode(stdout),
+            stderr=_decode(stderr),
         )
 
     async def list_files(self, path: str = "/workspace") -> list[dict]:
@@ -375,11 +377,16 @@ path.write_bytes(base64.b64decode(sys.argv[2]))
             raise SandboxRuntimeError("SANDBOX_WRITE_FAILED", result.stderr or "Could not write file")
 
     def download_file(self, path: str) -> bytes:
-        if self.container is None:
-            raise SandboxRuntimeError("SANDBOX_NOT_RUNNING", "Sandbox is not running")
         target = _workspace_path(path, allow_root=False)
         if not target.startswith("/workspace/output/"):
             raise SandboxRuntimeError("SANDBOX_ARTIFACT_DENIED", "Artifacts must be under /workspace/output")
+        return self.read_workspace_file(target)
+
+    def read_workspace_file(self, path: str) -> bytes:
+        """Read a bounded regular sandbox file; never a host filesystem path."""
+        if self.container is None:
+            raise SandboxRuntimeError("SANDBOX_NOT_RUNNING", "Sandbox is not running")
+        target = _workspace_path(path, allow_root=False)
         try:
             stream, stat = self.container.get_archive(target)
             size = int(stat.get("size") or 0)

@@ -35,6 +35,10 @@ TOOL_NAMES = frozenset(
         "run_python",
         "block",
         "finish",
+        "run_verifier",
+        "run_fixed_skill",
+        "ask_user",
+        "inspect_image",
     }
 )
 
@@ -46,10 +50,20 @@ def validate_agent_action(action: dict[str, Any]) -> str | None:
     """Validate one model-authored tool request before trusted dispatch."""
 
     action_name = action.get("action")
-    if action_name not in TOOL_NAMES:
+    if not isinstance(action_name, str) or action_name not in TOOL_NAMES:
         return f"Unknown sandbox tool: {action_name}"
     if "reason" in action and not isinstance(action.get("reason"), str):
         return "reason must be text"
+    if action_name == "run_verifier":
+        return validate_agent_action({**action, "action": "command"})
+    if action_name == "run_fixed_skill":
+        return validate_agent_action({**action, "action": "read_skill"})
+    if action_name == "ask_user":
+        if not isinstance(action.get("question"), str) or not 1 <= len(action['question'].strip()) <= 2000:
+            return "question must contain 1-2000 characters"
+    if action_name == "inspect_image":
+        if not isinstance(action.get("path"), str) or not isinstance(action.get("question"), str) or not action['question'].strip():
+            return "inspect_image requires path and question"
     if action_name == "read_skill":
         index = action.get("skill_index")
         if not isinstance(index, int) or isinstance(index, bool) or index < 1:
@@ -67,6 +81,13 @@ def validate_agent_action(action: dict[str, Any]) -> str | None:
             return "update_plan goal must be text"
         if not isinstance(action.get("steps"), list):
             return "update_plan steps must be an array"
+        for step in action['steps']:
+            if not isinstance(step, dict):
+                return "update_plan steps must contain objects"
+            for key in ('depends_on', 'input_refs', 'output_refs'):
+                values = step.get(key, [])
+                if not isinstance(values, list) or not all(isinstance(value, str) and value for value in values):
+                    return f"update_plan {key} must be a string array"
         if not isinstance(action.get("success_criteria"), list):
             return "update_plan success_criteria must be an array"
         if not isinstance(action.get("validation_step_id"), str):
@@ -78,8 +99,8 @@ def validate_agent_action(action: dict[str, Any]) -> str | None:
             if not isinstance(action.get(field), str) or not action.get(field, "").strip():
                 return f"record_validation {field} must be non-empty text"
         checks = action.get("checks")
-        if not isinstance(checks, list) or not 1 <= len(checks) <= 20:
-            return "record_validation checks must contain 1-20 items"
+        if not isinstance(checks, list) or not 1 <= len(checks) <= 200:
+            return "record_validation checks must contain 1-200 items"
         if not all(isinstance(item, str) and item.strip() for item in checks):
             return "record_validation checks must contain non-empty text"
     elif action_name == "list_files":
@@ -195,6 +216,16 @@ def validate_agent_action(action: dict[str, Any]) -> str | None:
         ):
             return "finish artifacts must be a string array"
     return None
+
+
+def normalize_agent_action(action: dict[str, Any]) -> dict[str, Any]:
+    """Only unambiguous shape repairs; never discard checks or infer evidence."""
+    normalized = dict(action)
+    if action.get('action') == 'update_plan' and isinstance(action.get('success_criteria'), str):
+        normalized['success_criteria'] = [action['success_criteria']]
+    if action.get('action') == 'record_validation' and isinstance(action.get('checks'), str):
+        normalized['checks'] = [action['checks']]
+    return normalized
 
 
 _validate_agent_action = validate_agent_action

@@ -1,3 +1,4 @@
+import { WorkflowQuestion } from "./WorkflowQuestion";
 import {
   AlertTriangle,
   ArrowLeft,
@@ -782,7 +783,8 @@ export function LegacyWorkflowPage() {
           <div className="workflow-job-meta"><span>任务 {selectedJob.id.slice(0, 8)}</span><span>v{selectedJob.version}</span><span className={selectedJob.network_enabled ? "network-on" : "network-off"}>{selectedJob.network_enabled ? "运行联网" : "沙箱断网"}</span><time>{new Date(selectedJob.created_at).toLocaleString("zh-CN")}</time></div>
           {selectedJob.network_enabled && selectedJob.network_enabled_by.length > 0 && <p className="workflow-network-source">联网授权：{selectedJob.network_enabled_by.map((item) => `${item.skill_name} v${item.version}`).join("、")}</p>}
           <div className="workflow-timeline">{selectedJob.steps.map((step) => <article className={step.status} key={step.id}><span>{step.status === "succeeded" ? <Check /> : step.status === "running" ? <RotateCw className="spin-icon" /> : step.status === "failed" || step.status === "blocked" ? <AlertTriangle /> : <i />}</span><div><strong>{step.name}</strong><p>{step.detail || (step.status === "pending" ? "等待前序步骤" : step.status)}</p></div></article>)}</div>
-          {selectedJob.error_message && <div className="workflow-error"><AlertTriangle /><div><strong>{selectedJob.error_code}</strong><p>{selectedJob.error_message}</p></div></div>}
+          <WorkflowQuestion job={selectedJob} onAnswered={(updated) => setJobs((current) => current.map((item) => item.id === updated.id ? updated : item))} />
+                  {selectedJob.error_message && <div className="workflow-error"><AlertTriangle /><div><strong>{selectedJob.error_code}</strong><p>{selectedJob.error_message}</p></div></div>}
           {selectedJob.artifacts.length > 0 && <div className="workflow-artifacts"><h3>任务产物</h3>{selectedJob.artifacts.map((artifact) => <article key={artifact.id}><FileText /><div><strong>{artifact.filename}</strong><span>{artifact.purged_at ? "已超过 15 天保留期" : `${formatPackageSize(artifact.size_bytes)} · ${artifact.verified ? "完整性已校验" : "待校验"}`}</span></div><button className="button primary compact" disabled={Boolean(artifact.purged_at)} onClick={() => void downloadArtifact(selectedJob, artifact)}>{artifact.purged_at ? <Clock3 size={15} /> : <Download size={15} />}{artifact.purged_at ? "已到期" : "下载"}</button></article>)}</div>}
         </> : <EmptyState title={selectedVersion.runtime_runnable ? "上传文件即可开始" : "等待运行环境"} description={selectedVersion.runtime_runnable ? "不需要再发送“看看”或“继续”，平台会自动执行到终态。" : selectedVersion.runtime_block_reason || "当前版本暂不可运行。"} />}
       </section>
@@ -837,7 +839,7 @@ export function WorkflowPage() {
   }, [availableModels.default_model, selectedModelName]);
 
   const selectedJob = jobs.find((item) => item.id === selectedJobId) || null;
-  const jobActive = Boolean(selectedJob && !["succeeded", "failed", "cancelled", "blocked"].includes(selectedJob.status));
+  const jobActive = Boolean(selectedJob && !["succeeded", "failed", "cancelled", "blocked", "waiting_user"].includes(selectedJob.status));
   useEffect(() => {
     if (!selectedJob || !jobActive) return;
     let cancelled = false;
@@ -1005,6 +1007,7 @@ export function WorkflowPage() {
                   <article className={`summary ${runSummaryStatus}`}><span>{eventIcon("status", runSummaryStatus)}</span><div><strong>{runSummaryTitle}</strong><p>{runSummaryDetail}</p>{selectedJob.updated_at && <time>{new Date(selectedJob.updated_at).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}</time>}</div></article>
                 </div>
                 {jobActive && <div className="workflow-agent-thinking"><i /><i /><i /><span>只展示关键进度，完整工具日志可在下方展开</span></div>}
+                <WorkflowQuestion job={selectedJob} onAnswered={(updated) => setJobs((current) => current.map((item) => item.id === updated.id ? updated : item))} />
                 {selectedJob.error_message && <div className="workflow-agent-error"><AlertTriangle /><div><strong>任务未完成 · {selectedJob.error_code || "TASK_FAILED"}</strong><p>已保留完整诊断信息，请展开“技术详情”查看。</p></div></div>}
                 <details className="workflow-run-details">
                   <summary>技术详情 · {latestTurn || 0} 轮 / {toolOperationCount} 次工具调用{recoveryCount > 0 ? ` / ${recoveryCount} 次自动修正` : ""}</summary>
@@ -1038,6 +1041,7 @@ export function WorkflowPage() {
 }
 
 const runStatusLabels: Record<RunStatus, string> = {
+  waiting_user: "等待补充信息",
   queued: "排队中",
   running: "运行中",
   succeeded: "成功",
@@ -1650,6 +1654,7 @@ export function ModelSettingsPage() {
   const [temperature, setTemperature] = useState(0.2);
   const [jsonMode, setJsonMode] = useState(true);
   const [nativeTools, setNativeTools] = useState(true);
+  const [agentOptions, setAgentOptions] = useState({ adapter: "compatible" as "compatible" | "openai_reasoning", reasoning_effort: null as string | null, context_tokens: 64000, max_output_tokens: 16000 });
   const [tlsVerify, setTlsVerify] = useState(true);
   const [capabilities, setCapabilities] = useState<Array<"chat" | "vision" | "ocr">>(["chat"]);
   const [isDefault, setIsDefault] = useState(false);
@@ -1673,6 +1678,7 @@ export function ModelSettingsPage() {
     setTemperature(item?.temperature ?? 0.2);
     setJsonMode(item?.json_mode ?? true);
     setNativeTools(item?.native_tools ?? true);
+    setAgentOptions(item?.agent_options ?? { adapter: "compatible", reasoning_effort: null, context_tokens: 64000, max_output_tokens: 16000 });
     setTlsVerify(item?.tls_verify ?? true);
     setCapabilities(item?.capabilities?.length ? item.capabilities : ["chat"]);
     setIsDefault(item?.is_default ?? catalog.items.length === 0);
@@ -1719,6 +1725,7 @@ export function ModelSettingsPage() {
       temperature,
       json_mode: jsonMode,
       native_tools: nativeTools,
+      agent_options: agentOptions,
       tls_verify: tlsVerify,
       capabilities,
       is_default: isDefault,
@@ -1754,7 +1761,7 @@ export function ModelSettingsPage() {
   async function testConnection(item?: ModelConnectionItem) {
     setBusyAction("test"); setMessage(""); setTestResult(null);
     try {
-      const candidate = item ? { base_url: item.base_url, api_format: item.api_format, api_key: null, clear_api_key: false, models: [item.model_name], default_model: item.model_name, timeout_seconds: item.timeout_seconds, temperature: item.temperature, json_mode: item.json_mode, native_tools: item.native_tools, tls_verify: item.tls_verify, capabilities: item.capabilities, model_id: item.id } : payload();
+      const candidate = item ? { base_url: item.base_url, api_format: item.api_format, api_key: null, clear_api_key: false, models: [item.model_name], default_model: item.model_name, timeout_seconds: item.timeout_seconds, temperature: item.temperature, json_mode: item.json_mode, native_tools: item.native_tools, tls_verify: item.tls_verify, capabilities: item.capabilities, agent_options: item.agent_options, model_id: item.id } : payload();
       const result = await api<ModelConnectionTestResult>("/super-admin/model/test", { method: "POST", body: JSON.stringify(candidate) });
       setTestResult(result);
       setMessageTone("success");
@@ -1832,6 +1839,12 @@ export function ModelSettingsPage() {
               <label>{apiFormat === "mineru" ? "连接名称" : "模型名称"}<input autoFocus required value={modelName} placeholder={apiFormat === "mineru" ? "例如 MinerU OCR" : "例如 deepseek-v4-flash"} onChange={(event) => setModelName(event.target.value)} /><small>{apiFormat === "mineru" ? "用于平台展示和审计，不会作为 model 参数发送。" : "需要与模型服务实际支持的 model 参数一致。"}</small></label>
               <label className="model-field-wide">Base URL<input type="url" required value={baseUrl} placeholder={apiFormat === "mineru" ? "http://10.2.98.237:8511" : "https://api.example.com/v1"} onChange={(event) => setBaseUrl(event.target.value)} /><small>{apiFormat === "mineru" ? "可填写服务根地址或完整 /file_parse 地址。" : "可填写服务根地址或完整 /chat/completions 地址。"}</small></label>
               <label className="model-field-wide">API Key<input type="password" value={apiKey} autoComplete="new-password" placeholder={editingModel?.api_key_configured ? "已保存；留空保持不变" : "输入该模型的服务密钥"} onChange={(event) => setApiKey(event.target.value)} /><small>仅保存在服务端，页面不会回显原文。</small></label>
+              {capabilities.includes("chat") && <>
+                <label>推理参数适配<select value={agentOptions.adapter} onChange={(event) => setAgentOptions({ ...agentOptions, adapter: event.target.value as "compatible" | "openai_reasoning" })}><option value="compatible">通用兼容接口</option><option value="openai_reasoning">OpenAI 推理模型</option></select></label>
+                <label>推理强度<select value={agentOptions.reasoning_effort || ""} onChange={(event) => setAgentOptions({ ...agentOptions, reasoning_effort: event.target.value || null })}><option value="">服务默认</option>{["low", "medium", "high", "xhigh", "max"].map((value) => <option key={value}>{value}</option>)}</select><small>仅为支持此参数的模型设置；启用后不发送 Temperature。</small></label>
+                <label>上下文预算<input type="number" min={16000} max={1100000} value={agentOptions.context_tokens} onChange={(event) => setAgentOptions({ ...agentOptions, context_tokens: Number(event.target.value) })} /></label>
+                <label>单次输出预算<input type="number" min={1000} max={128000} value={agentOptions.max_output_tokens} onChange={(event) => setAgentOptions({ ...agentOptions, max_output_tokens: Number(event.target.value) })} /><small>应低于上下文预算，并为输入至少保留 8000 token。</small></label>
+              </>}
               <label>超时时间（秒）<input type="number" min={5} max={600} value={timeoutSeconds} onChange={(event) => setTimeoutSeconds(Number(event.target.value))} /></label>
               {apiFormat === "openai" && <label>Temperature<input type="number" min={0} max={2} step={0.1} value={temperature} onChange={(event) => setTemperature(Number(event.target.value))} /></label>}
             </div>

@@ -440,6 +440,7 @@ def _model_config_read(db: Session) -> ModelConfigRead:
 def _model_connection_item(row: ModelConnectionConfig) -> ModelConnectionItem:
     return ModelConnectionItem(
         id=row.id,
+        agent_options=row.agent_options or {},
         model_name=row.model_name,
         base_url=row.base_url,
         api_format=row.api_format,
@@ -565,6 +566,7 @@ def create_model_connection(
         raise HTTPException(status_code=409, detail="同名模型已经存在")
     row = ModelConnectionConfig(
         model_name=model_name,
+        agent_options=payload.agent_options.model_dump(),
         base_url=base_url,
         api_format=payload.api_format,
         api_key=(payload.api_key or "").strip() or None,
@@ -605,6 +607,7 @@ def update_model_connection(
     row.model_name = model_name
     row.base_url = base_url
     row.api_format = payload.api_format
+    row.agent_options = payload.agent_options.model_dump()
     row.timeout_seconds = payload.timeout_seconds
     row.temperature_milli = round(payload.temperature * 1000)
     row.json_mode = payload.json_mode
@@ -803,6 +806,7 @@ async def test_model_connection(
             native_tools=payload.native_tools,
             tls_verify=payload.tls_verify,
             capabilities=normalize_capabilities(payload.capabilities),
+            agent_options=payload.agent_options.model_dump(),
             default_capabilities=tuple(payload.capabilities),
         )
     )

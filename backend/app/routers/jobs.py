@@ -21,6 +21,8 @@ from ..deps import current_user
 from ..execution_runtime import ensure_job_run, fail_run
 from ..model_gateway import ModelGatewayError, OpenAICompatibleGateway, get_model_gateway
 from ..models import AgentConversation, AgentMessage, AgentMessageFile, Artifact, Endpoint, JobInputFile, JobStatus, JobStep, JobStepStatus, Skill, SkillVersion, User, VersionStatus, WorkflowEndpointRequest, WorkflowJob, WorkflowJobModel, WorkflowJobPrompt, WorkflowJobSkill, utcnow
+from ..models import WorkflowJobMemory, RunStatus
+from pydantic import BaseModel, Field
 from ..runtime_profile import version_runtime_profile
 from ..schemas import ArtifactRead, Message, WorkflowJobRead
 from ..security import verify_endpoint_key
@@ -203,7 +205,7 @@ def _normalize_message_content(parts: list[dict], versions: list[SkillVersion]) 
 
 def _routing_candidates(db: Session, user: User) -> list[SkillVersion]:
     versions = db.scalars(
-        select(SkillVersion).join(Skill).order_by(Skill.updated_at.desc(), SkillVersion.created_at.desc()).limit(400)
+        select(SkillVersion).join(Skill).order_by(Skill.updated_at.desc(), SkillVersion.created_at.desc())
     ).all()
     candidates: list[SkillVersion] = []
     seen: set[str] = set()
@@ -216,12 +218,10 @@ def _routing_candidates(db: Session, user: User) -> list[SkillVersion]:
             continue
         seen.add(version.skill_id)
         candidates.append(version)
-        if len(candidates) >= 40:
-            break
     return candidates
 
 
-def _fallback_route(instruction: str, filename: str | None, candidates: list[SkillVersion]) -> list[SkillVersion]:
+def _rank_routes(instruction: str, filename: str | None, candidates: list[SkillVersion]) -> list[tuple[int, int, SkillVersion]]:
     haystack = f"{instruction} {filename or ''}".casefold()
     tokens = set(re.findall(r"[a-z0-9_-]{2,}", haystack))
     for chunk in re.findall(r"[\u4e00-\u9fff]{2,}", haystack):
@@ -235,7 +235,12 @@ def _fallback_route(instruction: str, filename: str | None, candidates: list[Ski
         score += sum(4 for token in tokens if token in searchable)
         ranked.append((score, -position, version))
     ranked.sort(key=lambda item: (item[0], item[1]), reverse=True)
-    return [ranked[0][2]]
+    return ranked
+
+
+def _fallback_route(instruction: str, filename: str | None, candidates: list[SkillVersion]) -> list[SkillVersion]:
+    ranked = _rank_routes(instruction, filename, candidates)
+    return [ranked[0][2]] if ranked and ranked[0][0] > 0 else []
 
 
 async def _auto_route_versions(
@@ -249,8 +254,7 @@ async def _auto_route_versions(
     candidates = _routing_candidates(db, user)
     if not candidates:
         raise HTTPException(status_code=422, detail={"code": "NO_RUNNABLE_SKILL", "message": "当前没有可运行的 Skill，请先上传或发布一个 Skill"})
-    if len(candidates) == 1:
-        return candidates
+    candidates = [item[2] for item in _rank_routes(instruction, filename, candidates)[:40]]
     metadata = [
         {
             "version_id": item.id,
@@ -267,7 +271,7 @@ async def _auto_route_versions(
         allowed = {item.id for item in candidates}
         if (
             not isinstance(ids, list)
-            or not 1 <= len(ids) <= MAX_JOB_SKILLS
+            or not 0 <= len(ids) <= MAX_JOB_SKILLS
             or len(ids) != len(set(ids))
             or any(not isinstance(item, str) or item not in allowed for item in ids)
         ):
@@ -664,6 +668,7 @@ async def create_workflow_job(
     instruction: Annotated[str, Form(max_length=20_000)] = "",
     model_name: Annotated[str, Form(max_length=160)] = "",
     ocr_enabled: Annotated[bool, Form()] = False,
+    automatic: Annotated[bool, Form()] = False,
     agent_conversation_id: Annotated[str, Form(max_length=36)] = "",
     user: User = Depends(current_user),
     db: Session = Depends(get_db),
@@ -754,6 +759,12 @@ async def create_workflow_job(
         routing_mode = "explicit"
 
     preliminary_instruction = _render_instruction(parts) or instruction.strip()
+    if not selected_versions and automatic:
+        selected_versions = await _auto_route_versions(db, user=user, gateway=selected_gateway,
+            instruction=preliminary_instruction, filename=' '.join(item[1] for item in resolved_inputs) or None)
+        routing_mode = 'automatic'
+        if not selected_versions:
+            raise HTTPException(status_code=422, detail={'code': 'NO_MATCHING_SKILL', 'message': '未找到匹配的可运行 Skill，请补充目标或手动选择 Skill。'})
     if not selected_versions:
         raise HTTPException(
             status_code=422,
@@ -813,6 +824,13 @@ async def create_workflow_job(
         attachment_analysis_mode=job_analysis_mode,
         analysis=analyses[0],
     )
+    context = []
+    if agent_conversation is not None:
+        for item in agent_conversation.messages[-12:]:
+            message = (item.content or {}).get('message')
+            if item.role in {'user', 'assistant'} and isinstance(message, str):
+                context.append({'role': item.role, 'content': message[:2000]})
+    job.memory = WorkflowJobMemory(data={'context': context, 'answers': []})
     extracted_texts = [extracted_text]
     for (extra_data, extra_filename, extra_content_type), analysis in zip(
         resolved_inputs[1:], analyses[1:]
@@ -1213,6 +1231,55 @@ def get_workflow_job(
     return _job_read(_owned_job(db, job_id, user))
 
 
+class WorkflowAnswer(BaseModel):
+    question_id: str = Field(min_length=1, max_length=64)
+    answer: str = Field(min_length=1, max_length=8000)
+
+
+@router.post('/jobs/{job_id}/answer', response_model=WorkflowJobRead)
+def answer_workflow_question(job_id: str, payload: WorkflowAnswer,
+    user: User = Depends(current_user), db: Session = Depends(get_db)) -> WorkflowJobRead:
+    job = db.scalar(select(WorkflowJob).where(WorkflowJob.id == job_id, WorkflowJob.user_id == user.id).with_for_update())
+    if job is None:
+        raise HTTPException(status_code=404, detail='Workflow job not found')
+    pending = job.pending_question
+    if job.status != JobStatus.WAITING_USER or not pending or pending.get('id') != payload.question_id:
+        raise HTTPException(status_code=409, detail='该问题已回答或任务已改变，请刷新后重试')
+    if not payload.answer.strip():
+        raise HTTPException(status_code=422, detail='请填写回答')
+    if any(item.purged_at for item in job.input_files):
+        raise HTTPException(status_code=410, detail='任务输入已过期，请重新上传')
+    _resolve_version_ids(db, requested_ids=[item['skill_version_id'] for item in job.selected_skills], user=user)
+    memory = job.memory.data
+    answers = [*(memory.get('answers') or []), {**pending, 'answer': payload.answer.strip()}]
+    if len(answers) > 10:
+        raise HTTPException(status_code=409, detail='本任务补充信息次数已达上限，请重新整理任务')
+    job.memory.data = {**memory, 'answers': answers, 'pending_question': None, 'plan': None,
+                       'resumed_attempts': memory.get('resumed_attempts', 0) + 1}
+    job.status = JobStatus.QUEUED
+    job.finished_at = None
+    job.error_code = job.error_message = None
+    run = ensure_job_run(db, job)
+    run.status = RunStatus.QUEUED
+    run.finished_at = None
+    run.lease_owner = run.lease_token = run.lease_expires_at = None
+    set_step(db, job, 'execute-workflow', JobStepStatus.PENDING, '已收到补充信息，将在新沙箱中继续处理')
+    add_job_event(db, job, 'status', '补充信息已保存', '从原始输入和已确认回答启动新尝试', status='queued', data={'question_id': payload.question_id, 'restart_policy': 'fresh_attempt'})
+    add_audit(db, actor=user, action='workflow_job.answer', resource_type='workflow_job', resource_id=job.id, details={'question_id': payload.question_id})
+    db.commit()
+    db.refresh(job)
+    return _job_read(job)
+
+
+@router.get('/jobs/{job_id}/verification')
+def get_job_verification(job_id: str, user: User = Depends(current_user), db: Session = Depends(get_db)) -> dict:
+    job = _owned_job(db, job_id, user)
+    report = (job.memory.data or {}).get('verification') if job.memory else None
+    if report is None:
+        raise HTTPException(status_code=404, detail='本任务暂无验证记录')
+    return report
+
+
 @router.post("/jobs/{job_id}/cancel", response_model=Message)
 def cancel_workflow_job(
     job_id: str,
@@ -1350,6 +1417,11 @@ async def retry_workflow_job(
         attachment_analysis_mode=source.attachment_analysis_mode,
         analysis=source_analyses[0],
     )
+    if source.memory:
+        job.memory = WorkflowJobMemory(data={
+            'context': source.memory.data.get('context', []),
+            'answers': source.memory.data.get('answers', []),
+        })
     extracted_texts = [first_text]
     for (data, filename, content_type), analysis in zip(
         stored_inputs[1:], source_analyses[1:]

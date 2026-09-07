@@ -53,6 +53,7 @@ class RunStatus(str, enum.Enum):
     SUCCEEDED = "succeeded"
     FAILED = "failed"
     CANCELLED = "cancelled"
+    WAITING_USER = "waiting_user"
 
 
 class InvocationType(str, enum.Enum):
@@ -257,6 +258,7 @@ class ModelConnectionConfig(TimestampMixin, Base):
     is_default_vision: Mapped[bool] = mapped_column(Boolean, default=False)
     is_default_ocr: Mapped[bool] = mapped_column(Boolean, default=False)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    agent_options: Mapped[dict] = mapped_column(JSON, default=dict, server_default="{}")
 
 
 class AgentConversation(TimestampMixin, Base):
@@ -524,6 +526,15 @@ class WorkflowJob(TimestampMixin, Base):
     agent_run: Mapped["AgentRun | None"] = relationship(
         back_populates="workflow_job", cascade="all, delete-orphan", uselist=False
     )
+    memory: Mapped["WorkflowJobMemory | None"] = relationship(back_populates="job", cascade="all, delete-orphan", uselist=False)
+
+    @property
+    def pending_question(self) -> dict | None:
+        return (self.memory.data or {}).get("pending_question") if self.memory else None
+
+    @property
+    def execution_plan(self) -> dict | None:
+        return (self.memory.data or {}).get("plan") if self.memory else None
 
     @property
     def skill_name(self) -> str:
@@ -570,6 +581,14 @@ class WorkflowJob(TimestampMixin, Base):
                 "position": 1,
             }
         ]
+
+
+class WorkflowJobMemory(Base):
+    """Additive table: no ALTER of existing deployment tables is needed."""
+    __tablename__ = "workflow_job_memory"
+    job_id: Mapped[str] = mapped_column(ForeignKey("workflow_jobs.id", ondelete="CASCADE"), primary_key=True)
+    data: Mapped[dict] = mapped_column(JSON, default=dict)
+    job: Mapped[WorkflowJob] = relationship(back_populates="memory")
 
 
 class WorkflowJobSkill(Base):

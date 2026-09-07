@@ -25,6 +25,7 @@ from .artifact_validation import (
 from .config import settings
 from .database import SessionLocal, initialize_schema
 from .deterministic_runtime import execute_fixed_skill
+from .workflow_tools import effective_instruction
 from .execution_runtime import (
     append_run_event,
     complete_run,
@@ -32,9 +33,10 @@ from .execution_runtime import (
     fail_run,
 )
 from .model_gateway import ModelGatewayError, OpenAICompatibleGateway, get_model_gateway
-from .models import AgentRun, Artifact, JobStatus, JobStepStatus, RunStatus, User, WorkflowJob, utcnow
+from .models import AgentRun, Artifact, JobStatus, JobStepStatus, RunStatus, User, WorkflowJob, WorkflowJobMemory, utcnow
 from .runtime_profile import version_runtime_profile
 from .sandbox_agent_loop import (
+    AgentNeedsInput,
     AgentJobCancelled as JobCancelled,
     _action_skill_context,
     _agent_messages,
@@ -115,7 +117,8 @@ def _claim_job(worker_id: str = WORKER_ID) -> JobLease | None:
         if job is None:
             return None
         run = ensure_job_run(db, job)
-        if run.attempt_count >= settings.sandbox_worker_max_attempts:
+        answered_attempts = (job.memory.data or {}).get('resumed_attempts', 0) if job.memory else 0
+        if run.attempt_count - answered_attempts >= settings.sandbox_worker_max_attempts:
             job.status = JobStatus.FAILED
             job.error_code = "SANDBOX_WORKER_RETRY_EXHAUSTED"
             job.error_message = (
@@ -318,7 +321,7 @@ def _required_sandbox_binaries(skill_contexts: list[dict[str, Any]]) -> list[str
     required: set[str] = set()
     for context in skill_contexts:
         requirements = context.get("runtime_requirements") or {}
-        for raw in requirements.get("binaries") or []:
+        for raw in requirements.get("required_binaries", requirements.get("binaries")) or []:
             value = PurePosixPath(str(raw).replace("\\", "/")).name.casefold()
             if (
                 value
@@ -540,12 +543,7 @@ async def execute_sandbox_job(
                 fixed_contexts = [
                     context for context in skill_contexts if context.get("fixed_execution")
                 ]
-                if fixed_contexts and len(skill_contexts) != 1:
-                    raise SandboxRuntimeError(
-                        "FIXED_EXECUTION_MULTI_SKILL_UNSUPPORTED",
-                        "Fixed-entrypoint Skills currently run only as single-Skill tasks",
-                    )
-                if fixed_contexts:
+                if fixed_contexts and len(skill_contexts) == 1:
                     context = fixed_contexts[0]
                     add_job_event(
                         db,
@@ -561,7 +559,7 @@ async def execute_sandbox_job(
                         sandbox,
                         execution=context["fixed_execution"],
                         skill_root=str(context["root"]),
-                        instruction=job.instruction,
+                        instruction=effective_instruction(job),
                         input_files=[
                             {
                                 "filename": item.filename,
@@ -703,6 +701,23 @@ async def execute_sandbox_job(
                     "runtime": settings.sandbox_runtime,
                 },
             )
+            db.commit()
+        except AgentNeedsInput as exc:
+            try:
+                _assert_job_lease(db, lease, lease_lost, lock=True)
+            except JobLeaseLost:
+                db.rollback()
+                return
+            if job.memory is None:
+                job.memory = WorkflowJobMemory(data={})
+            job.memory.data = {**job.memory.data, 'pending_question': {'id': uuid4().hex, 'question': str(exc)}}
+            job.status = JobStatus.WAITING_USER
+            run.status = RunStatus.WAITING_USER
+            run.lease_owner = run.lease_token = run.lease_expires_at = None
+            for event in job.events:
+                if event.status == 'running':
+                    event.status = 'waiting_user'
+            add_job_event(db, job, 'question', '需要补充信息', str(exc), status='waiting_user')
             db.commit()
         except JobLeaseLost:
             db.rollback()
@@ -875,7 +890,8 @@ def _recover_interrupted_jobs() -> list[ReclaimedSandbox]:
                     stale_artifact_paths.append(artifact.storage_path)
                     db.delete(artifact)
 
-            if run.attempt_count >= settings.sandbox_worker_max_attempts:
+            answered_attempts = (job.memory.data or {}).get('resumed_attempts', 0) if job.memory else 0
+            if run.attempt_count - answered_attempts >= settings.sandbox_worker_max_attempts:
                 for step in job.steps:
                     if step.status == JobStepStatus.RUNNING:
                         set_step(

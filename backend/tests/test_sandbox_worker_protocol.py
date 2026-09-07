@@ -183,11 +183,11 @@ def test_message_compaction_includes_trusted_execution_checkpoint():
 
     compacted = _trim_messages(messages, '{"loaded_skill_indexes":[1]}')
 
-    assert "Trusted execution checkpoint" in compacted[2]["content"]
-    assert '"loaded_skill_indexes":[1]' in compacted[2]["content"]
+    assert "Execution state" in compacted[2]["content"]
+    assert '"loaded_skill_indexes": [1]' in compacted[2]["content"]
 
 
-def test_message_compaction_prunes_old_python_source_without_mutating_history():
+def test_message_projection_preserves_provider_reasoning_and_arguments():
     old_code = "print('work')\n" * 300
     messages = [
         {"role": "system", "content": "system"},
@@ -214,9 +214,9 @@ def test_message_compaction_prunes_old_python_source_without_mutating_history():
 
     compacted = _trim_messages(messages)
 
-    old_assistant = compacted[2]
-    assert "reasoning_content" not in old_assistant
-    assert "executed code compacted" in old_assistant["tool_calls"][0]["function"]["arguments"]
+    old_assistant = compacted[3]
+    assert old_assistant["reasoning_content"] == "private reasoning"
+    assert json.loads(old_assistant["tool_calls"][0]["function"]["arguments"])["code"] == old_code
     assert messages[2]["reasoning_content"] == "private reasoning"
     assert json.loads(messages[2]["tool_calls"][0]["function"]["arguments"])["code"] == old_code
 
@@ -456,7 +456,8 @@ def test_multi_skill_agent_prompt_includes_every_root_and_coordination_rules():
     assert "Find contradictions." not in system
     assert "Normalize Word styles." not in system
     assert "call read_skill before using this Skill" in system
-    assert "one concentrated verification" in system
+    assert "one concentrated read-only verification" in system
+    assert '"action":"run_verifier"' in system
     assert "record_validation" in system
     assert "acceptance contract" not in system.casefold()
     assert '"selected_skills"' in messages[1]["content"]

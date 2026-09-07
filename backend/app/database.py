@@ -41,6 +41,7 @@ class SchemaMigrationError(RuntimeError):
 
 BASELINE_REVISION = "20260822_0001"
 POST_BASELINE_COLUMNS = {
+    "model_connection_configs": {"agent_options"},
     "agent_message_files": {"purged_at"},
     "workspace_files": {"purged_at"},
     "job_input_files": {"purged_at"},

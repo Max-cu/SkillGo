@@ -9,7 +9,7 @@ export type VersionStatus =
   | "published"
   | "deprecated"
   | "yanked";
-export type RunStatus = "queued" | "running" | "succeeded" | "failed" | "cancelled";
+export type RunStatus = "queued" | "running" | "waiting_user" | "succeeded" | "failed" | "cancelled";
 export type InvocationType = "console" | "api";
 
 export interface User {
@@ -178,6 +178,8 @@ export interface WorkflowJob {
   execution_mode: string;
   trigger: string;
   instruction: string;
+  pending_question?: { id: string; question: string } | null;
+  execution_plan?: { goal: string; steps: Array<{ id: string; title: string; status: string; evidence: string; depends_on: string[]; input_refs: string[]; output_refs: string[] }> } | null;
   network_enabled: boolean;
   network_enabled_by: Array<{
     skill_id: string;
@@ -403,6 +405,7 @@ export interface ModelConnectionTestResult {
 }
 
 export interface ModelConnectionItem {
+  agent_options?: { adapter: "compatible" | "openai_reasoning"; reasoning_effort: string | null; context_tokens: number; max_output_tokens: number };
   id: string;
   model_name: string;
   base_url: string;

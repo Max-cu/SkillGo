@@ -283,6 +283,11 @@ def detect_runtime_profile(
             if (binary := _clean_binary(value))
         }
     )[:100]
+    required_binaries = sorted({binary for value in [
+        *declared_binaries,
+        *(fixed_execution.entrypoint[:1] if fixed_execution else ()),
+        *((fixed_execution.verifier or ())[:1] if fixed_execution else ()),
+    ] if (binary := _clean_binary(value))})
     declared_network = _string_list(permissions.get("network"))
     declared_network.extend(_collect_declared_values(frontmatter, NETWORK_KEYS))
     declared_network.extend(_collect_declared_values(manifest, NETWORK_KEYS))
@@ -386,6 +391,12 @@ def detect_runtime_profile(
             "tool_adapters": tool_adapters,
             "platform_tools": platform_tools,
             "binaries": binaries,
+            "required_binaries": required_binaries,
+            "dependency_evidence": [
+                {"binary": binary, "required": binary in required_binaries,
+                 "source": "declaration" if binary in required_binaries else "documentation_example"}
+                for binary in binaries
+            ],
             "network": network_required,
             "network_rules": network_rules,
             "network_targets": network_targets,
