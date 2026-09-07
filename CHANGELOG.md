@@ -4,6 +4,8 @@
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-09-07
+
 ### Added
 
 - 编排计划支持步骤依赖、输入输出文件哈希、受影响阶段失效与重规划；活动 Skill 和原始要求按模型预算保留。
@@ -160,7 +162,8 @@
 - 任务容器默认非 root、只读根文件系统、去除 Linux Capabilities 并限制 CPU、内存和 PID。
 - 本机密钥、运行数据、用户文件和备份默认被版本库忽略。
 
-[Unreleased]: https://github.com/Max-cu/SkillGo/compare/v0.2.6...HEAD
+[Unreleased]: https://github.com/Max-cu/SkillGo/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/Max-cu/SkillGo/compare/v0.2.6...v0.3.0
 [0.2.6]: https://github.com/Max-cu/SkillGo/compare/v0.2.5...v0.2.6
 [0.2.5]: https://github.com/Max-cu/SkillGo/compare/v0.2.4...v0.2.5
 [0.2.4]: https://github.com/Max-cu/SkillGo/compare/v0.2.3...v0.2.4
