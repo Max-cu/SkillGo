@@ -11,8 +11,10 @@ from app import models as _models  # noqa: F401
 
 
 config = context.config
-if config.config_file_name:
-    fileConfig(config.config_file_name)
+# Embedded migrations must not replace API/Worker logging or disable their
+# existing request diagnostic loggers. CLI migrations still configure logging.
+if config.config_file_name and config.attributes.get("connection") is None:
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 target_metadata = Base.metadata
 

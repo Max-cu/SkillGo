@@ -20,7 +20,7 @@ from .artifact_validation import (
 )
 from .config import settings
 from .execution_runtime import ensure_job_run
-from .model_gateway import OpenAICompatibleGateway, ModelGatewayError
+from .model_gateway import OpenAICompatibleGateway, ModelGatewayError, SANDBOX_AGENT_TOOLS
 from .models import JobEvent, JobStepStatus, WorkflowJob, WorkflowJobMemory
 from .sandbox_runtime import DockerSandbox, SandboxRuntimeError
 from .sandbox_tool_registry import (
@@ -330,7 +330,7 @@ async def _append_tool_result_with_offload(
     """Preserve oversized observations in the sandbox before pruning context."""
 
     serialized = json.dumps(payload, ensure_ascii=False)
-    if len(serialized.encode("utf-8")) > 12_000:
+    if len(serialized.encode("utf-8")) > 4_000:
         full_result_path = (
             f"/workspace/work/tool-results/turn-{turn_number}-op-{operation_number}.json"
         )
@@ -345,9 +345,13 @@ async def _append_tool_result_with_offload(
                 payload = {"full_result_path": full_result_path, **payload}
             elif isinstance(payload, str):
                 payload = {"full_result_path": full_result_path, "content": payload}
-    if len(serialized.encode("utf-8")) > 12_000:
-        payload = {"full_result_path": full_result_path, "excerpt": serialized[:6000], "truncated": True,
-                   **({key: payload[key] for key in ("ok", "exit_code", "error_code", "verification_id", "message") if key in payload} if isinstance(payload, dict) else {})}
+    if len(serialized.encode("utf-8")) > 4_000:
+        metadata = {key: payload[key] for key in ("ok", "exit_code", "error_code", "verification_id", "message")
+                    if isinstance(payload, dict) and key in payload}
+        metadata = {key: value[:400] if isinstance(value, str) else value for key, value in metadata.items()}
+        payload = {"full_result_path": full_result_path,
+                   "excerpt": serialized.encode("utf-8")[:1600].decode("utf-8", errors="ignore"),
+                   "truncated": True, **metadata}
     _append_tool_result(
         messages,
         result,
@@ -370,6 +374,20 @@ async def _run_agent_loop(
     file_tree = await sandbox.list_files("/workspace")
     skill_root = str(skill_contexts[0]["root"])
     messages = _agent_messages(job, skill_contexts, file_tree)
+    connection = getattr(gateway, 'connection', None)
+    input_budget = getattr(connection, 'context_tokens', 48000)
+    options = getattr(connection, 'agent_options', None) or {}
+    budget_snapshot = {
+        'model_name': job.model_name,
+        'input_budget_tokens': input_budget,
+        'context_tokens': options.get('context_tokens', 64000),
+        'max_output_tokens': options.get('max_output_tokens', 16000),
+        'estimator': 'utf8_json_bytes_div_2',
+    }
+    if job.memory is None:
+        job.memory = WorkflowJobMemory(data={})
+    job.memory.data = {**(job.memory.data or {}), 'model_budget': budget_snapshot}
+    db.commit()
     execution_state = AgentExecutionState(
         skill_count=len(skill_contexts),
         plan_required=True,
@@ -427,17 +445,28 @@ async def _run_agent_loop(
         )
         db.commit()
         reasoning_started_at = time.perf_counter()
+        budget_diagnostics: dict[str, Any] = {}
+        tool_tokens = (estimate_tokens(SANDBOX_AGENT_TOOLS)
+                       if getattr(gateway, '_native_tools_available', False) else 0)
         try:
             model_messages = project_context(messages, checkpoint=execution_state.checkpoint(),
                 skill_contexts=skill_contexts, loaded=execution_state.loaded_skills,
                 completed=execution_state.completed_skill_indexes,
-                max_tokens=getattr(getattr(gateway, "connection", None), "context_tokens", 48000))
+                max_tokens=input_budget, tool_tokens=tool_tokens,
+                initial_exchange_reserve=2048, diagnostics=budget_diagnostics)
         except ValueError as exc:
+            reasoning_event.status = 'failed'
+            reasoning_event.detail = str(exc)
+            reasoning_event.data = {**(reasoning_event.data or {}),
+                'duration_ms': _event_duration_ms(reasoning_started_at),
+                'error_code': 'AGENT_CONTEXT_LIMIT', 'context_budget': budget_diagnostics}
+            db.commit()
             raise SandboxRuntimeError("AGENT_CONTEXT_LIMIT", str(exc)) from exc
         reasoning_event.data = {
             **(reasoning_event.data or {}),
             "input_estimated_tokens": estimate_tokens(model_messages),
             "message_count": len(model_messages),
+            "context_budget": budget_diagnostics,
         }
         db.commit()
         try:
