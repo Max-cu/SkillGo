@@ -15,8 +15,13 @@ def project_context(messages: list[dict[str, Any]], *, checkpoint: str,
                     skill_contexts: list[dict[str, Any]], loaded: set[int],
                     completed: set[int], max_tokens: int) -> list[dict[str, Any]]:
     pinned = messages[:2]
+    # Single-Skill instructions already live in the pinned system message.
+    # Keep that stable prefix intact and avoid sending the full guide twice.
+    pinned_system = "\n".join(message['content'] for message in pinned
+                              if message.get('role') == 'system' and isinstance(message.get('content'), str))
     active = [{"index": i, "root": item["root"], "skill_md": item["skill_md"]}
-              for i, item in enumerate(skill_contexts, 1) if i in loaded and i not in completed]
+              for i, item in enumerate(skill_contexts, 1)
+              if i in loaded and i not in completed and item['skill_md'] not in pinned_system]
     memory = {"role": "user", "content": "Execution state and active Skill instructions (user requirements take precedence):\n" +
               json.dumps({"checkpoint": json.loads(checkpoint), "active_skills": active}, ensure_ascii=False)}
     # Drop complete exchanges, never edit native assistant reasoning/tool fields.

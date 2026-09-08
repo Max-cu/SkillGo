@@ -20,6 +20,15 @@ class ModelGatewayError(RuntimeError):
         self.code = code
 
 
+def _transport_error(exc: httpx.HTTPError, timeout_seconds: float) -> ModelGatewayError:
+    # Do not expose exception text: it can contain URLs or credentials.
+    if isinstance(exc, (httpx.ConnectTimeout, httpx.ConnectError)):
+        return ModelGatewayError("MODEL_CONNECTION_FAILED", "无法建立模型连接，请检查模型服务和 Worker 到模型的网络")
+    if isinstance(exc, httpx.TimeoutException):
+        return ModelGatewayError("MODEL_RESPONSE_TIMEOUT", f"模型请求等待超时（本次请求含重试的总预算 {timeout_seconds:g} 秒），请检查模型负载或调整等待时间")
+    return ModelGatewayError("MODEL_TRANSPORT_ERROR", "模型通信中断，未收到完整响应，请检查模型服务或中间网关")
+
+
 @dataclass(frozen=True)
 class AgentToolCall:
     id: str
@@ -784,9 +793,7 @@ class OpenAICompatibleGateway:
                     f"Private model returned HTTP {exc.response.status_code}",
                 ) from exc
             except httpx.HTTPError as exc:
-                raise ModelGatewayError(
-                    "MODEL_UNAVAILABLE", "Could not reach the configured private model"
-                ) from exc
+                raise _transport_error(exc, self.connection.timeout_seconds) from exc
 
             try:
                 payload = response.json()
@@ -1078,9 +1085,7 @@ Never invent an id and never return prose or Markdown."""
                     f"Private model returned HTTP {exc.response.status_code}",
                 ) from exc
             except httpx.HTTPError as exc:
-                raise ModelGatewayError(
-                    "MODEL_UNAVAILABLE", "Could not reach the configured private model"
-                ) from exc
+                raise _transport_error(exc, self.connection.timeout_seconds) from exc
 
             try:
                 payload = response.json()

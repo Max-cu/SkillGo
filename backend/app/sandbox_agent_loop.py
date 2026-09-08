@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 
 from .agent_kernel import AgentSession, ToolCallContext, ToolPipeline
 from .agent_policy import AgentExecutionState, action_fingerprint
-from .agent_context import project_context
+from .agent_context import project_context, estimate_tokens
 from .workflow_tools import run_verifier, snapshot_step_files, effective_instruction
 from .deterministic_runtime import execute_fixed_skill
 from .artifact_validation import (
@@ -239,6 +239,9 @@ Selected approved Skills:
 """
     system += """
 Execution protocol updates (these refine the earlier rules):
+- Each run_python call starts a fresh Python process: imports and variables NEVER survive between calls. Save reusable parsing/processing code as a module under /workspace/work, and persist intermediate data to files. Import that module in later calls instead of assuming previous variables still exist.
+- For large structured input, inspect a bounded sample and the actual parse error, then run a complete parser over the original file in the sandbox. Save normalized records with source references; report counts and errors rather than printing the entire dataset. Never silently skip malformed records or invent missing values. Reuse the successful parser for later processing.
+- Keep generated code in cohesive reusable modules; avoid regenerating a whole rules engine or report after a small correction. Preserve all required rules and validation. Batch independent inspections when useful; do not add a model round merely to rediscover saved data.
 - Create a concise plan with depends_on, skill_index, input_refs and output_refs for relevant steps. Use exact absolute workspace paths. Keep one active step; finish upstream steps before starting dependents. Preserve success_criteria across replans; they are identified r1, r2, etc. Replan only affected descendants after changed inputs/outputs.
 - SKILL examples are format demonstrations, never task facts. Bind numbers, units, names and sources to current input; surface contradictory or missing material data with ask_user. Original user requirements remain authoritative.
 - Final verification uses run_verifier, not an ordinary command. Prepare a read-only program whose stdout is exactly JSON {"checks":[{"requirement_id":"r1","passed":true,"observed":"actual measured value"}]}. Cover every success criterion. Include meaningful expected/actual comparisons; do not print invented pass claims. After run_verifier succeeds, call record_validation with its verification_id, then finish. Failed verification cannot be overridden by a model claim.
@@ -431,7 +434,24 @@ async def _run_agent_loop(
                 max_tokens=getattr(getattr(gateway, "connection", None), "context_tokens", 48000))
         except ValueError as exc:
             raise SandboxRuntimeError("AGENT_CONTEXT_LIMIT", str(exc)) from exc
-        result = await gateway.agent_step(messages=model_messages)
+        reasoning_event.data = {
+            **(reasoning_event.data or {}),
+            "input_estimated_tokens": estimate_tokens(model_messages),
+            "message_count": len(model_messages),
+        }
+        db.commit()
+        try:
+            result = await gateway.agent_step(messages=model_messages)
+        except ModelGatewayError as exc:
+            reasoning_event.status = "failed"
+            reasoning_event.detail = str(exc)
+            reasoning_event.data = {
+                **(reasoning_event.data or {}),
+                "duration_ms": _event_duration_ms(reasoning_started_at),
+                "error_code": exc.code,
+            }
+            db.commit()
+            raise
         if job_cancelled():
             raise AgentJobCancelled("Workflow job was cancelled")
 

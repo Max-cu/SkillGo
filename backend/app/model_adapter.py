@@ -4,7 +4,11 @@ from __future__ import annotations
 import asyncio
 import json
 import time
+import logging
 import httpx
+
+
+logger = logging.getLogger(__name__)
 
 
 def request_options(connection, *, attempt: int = 0) -> dict:
@@ -38,19 +42,26 @@ async def post_json(connection, url: str, *, headers: dict, body: dict):
     deadline = time.monotonic() + connection.timeout_seconds
     async with httpx.AsyncClient(timeout=connection.timeout_seconds, verify=connection.tls_verify) as client:
         for attempt in range(3):
+            started = time.monotonic()
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise httpx.ReadTimeout('Model request deadline exceeded')
             try:
                 async with asyncio.timeout(remaining):
                     response = await client.post(url, headers=headers, json=body)
+                logger.info('Model transport attempt=%d duration_ms=%d status=%d',
+                            attempt + 1, round((time.monotonic() - started) * 1000), response.status_code)
                 if response.status_code not in {429, 502, 503, 504} or attempt == 2:
                     response.raise_for_status()
                     return response
-            except (httpx.ConnectError, httpx.ReadTimeout):
+            except (httpx.ConnectError, httpx.TimeoutException, httpx.ReadError, httpx.RemoteProtocolError) as exc:
+                logger.warning('Model transport attempt=%d duration_ms=%d error=%s',
+                               attempt + 1, round((time.monotonic() - started) * 1000), type(exc).__name__)
                 if attempt == 2:
                     raise
             except TimeoutError as exc:
+                logger.warning('Model transport attempt=%d duration_ms=%d error=RequestDeadlineExceeded',
+                               attempt + 1, round((time.monotonic() - started) * 1000))
                 raise httpx.ReadTimeout('Model request deadline exceeded') from exc
             await asyncio.sleep(min(2 ** attempt, max(0, deadline - time.monotonic())))
     raise httpx.ReadTimeout('Model request deadline exceeded')
