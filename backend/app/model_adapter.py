@@ -275,8 +275,9 @@ async def post_json(connection, url: str, *, headers: dict, body: dict):
             except TimeoutError as exc:
                 deadline_error = httpx.ReadTimeout('Model request deadline exceeded')
                 _with_diagnostics(deadline_error, stats)
-                logger.warning('Model transport attempt=%d duration_ms=%d error=RequestDeadlineExceeded',
-                               attempt + 1, round((time.monotonic() - started) * 1000))
+                logger.warning('Model transport attempt=%d duration_ms=%d error=RequestDeadlineExceeded first_chunk_ms=%s chunks=%d bytes=%d',
+                               attempt + 1, round((time.monotonic() - started) * 1000),
+                               stats["first_chunk_ms"], stats["chunks"], stats["bytes"])
                 raise deadline_error from exc
             else:
                 if response is None:

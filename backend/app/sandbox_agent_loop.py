@@ -479,6 +479,8 @@ async def _run_agent_loop(
                 "duration_ms": _event_duration_ms(reasoning_started_at),
                 "error_code": exc.code,
             }
+            if exc.details:
+                reasoning_event.data["model_transport"] = exc.details
             db.commit()
             raise
         if job_cancelled():
