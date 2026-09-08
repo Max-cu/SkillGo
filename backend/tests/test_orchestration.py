@@ -357,19 +357,25 @@ def test_model_transport_retry_is_bounded_and_does_not_retry_bad_arguments(monke
     from app import model_adapter
     responses = [429, 503, 200]
     calls = []
+    class StreamContext:
+        def __init__(self, response): self.response = response
+        async def __aenter__(self): return self.response
+        async def __aexit__(self, *args): return False
     class Client:
         def __init__(self, **kwargs): pass
         async def __aenter__(self): return self
         async def __aexit__(self, *args): pass
-        async def post(self, url, **kwargs):
+        def stream(self, method, url, **kwargs):
             calls.append(kwargs['json'])
-            return httpx.Response(responses.pop(0), request=httpx.Request('POST', url), json={'ok': True})
+            response = httpx.Response(responses.pop(0), request=httpx.Request('POST', url), json={'ok': True})
+            return StreamContext(response)
     async def no_sleep(seconds): pass
     monkeypatch.setattr(model_adapter.httpx, 'AsyncClient', Client)
     monkeypatch.setattr(model_adapter.asyncio, 'sleep', no_sleep)
-    connection = SimpleNamespace(timeout_seconds=30, tls_verify=True)
+    connection = SimpleNamespace(timeout_seconds=30, tls_verify=True, connect_timeout_seconds=15,
+                                 first_chunk_timeout_seconds=0, stream_stall_timeout_seconds=0)
     asyncio.run(model_adapter.post_json(connection, 'https://model.example.test', headers={}, body={'model': 'chosen'}))
-    assert calls == [{'model': 'chosen'}] * 3
+    assert calls == [{'model': 'chosen', 'stream': True}] * 3
     responses[:] = [400]
     with pytest.raises(httpx.HTTPStatusError):
         asyncio.run(model_adapter.post_json(connection, 'https://model.example.test', headers={}, body={}))

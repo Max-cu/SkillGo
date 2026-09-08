@@ -4,6 +4,12 @@
 
 ## [Unreleased]
 
+### Added
+
+- Agent 推理请求改为流式接收（SSE）：聚合增量内容、推理文本与工具调用分片为完整响应；网关忽略流式请求时自动回退为整体 JSON。
+- 模型传输分层超时：连接超时、首响应等待（无任何响应数据）、流停滞等待（生成中途无新数据）与含重试的总截止分别配置（`SKILLGO_MODEL_CONNECT_TIMEOUT_SECONDS`、`SKILLGO_MODEL_FIRST_CHUNK_TIMEOUT_SECONDS`、`SKILLGO_MODEL_STREAM_STALL_TIMEOUT_SECONDS`，也可按模型在 agent_options 覆盖；总截止始终保持有界，不因心跳延长）。
+- 传输进展诊断：推理轮次事件记录首响应耗时、SSE 数据块数、字节数与重试次数；失败时区分 `MODEL_FIRST_RESPONSE_TIMEOUT` 与 `MODEL_STREAM_STALLED` 错误码并附带传输统计。
+
 ### Fixed
 
 - 上下文分配优先保留最近一次完整工具交互，避免工具结果被全部裁掉后仍继续推理；观察摘要限制大小，大结果保存到文件并返回有界 UTF-8 摘录。

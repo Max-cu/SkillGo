@@ -11,22 +11,44 @@ from urllib.parse import urlparse
 import httpx
 
 from .config import settings
-from .model_adapter import request_options, post_json, compatibility_messages
+from .model_adapter import (
+    request_options,
+    post_json,
+    compatibility_messages,
+    ModelFirstResponseTimeout,
+    ModelStreamStall,
+)
 
 
 class ModelGatewayError(RuntimeError):
-    def __init__(self, code: str, message: str) -> None:
+    def __init__(self, code: str, message: str, details: dict | None = None) -> None:
         super().__init__(message)
         self.code = code
+        self.details = details
 
 
 def _transport_error(exc: httpx.HTTPError, timeout_seconds: float) -> ModelGatewayError:
     # Do not expose exception text: it can contain URLs or credentials.
+    diagnostics = getattr(exc, "diagnostics", None)
+    if isinstance(exc, ModelFirstResponseTimeout):
+        budget = getattr(exc, "budget_seconds", timeout_seconds)
+        return ModelGatewayError(
+            "MODEL_FIRST_RESPONSE_TIMEOUT",
+            f"模型在首响应等待时间内没有返回任何数据（预算 {budget:g} 秒，重试后仍无响应），请检查模型负载或调整首响应等待时间",
+            details=diagnostics,
+        )
+    if isinstance(exc, ModelStreamStall):
+        budget = getattr(exc, "budget_seconds", timeout_seconds)
+        return ModelGatewayError(
+            "MODEL_STREAM_STALLED",
+            f"模型响应流已开始但在生成中途停滞（超过 {budget:g} 秒无新数据，重试后仍停滞），请检查模型服务或中间网关",
+            details=diagnostics,
+        )
     if isinstance(exc, (httpx.ConnectTimeout, httpx.ConnectError)):
-        return ModelGatewayError("MODEL_CONNECTION_FAILED", "无法建立模型连接，请检查模型服务和 Worker 到模型的网络")
+        return ModelGatewayError("MODEL_CONNECTION_FAILED", "无法建立模型连接，请检查模型服务和 Worker 到模型的网络", details=diagnostics)
     if isinstance(exc, httpx.TimeoutException):
-        return ModelGatewayError("MODEL_RESPONSE_TIMEOUT", f"模型请求等待超时（本次请求含重试的总预算 {timeout_seconds:g} 秒），请检查模型负载或调整等待时间")
-    return ModelGatewayError("MODEL_TRANSPORT_ERROR", "模型通信中断，未收到完整响应，请检查模型服务或中间网关")
+        return ModelGatewayError("MODEL_RESPONSE_TIMEOUT", f"模型请求等待超时（本次请求含重试的总预算 {timeout_seconds:g} 秒），请检查模型负载或调整等待时间", details=diagnostics)
+    return ModelGatewayError("MODEL_TRANSPORT_ERROR", "模型通信中断，未收到完整响应，请检查模型服务或中间网关", details=diagnostics)
 
 
 @dataclass(frozen=True)
@@ -44,6 +66,7 @@ class ModelResult:
     assistant_message: dict[str, Any] | None = None
     tool_call_id: str | None = None
     tool_calls: tuple[AgentToolCall, ...] = ()
+    transport_stats: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -66,6 +89,26 @@ class ModelConnection:
     def context_tokens(self) -> int:
         options = self.agent_options or {}
         return max(4000, int(options.get('context_tokens', 64000)) - int(options.get('max_output_tokens', 16000)))
+
+    def _layered_timeout(self, key: str, fallback: float) -> float:
+        options = self.agent_options or {}
+        value = options.get(key)
+        try:
+            return float(value) if value is not None else fallback
+        except (TypeError, ValueError):
+            return fallback
+
+    @property
+    def connect_timeout_seconds(self) -> float:
+        return self._layered_timeout("connect_timeout_seconds", settings.model_connect_timeout_seconds)
+
+    @property
+    def first_chunk_timeout_seconds(self) -> float:
+        return self._layered_timeout("first_chunk_timeout_seconds", settings.model_first_chunk_timeout_seconds)
+
+    @property
+    def stream_stall_timeout_seconds(self) -> float:
+        return self._layered_timeout("stream_stall_timeout_seconds", settings.model_stream_stall_timeout_seconds)
 
 
 def environment_model_connection() -> ModelConnection:
@@ -1120,6 +1163,7 @@ Never invent an id and never return prose or Markdown."""
                 assistant_message=assistant_message,
                 tool_call_id=first_call.id,
                 tool_calls=tuple(tool_calls),
+                transport_stats=response.extensions.get("model_transport"),
             )
 
         raise ModelGatewayError(

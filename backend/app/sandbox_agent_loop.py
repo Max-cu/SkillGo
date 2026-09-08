@@ -504,6 +504,9 @@ async def _run_agent_loop(
             "planned_operations": len(calls),
             "duration_ms": _event_duration_ms(reasoning_started_at),
         }
+        transport_stats = getattr(result, "transport_stats", None)
+        if transport_stats:
+            reasoning_event.data["model_transport"] = transport_stats
 
         if result.assistant_message is not None:
             messages.append(result.assistant_message)
