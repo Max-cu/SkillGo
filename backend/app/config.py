@@ -60,10 +60,10 @@ class Settings:
         os.getenv("SKILLGO_MODEL_CONNECT_TIMEOUT_SECONDS", "15")
     )
     model_first_chunk_timeout_seconds: float = float(
-        os.getenv("SKILLGO_MODEL_FIRST_CHUNK_TIMEOUT_SECONDS", "120")
+        os.getenv("SKILLGO_MODEL_FIRST_CHUNK_TIMEOUT_SECONDS", "600")
     )
     model_stream_stall_timeout_seconds: float = float(
-        os.getenv("SKILLGO_MODEL_STREAM_STALL_TIMEOUT_SECONDS", "60")
+        os.getenv("SKILLGO_MODEL_STREAM_STALL_TIMEOUT_SECONDS", "600")
     )
     skill_analysis_timeout_seconds: float = float(
         os.getenv("SKILLGO_SKILL_ANALYSIS_TIMEOUT_SECONDS", "45")

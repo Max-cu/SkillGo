@@ -632,7 +632,7 @@ class ModelConnectionCreate(BaseModel):
     base_url: str = Field(min_length=8, max_length=500)
     api_format: Literal["openai", "mineru"] = "openai"
     api_key: str | None = Field(default=None, max_length=1000)
-    timeout_seconds: int = Field(default=120, ge=5, le=600)
+    timeout_seconds: int = Field(default=120, ge=0, le=3600)
     temperature: float = Field(default=0.2, ge=0, le=2)
     json_mode: bool = True
     native_tools: bool = True

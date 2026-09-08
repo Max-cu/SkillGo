@@ -1845,7 +1845,7 @@ export function ModelSettingsPage() {
                 <label>上下文预算<input type="number" min={16000} max={1100000} value={agentOptions.context_tokens} onChange={(event) => setAgentOptions({ ...agentOptions, context_tokens: Number(event.target.value) })} /></label>
                 <label>单次输出预算<input type="number" min={1000} max={128000} value={agentOptions.max_output_tokens} onChange={(event) => setAgentOptions({ ...agentOptions, max_output_tokens: Number(event.target.value) })} /><small>应低于上下文预算，并为输入至少保留 8000 token。</small></label>
               </>}
-              <label>超时时间（秒）<input type="number" min={5} max={600} value={timeoutSeconds} onChange={(event) => setTimeoutSeconds(Number(event.target.value))} /></label>
+              <label>超时时间（秒，0=不限）<input type="number" min={0} max={3600} value={timeoutSeconds} onChange={(event) => setTimeoutSeconds(Number(event.target.value))} /><small>0 表示不设单轮总预算，仅受首响应/流停滞检测约束。</small></label>
               {apiFormat === "openai" && <label>Temperature<input type="number" min={0} max={2} step={0.1} value={temperature} onChange={(event) => setTemperature(Number(event.target.value))} /></label>}
             </div>
             <section className="model-capability-editor"><header><strong>模型能力</strong><small>{apiFormat === "mineru" ? "MinerU 固定用于 OCR" : "至少选择一种能力"}</small></header><div>

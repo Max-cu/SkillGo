@@ -290,6 +290,68 @@ def test_cancellation_is_not_retried(monkeypatch):
     assert len(client.calls) == 1
 
 
+def test_model_connection_http_timeout_zero_means_none():
+    assert _connection().http_timeout == 5
+    assert _connection(timeout_seconds=0).http_timeout is None
+
+
+def test_zero_total_budget_disables_transport_deadline(monkeypatch):
+    captured = {}
+
+    def factory(**kwargs):
+        captured.update(kwargs)
+        return StreamClient([FakeStreamResponse(_sse_lines(*_content_chunks()))])
+
+    monkeypatch.setattr(model_adapter.httpx, 'AsyncClient', factory)
+
+    response = asyncio.run(model_adapter.post_json(
+        _connection(timeout_seconds=0), 'https://model.test', headers={}, body={'messages': []}))
+
+    assert response.status_code == 200
+    assert captured['timeout'].read is None
+    assert captured['timeout'].write is None
+    assert captured['timeout'].connect is not None
+
+
+def test_zero_total_budget_still_enforces_first_response_timeout(monkeypatch):
+    client = StreamClient([FakeStreamResponse(hang_after_lines=True)] * 3)
+    monkeypatch.setattr(model_adapter.httpx, 'AsyncClient', lambda **kwargs: client)
+    monkeypatch.setattr(model_adapter.asyncio, 'sleep', _no_sleep)
+    connection = _connection(timeout_seconds=0, agent_options={'first_chunk_timeout_seconds': 0.05})
+
+    with pytest.raises(ModelFirstResponseTimeout) as excinfo:
+        asyncio.run(model_adapter.post_json(connection, 'https://model.test', headers={}, body={}))
+
+    error = _transport_error(excinfo.value, 0)
+    assert error.code == 'MODEL_FIRST_RESPONSE_TIMEOUT'
+    assert excinfo.value.diagnostics['attempts'] == 3
+
+
+def test_zero_total_budget_still_enforces_stream_stall(monkeypatch):
+    started = ['data: ' + json.dumps({'choices': [{'index': 0, 'delta': {'content': 'par'}}]})]
+    client = StreamClient([FakeStreamResponse(started, hang_after_lines=True)] * 3)
+    monkeypatch.setattr(model_adapter.httpx, 'AsyncClient', lambda **kwargs: client)
+    monkeypatch.setattr(model_adapter.asyncio, 'sleep', _no_sleep)
+    connection = _connection(timeout_seconds=0, agent_options={
+        'first_chunk_timeout_seconds': 0.05, 'stream_stall_timeout_seconds': 0.05})
+
+    with pytest.raises(ModelStreamStall) as excinfo:
+        asyncio.run(model_adapter.post_json(connection, 'https://model.test', headers={}, body={}))
+
+    error = _transport_error(excinfo.value, 0)
+    assert error.code == 'MODEL_STREAM_STALLED'
+    assert excinfo.value.diagnostics['first_chunk_ms'] is not None
+    assert excinfo.value.diagnostics['attempts'] == 3
+
+
+def test_transport_error_without_total_budget_mentions_layered_detection():
+    error = _transport_error(httpx.ReadTimeout('Model request deadline exceeded'), 0)
+
+    assert error.code == 'MODEL_RESPONSE_TIMEOUT'
+    assert '总预算 0' not in str(error)
+    assert '未设置单轮总预算' in str(error)
+
+
 def test_failed_model_round_persists_timing_before_worker_rollback(client, user_headers, fake_model_gateway):
     from app.database import SessionLocal
     from app.models import WorkflowJob, JobEvent

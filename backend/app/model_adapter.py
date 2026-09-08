@@ -238,16 +238,18 @@ async def post_json(connection, url: str, *, headers: dict, body: dict):
     """Stream one inference response with layered timeouts; retry transport only.
 
     Budgets: one overall per-call deadline (timeout_seconds, shared across
-    retries), an optional first-response budget and an optional stream stall
-    budget from the connection. Retries only happen before any response data
-    is returned, so an executed tool operation is never repeated.
+    retries; 0 disables it so only the first-response and stream stall
+    budgets bound the call), an optional first-response budget and an
+    optional stream stall budget from the connection. Retries only happen
+    before any response data is returned, so an executed tool operation is
+    never repeated.
     """
-    deadline = time.monotonic() + connection.timeout_seconds
+    deadline = time.monotonic() + connection.timeout_seconds if connection.timeout_seconds > 0 else float("inf")
     stats: dict[str, Any] = {"attempts": 0, "chunks": 0, "bytes": 0, "first_chunk_ms": None, "done": False}
     timeout = httpx.Timeout(
         connect=connection.connect_timeout_seconds,
-        read=connection.timeout_seconds,
-        write=connection.timeout_seconds,
+        read=connection.timeout_seconds or None,
+        write=connection.timeout_seconds or None,
         pool=connection.connect_timeout_seconds,
     )
     async with httpx.AsyncClient(timeout=timeout, verify=connection.tls_verify) as client:

@@ -47,7 +47,9 @@ def _transport_error(exc: httpx.HTTPError, timeout_seconds: float) -> ModelGatew
     if isinstance(exc, (httpx.ConnectTimeout, httpx.ConnectError)):
         return ModelGatewayError("MODEL_CONNECTION_FAILED", "无法建立模型连接，请检查模型服务和 Worker 到模型的网络", details=diagnostics)
     if isinstance(exc, httpx.TimeoutException):
-        return ModelGatewayError("MODEL_RESPONSE_TIMEOUT", f"模型请求等待超时（本次请求含重试的总预算 {timeout_seconds:g} 秒），请检查模型负载或调整等待时间", details=diagnostics)
+        if timeout_seconds > 0:
+            return ModelGatewayError("MODEL_RESPONSE_TIMEOUT", f"模型请求等待超时（本次请求含重试的总预算 {timeout_seconds:g} 秒），请检查模型负载或调整等待时间", details=diagnostics)
+        return ModelGatewayError("MODEL_RESPONSE_TIMEOUT", "模型请求等待超时（该模型未设置单轮总预算，已达重试上限仍无完整响应），请检查模型负载或调整首响应/流停滞检测配置", details=diagnostics)
     return ModelGatewayError("MODEL_TRANSPORT_ERROR", "模型通信中断，未收到完整响应，请检查模型服务或中间网关", details=diagnostics)
 
 
@@ -76,6 +78,7 @@ class ModelConnection:
     model_name: str | None
     api_format: str = "openai"
     models: tuple[str, ...] = ()
+    # 0 disables the overall per-round budget; layered stream budgets still apply.
     timeout_seconds: float = 120
     temperature: float = 0.2
     json_mode: bool = True
@@ -109,6 +112,11 @@ class ModelConnection:
     @property
     def stream_stall_timeout_seconds(self) -> float:
         return self._layered_timeout("stream_stall_timeout_seconds", settings.model_stream_stall_timeout_seconds)
+
+    @property
+    def http_timeout(self) -> float | None:
+        """httpx-friendly overall timeout; None means no per-call deadline."""
+        return self.timeout_seconds or None
 
 
 def environment_model_connection() -> ModelConnection:
@@ -558,7 +566,7 @@ class OpenAICompatibleGateway:
         started = time.perf_counter()
         try:
             async with httpx.AsyncClient(
-                timeout=min(self.connection.timeout_seconds, 30),
+                timeout=min(self.connection.http_timeout or 30, 30),
                 verify=self.connection.tls_verify,
             ) as client:
                 response = await client.post(
@@ -595,7 +603,7 @@ class OpenAICompatibleGateway:
         started = time.perf_counter()
         try:
             async with httpx.AsyncClient(
-                timeout=min(self.connection.timeout_seconds, 30),
+                timeout=min(self.connection.http_timeout or 30, 30),
                 verify=self.connection.tls_verify,
             ) as client:
                 response = await client.get(self._mineru_openapi_url(), headers=headers)
@@ -683,7 +691,7 @@ class OpenAICompatibleGateway:
         started_at = time.perf_counter()
         try:
             async with httpx.AsyncClient(
-                timeout=self.connection.timeout_seconds,
+                timeout=self.connection.http_timeout,
                 verify=self.connection.tls_verify,
             ) as client:
                 response = await client.post(
@@ -741,7 +749,7 @@ class OpenAICompatibleGateway:
         started_at = time.perf_counter()
         try:
             async with httpx.AsyncClient(
-                timeout=self.connection.timeout_seconds,
+                timeout=self.connection.http_timeout,
                 verify=self.connection.tls_verify,
             ) as client:
                 response = await client.post(
@@ -891,7 +899,7 @@ class OpenAICompatibleGateway:
         started_at = time.perf_counter()
         try:
             async with httpx.AsyncClient(
-                timeout=self.connection.timeout_seconds,
+                timeout=self.connection.http_timeout,
                 verify=self.connection.tls_verify,
             ) as client:
                 response = await client.post(
@@ -946,7 +954,7 @@ class OpenAICompatibleGateway:
         received_text = False
         try:
             async with httpx.AsyncClient(
-                timeout=self.connection.timeout_seconds,
+                timeout=self.connection.http_timeout,
                 verify=self.connection.tls_verify,
             ) as client:
                 async with client.stream(
