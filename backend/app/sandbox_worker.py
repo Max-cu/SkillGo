@@ -1035,15 +1035,19 @@ async def run_worker() -> None:
             _heartbeat_loop(lease, heartbeat_stopping, lease_lost)
         )
         try:
-            await asyncio.wait_for(
-                execute_sandbox_job(
-                    lease.job_id,
-                    client,
-                    lease=lease,
-                    lease_lost=lease_lost,
-                ),
-                timeout=settings.sandbox_job_timeout_seconds,
+            coro = execute_sandbox_job(
+                lease.job_id,
+                client,
+                lease=lease,
+                lease_lost=lease_lost,
             )
+            job_timeout = settings.sandbox_job_timeout_seconds
+            # 0 disables the wall-clock budget: runaway protection stays on the
+            # reasoning-turn cap, the doom-loop guard and per-layer idle checks.
+            if job_timeout > 0:
+                await asyncio.wait_for(coro, timeout=job_timeout)
+            else:
+                await coro
         except TimeoutError:
             with SessionLocal() as db:
                 job = db.get(WorkflowJob, lease.job_id)

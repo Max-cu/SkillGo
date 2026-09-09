@@ -422,7 +422,11 @@ async def _run_agent_loop(
     tool_operation_count = 0
     singleton_tool_turns = 0
 
-    for turn_number in range(1, settings.sandbox_max_agent_turns + 1):
+    # 0 disables the reasoning-turn cap (QwenPaw semantics: runaway protection
+    # relies on the doom-loop guard and per-layer idle checks instead).
+    turns_limit = settings.sandbox_max_agent_turns
+    turn_numbers = itertools.count(1) if turns_limit <= 0 else range(1, turns_limit + 1)
+    for turn_number in turn_numbers:
         if job_cancelled():
             raise AgentJobCancelled("Workflow job was cancelled")
         agent_session.start_turn(turn_number)

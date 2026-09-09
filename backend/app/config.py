@@ -88,7 +88,9 @@ class Settings:
         os.getenv("SKILLGO_SANDBOX_WORKER_MAX_ATTEMPTS", "3")
     )
     sandbox_job_timeout_seconds: int = int(
-        os.getenv("SKILLGO_SANDBOX_JOB_TIMEOUT_SECONDS", "1800")
+        # 0 disables the wall-clock budget (QwenPaw semantics: no task-level
+        # time limit; runaway protection relies on the turn cap and idle checks).
+        os.getenv("SKILLGO_SANDBOX_JOB_TIMEOUT_SECONDS", "0")
     )
     sandbox_command_timeout_seconds: int = int(
         os.getenv("SKILLGO_SANDBOX_COMMAND_TIMEOUT_SECONDS", "120")
@@ -96,14 +98,16 @@ class Settings:
     # A reasoning turn may now contain several native tool calls. Keep the
     # model-turn budget separate from the sandbox-operation budget so a useful
     # batch is not reported as several rounds of "thinking".
+    # 0 disables the caps (QwenPaw semantics: complex Skills may legitimately
+    # need more than a hundred reasoning turns).
     sandbox_max_agent_turns: int = int(
         os.getenv(
             "SKILLGO_SANDBOX_MAX_AGENT_TURNS",
-            os.getenv("SKILLGO_SANDBOX_MAX_AGENT_STEPS", "100"),
+            os.getenv("SKILLGO_SANDBOX_MAX_AGENT_STEPS", "300"),
         )
     )
     sandbox_max_agent_tool_calls: int = int(
-        os.getenv("SKILLGO_SANDBOX_MAX_AGENT_TOOL_CALLS", "160")
+        os.getenv("SKILLGO_SANDBOX_MAX_AGENT_TOOL_CALLS", "480")
     )
     sandbox_memory: str = os.getenv("SKILLGO_SANDBOX_MEMORY", "768m")
     sandbox_nano_cpus: int = int(os.getenv("SKILLGO_SANDBOX_NANO_CPUS", "1000000000"))
