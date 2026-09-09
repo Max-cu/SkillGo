@@ -1138,3 +1138,28 @@ input:focus, textarea:focus, select:focus { border-color: var(--focus); box-shad
 .agent-run .agent-trace-history > .run-disclosure-trigger small { font-size: 11px; }
 .agent-run .agent-trace-process > .run-disclosure-trigger > .run-disclosure-chevron { margin-left: 0; }
 .agent-run .agent-trace-event.stopped .agent-trace-node { color: #858b99; }
+/* Flat execution layout: one optional log, no nested round/tool disclosures. */
+.agent-run .agent-run-summary-static { cursor: default; grid-template-columns: 34px minmax(0,1fr) auto; }
+.agent-run .agent-run-summary-static:hover { background: #f8f9fb; border-color: var(--border-default); }
+.run-plan-header { min-height: 44px; display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.run-plan-header button { padding: 7px 0 7px 8px; border: 0; background: transparent; color: #7563d9; font-size: 12px; cursor: pointer; }
+.run-plan-header button:focus-visible { outline: 2px solid #7563d9; outline-offset: 3px; }
+.run-plan-evidence-text { margin: 5px 0 0; font-size: 12px; line-height: 1.65; color: #687080; overflow-wrap: anywhere; }
+.agent-run .agent-trace-round { margin: 16px 0; }
+.agent-trace-round > header { min-height: 36px; display: flex; align-items: center; gap: 10px; border-bottom: 1px solid #e8eaf0; color: #687080; font-size: 12px; }
+.agent-trace-round > header small { font-size: 12px; }
+.agent-trace-round > header time { margin-left: auto; font-size: 11px; font-variant-numeric: tabular-nums; }
+.agent-run .agent-trace-copy small { display: none; }
+.agent-trace-path { display: block; margin: -2px 0 8px 28px; color: #7e8593; font-size: 11px; overflow-wrap: anywhere; }
+.agent-trace-error-details { margin: 0 0 10px 28px; font-size: 12px; color: #a65b43; }
+.agent-trace-error-details summary { cursor: pointer; padding: 7px 0; }
+.agent-trace-error-details pre { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; line-height: 1.6; }
+.agent-stage-flat { margin-top: 18px; border-top: 1px solid #eceef2; padding-top: 12px; font-size: 12px; color: #687080; }
+.agent-stage-flat p { display: flex; justify-content: space-between; gap: 12px; margin: 8px 0; }
+@media(max-width:640px) {
+ .agent-run .agent-run-summary-static { grid-template-columns: 34px minmax(0,1fr); }
+ .run-plan-header { gap: 8px; }
+ .run-plan-header button { min-height: 44px; }
+ .agent-trace-round > header { flex-wrap: wrap; padding: 6px 0; }
+}
+.agent-run .agent-run-trace.agent-trace-process { margin-top: 20px; }
