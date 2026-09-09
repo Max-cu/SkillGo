@@ -1107,9 +1107,10 @@ input:focus, textarea:focus, select:focus { border-color: var(--focus); box-shad
 .agent-run .agent-trace-event { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; min-height: 32px; padding: 4px 0; }
 .agent-run .agent-trace-event > .run-disclosure-trigger { min-height: 32px; }
 .agent-run .agent-trace-node { flex: 0 0 16px; width: 16px; height: 16px; margin: 0; border: 0; background: transparent; }
-.agent-run .agent-trace-copy { flex: 0 1 auto; min-width: 0; }
+.agent-run .agent-trace-copy { flex: 0 1 auto; min-width: 0; display: flex; align-items: baseline; gap: 8px; }
 .agent-run .agent-trace-copy strong { font-size: 12.5px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .agent-run .agent-trace-copy small { font-size: 12px; line-height: 1.5; }
+.agent-trace-detail-inline { flex: 0 1 auto; min-width: 0; color: #8a90a0; font-size: 11.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .agent-run .agent-trace-event time { flex-shrink: 0; margin-left: auto; color: #8a90a0; font-size: 11.5px; font-variant-numeric: tabular-nums; }
 .agent-run .agent-trace-event .agent-trace-detail { margin: 0 0 8px 28px; padding: 10px; font-size: 12px; }
 .agent-run .agent-trace-preparation > .run-disclosure-trigger { color: #687080; font-size: 12px; }
@@ -1145,7 +1146,6 @@ input:focus, textarea:focus, select:focus { border-color: var(--focus); box-shad
 .run-plan-header button { padding: 7px 0 7px 8px; border: 0; background: transparent; color: #7563d9; font-size: 12px; cursor: pointer; }
 .run-plan-header button:focus-visible { outline: 2px solid #7563d9; outline-offset: 3px; }
 .run-plan-evidence-text { margin: 5px 0 0; font-size: 12px; line-height: 1.65; color: #687080; overflow-wrap: anywhere; }
-.agent-run .agent-trace-copy small { display: none; }
 .agent-trace-path { flex: 0 1 auto; min-width: 0; margin: 0; color: #7e8593; font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .agent-trace-error-details { flex-basis: 100%; margin: 0 0 10px 24px; font-size: 12px; color: #a65b43; }
 .agent-trace-error-details summary { cursor: pointer; padding: 7px 0; }

@@ -150,7 +150,7 @@ function TraceEvent({ event, forceComplete = false }: { event: WorkflowJobEvent;
   const className = `agent-trace-event ${failed ? "failed" : running ? "running" : stopped ? "stopped" : "succeeded"}`;
   return <div className={className} title={[turn > 0 ? `第 ${turn} 轮` : "", path].filter(Boolean).join(" · ") || undefined}>
     <span className="agent-trace-node">{running ? <i className="agent-inline-spinner" /> : failed ? <AlertTriangle /> : stopped ? <Minus /> : <Check />}</span>
-    <span className="agent-trace-copy"><strong>{event.title}</strong></span>
+    <span className="agent-trace-copy"><strong>{event.title}</strong>{event.detail && event.detail !== path && <small className="agent-trace-detail-inline">{event.detail}</small>}</span>
     {skillName && <span className="agent-trace-skill">{skillName}</span>}
     {shortPath && !failed && <code className="agent-trace-path">{shortPath}</code>}
     {duration && <time>{duration}</time>}
