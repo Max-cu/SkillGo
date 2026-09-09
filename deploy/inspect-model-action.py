@@ -55,7 +55,7 @@ async def main() -> None:
         "temperature": settings.model_temperature,
         "response_format": {"type": "json_object"},
     }
-    async with httpx.AsyncClient(timeout=settings.model_timeout_seconds) as client:
+    async with httpx.AsyncClient(timeout=settings.model_timeout_seconds or None) as client:
         response = await client.post(endpoint, headers=headers, json=body)
     print(f"status={response.status_code}")
     response.raise_for_status()

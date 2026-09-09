@@ -58,7 +58,7 @@ async def main() -> None:
         ("auto_default_thinking", {}),
         ("required_non_thinking", {"tool_choice": "required", "thinking": {"type": "disabled"}}),
     ]
-    async with httpx.AsyncClient(timeout=settings.model_timeout_seconds) as client:
+    async with httpx.AsyncClient(timeout=settings.model_timeout_seconds or None) as client:
         for name, extra in variants:
             response = await client.post(
                 gateway._chat_completions_url(), headers=headers, json={**common, **extra}

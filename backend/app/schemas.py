@@ -569,7 +569,7 @@ class ModelConfigUpdate(BaseModel):
     clear_api_key: bool = False
     models: list[str] = Field(min_length=1, max_length=20)
     default_model: str = Field(min_length=1, max_length=160)
-    timeout_seconds: int = Field(default=120, ge=5, le=600)
+    timeout_seconds: int = Field(default=0, ge=0, le=3600)
     temperature: float = Field(default=0.2, ge=0, le=2)
     json_mode: bool = True
     native_tools: bool = True

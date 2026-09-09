@@ -79,7 +79,7 @@ class ModelConnection:
     api_format: str = "openai"
     models: tuple[str, ...] = ()
     # 0 disables the overall per-round budget; layered stream budgets still apply.
-    timeout_seconds: float = 120
+    timeout_seconds: float = 0
     temperature: float = 0.2
     json_mode: bool = True
     native_tools: bool = True

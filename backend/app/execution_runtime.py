@@ -236,7 +236,7 @@ def fail_stale_conversation_runs(*, now: datetime | None = None) -> int:
     """
 
     current = now or utcnow()
-    cutoff = current - timedelta(seconds=max(60, int(settings.model_timeout_seconds) + 60))
+    cutoff = current - timedelta(seconds=max(60, settings.conversation_turn_stale_seconds))
     with SessionLocal() as db:
         runs = db.scalars(
             select(AgentRun).where(
