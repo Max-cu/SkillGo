@@ -141,22 +141,20 @@ function TraceEvent({ event, forceComplete = false }: { event: WorkflowJobEvent;
   const skillName = typeof event.data?.skill_name === "string" ? event.data.skill_name : "";
   const diagnostic = typeof event.data?.diagnostic === "string" ? event.data.diagnostic : "";
   const path = typeof event.data?.path === "string" ? event.data.path : "";
+  const turn = Number(event.data?.turn) || 0;
   const running = !forceComplete && (event.status === "running" || event.status === "queued");
   const failed = event.status === "failed";
   const stopped = forceComplete && ["running", "queued", "waiting_user"].includes(event.status);
-  const technicalPath = path;
+  const shortPath = path.split("/").filter(Boolean).slice(-2).join("/");
 
-  const heading = <>
-    <span className="agent-trace-node">{running ? <i className="agent-inline-spinner" /> : failed ? <AlertTriangle /> : stopped ? <Minus /> : <Check />}</span>
-    <span className="agent-trace-copy"><strong>{event.title}</strong><small>{event.detail}</small></span>
-    {skillName && <span className="agent-trace-skill">{skillName}</span>}
-    {duration && <time>{duration}</time>}
-  </>;
   const className = `agent-trace-event ${failed ? "failed" : running ? "running" : stopped ? "stopped" : "succeeded"}`;
-  return <div className={className}>
-    <div className="agent-trace-static">{heading}</div>
-    {technicalPath && <code className="agent-trace-path">{technicalPath}</code>}
-    {failed && diagnostic && <details className="agent-trace-error-details"><summary>查看错误详情</summary><pre>{diagnostic}</pre></details>}
+  return <div className={className} title={[turn > 0 ? `第 ${turn} 轮` : "", path].filter(Boolean).join(" · ") || undefined}>
+    <span className="agent-trace-node">{running ? <i className="agent-inline-spinner" /> : failed ? <AlertTriangle /> : stopped ? <Minus /> : <Check />}</span>
+    <span className="agent-trace-copy"><strong>{event.title}</strong></span>
+    {skillName && <span className="agent-trace-skill">{skillName}</span>}
+    {shortPath && !failed && <code className="agent-trace-path">{shortPath}</code>}
+    {duration && <time>{duration}</time>}
+    {failed && (diagnostic || event.detail) && <details className="agent-trace-error-details"><summary>查看错误详情</summary><pre>{diagnostic || event.detail}</pre></details>}
   </div>;
 
 }
@@ -171,48 +169,28 @@ function WorkflowReply({ job, onDownload, onRetry, onEdit, onAnswered }: { onAns
   const latestTurn = Math.max(0, ...job.events.map((item) => typeof item.data?.turn === "number" ? item.data.turn : 0));
   const totalDuration = elapsedBetween(job.started_at || job.created_at, job.finished_at, now);
   const visibleEvents = job.events.filter((item) => !["artifact", "result", "error"].includes(item.event_type));
-  const firstTurnIndex = visibleEvents.findIndex((item) => Number(item.data?.turn) > 0);
-  const lastTurnIndex = visibleEvents.reduce((last, item, index) => Number(item.data?.turn) > 0 ? index : last, -1);
-  const preludeEvents = firstTurnIndex < 0 ? visibleEvents : visibleEvents.slice(0, firstTurnIndex);
-  const closingEvents = lastTurnIndex < 0 ? [] : visibleEvents.slice(lastTurnIndex + 1);
-  const turns = Array.from(new Set(
-    visibleEvents.map((item) => Number(item.data?.turn) || 0).filter((turn) => turn > 0),
-  )).map((turn) => ({
-    turn,
-    events: visibleEvents.filter((event) => Number(event.data?.turn) === turn && ["reasoning", "tool"].includes(event.event_type)),
-  }));
+  const actionEvents = visibleEvents.filter((item) => item.event_type !== "reasoning" || item.status === "failed");
   const latestEvent = [...job.events].reverse().find((item) => !["result", "artifact"].includes(item.event_type));
   const stageRows = job.steps.filter((step) => step.started_at).map((step) => ({
     ...step,
     duration: elapsedBetween(step.started_at, step.finished_at, now),
   }));
 
-  const renderTurn = (item: typeof turns[number]) => {
-    const roundDuration = item.events.reduce((sum, event) => sum + (typeof event.data?.duration_ms === "number" ? event.data.duration_ms : 0), 0);
-    return <section key={item.turn} className="agent-trace-round">
-      <header><span>第 {item.turn} 轮</span><small>{item.events.filter(event => event.event_type === "tool").length} 项操作</small>
-        {roundDuration > 0 && <time title="已记录的模型与工具耗时合计">记录耗时 {formatDuration(roundDuration)}</time>}</header>
-      {item.events.map(event => <TraceEvent event={event} forceComplete={!running} key={event.id} />)}
-    </section>;
-  };
-
   return <div className={`agent-run ${running ? "is-running" : `is-${job.status}`}`}>
     <div className="agent-run-summary agent-run-summary-static">
       <span className="agent-run-state">{running ? <i className="agent-inline-spinner" /> : job.status === "succeeded" ? <Check /> : <AlertTriangle />}</span>
       <span>
-        <strong>{running ? latestTurn ? `正在处理 · 第 ${latestTurn} 轮` : "正在启动独立沙箱" : job.status === "succeeded" ? "处理完成" : workflowStatusLabels[job.status]}</strong>
-        <small>{running ? latestEvent?.title || "等待 Worker 接收任务" : `${formatDuration(totalDuration)} · ${latestTurn} 轮 · ${toolEvents.length} 次工具调用`}</small>
+        <strong>{running ? latestEvent?.title || "正在启动独立沙箱" : job.status === "succeeded" ? "处理完成" : workflowStatusLabels[job.status]}</strong>
+        <small>{running ? latestTurn ? `第 ${latestTurn} 轮 · ${formatDuration(totalDuration)}` : formatDuration(totalDuration) : `${formatDuration(totalDuration)} · ${toolEvents.length} 次工具调用`}</small>
       </span>
       <time>{running ? formatDuration(totalDuration) : `任务 ${job.id.slice(0, 8)}`}</time>
     </div>
 
     <WorkflowQuestion job={job} onAnswered={onAnswered} />
     {job.execution_plan && <ExecutionPlanCard key={job.id} plan={job.execution_plan} status={job.status} />}
-    <RunDisclosure className="agent-run-trace agent-trace-process" defaultOpen={needsAttention}
-      heading={<><strong>执行过程</strong><small>{turns.length} 轮 · {toolEvents.length} 次工具调用</small></>}>
-      {preludeEvents.map(event => <TraceEvent event={event} forceComplete={!running} key={event.id} />)}
-      {turns.map(renderTurn)}
-      {closingEvents.map(event => <TraceEvent event={event} forceComplete={!running} key={event.id} />)}
+    <RunDisclosure className="agent-run-trace agent-trace-process agent-trace-flow" defaultOpen={needsAttention}
+      heading={<><strong>执行过程</strong><small>{actionEvents.length} 项操作</small></>}>
+      {actionEvents.map(event => <TraceEvent event={event} forceComplete={!running} key={event.id} />)}
       {running && latestTurn === 0 && <p className="agent-trace-waiting">Worker 正在准备运行环境</p>}
       {stageRows.length > 0 && <div className="agent-stage-flat"><span>阶段耗时</span>{stageRows.map(step => <p key={step.id}><span>{step.name}</span><small>{formatDuration(step.duration)}</small></p>)}</div>}
     </RunDisclosure>
