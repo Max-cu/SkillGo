@@ -1,5 +1,6 @@
+import { ExecutionPlanCard, RunDisclosure } from "./ExecutionPlanCard";
 import { WorkflowQuestion } from "./WorkflowQuestion";
-import { AlertTriangle, ArrowDown, ArrowRight, Check, ChevronDown, ChevronRight, Download, FileCheck2, FileText, FolderClock, MessageSquareText, Paperclip, PencilLine, Plus, RotateCw, Trash2, Workflow, X, Zap } from "lucide-react";
+import { AlertTriangle, ArrowDown, ArrowRight, Check, ChevronDown, ChevronRight, Download, FileCheck2, FileText, FolderClock, MessageSquareText, Minus, Paperclip, PencilLine, Plus, RotateCw, Trash2, Workflow, X, Zap } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { useGSAP } from "@gsap/react";
@@ -142,28 +143,32 @@ function TraceEvent({ event, forceComplete = false }: { event: WorkflowJobEvent;
   const path = typeof event.data?.path === "string" ? event.data.path : "";
   const running = !forceComplete && (event.status === "running" || event.status === "queued");
   const failed = event.status === "failed";
+  const stopped = forceComplete && ["running", "queued", "waiting_user"].includes(event.status);
   const technicalPath = path && path !== event.detail ? path : "";
   const hasDetail = Boolean(diagnostic || technicalPath);
-  return <details className={`agent-trace-event ${failed ? "failed" : running ? "running" : "succeeded"}`} open={running}>
-    <summary>
-      <span className="agent-trace-node">{running ? <i className="agent-inline-spinner" /> : failed ? <AlertTriangle /> : <Check />}</span>
-      <span className="agent-trace-copy"><strong>{event.title}</strong><small>{event.detail}</small></span>
-      {skillName && <span className="agent-trace-skill">{skillName}</span>}
-      {duration && <time>{duration}</time>}
-      {hasDetail && <ChevronDown />}
-    </summary>
-    {hasDetail && <div className="agent-trace-detail">
+  const heading = <>
+    <span className="agent-trace-node">{running ? <i className="agent-inline-spinner" /> : failed ? <AlertTriangle /> : stopped ? <Minus /> : <Check />}</span>
+    <span className="agent-trace-copy"><strong>{event.title}</strong><small>{event.detail}</small></span>
+    {skillName && <span className="agent-trace-skill">{skillName}</span>}
+    {duration && <time>{duration}</time>}
+  </>;
+  const className = `agent-trace-event ${failed ? "failed" : running ? "running" : stopped ? "stopped" : "succeeded"}`;
+  return hasDetail ? <RunDisclosure className={className} heading={heading} defaultOpen={failed}>
+    <div className="agent-trace-detail">
       {technicalPath && <code>{technicalPath}</code>}
       {diagnostic && <pre>{diagnostic}</pre>}
-    </div>}
-  </details>;
+    </div>
+  </RunDisclosure> : <div className={className}><div className="agent-trace-static">{heading}</div></div>;
+
 }
 
 function WorkflowReply({ job, onDownload, onRetry, onEdit, onAnswered }: { onAnswered: (job: WorkflowJob) => void; job: WorkflowJob; onDownload: (job: WorkflowJob, artifact: WorkflowArtifact) => void; onRetry: (job: WorkflowJob) => void; onEdit: (job: WorkflowJob) => void }) {
   const running = activeStatuses.has(job.status);
   const now = useLiveNow(running);
-  const [traceOpen, setTraceOpen] = useState(running);
-  useEffect(() => setTraceOpen(running), [running]);
+  const needsAttention = ["failed", "blocked", "cancelled", "waiting_user"].includes(job.status);
+  const [manualTraceOpen, setManualTraceOpen] = useState<boolean>();
+  const [manualTurns, setManualTurns] = useState<Record<number, boolean>>({});
+  const traceOpen = manualTraceOpen ?? (running || needsAttention);
   const finalEvent = [...job.events].reverse().find((item) => item.event_type === "result");
   const toolEvents = job.events.filter((item) => item.event_type === "tool");
   const failedTools = toolEvents.filter((item) => item.status === "failed");
@@ -186,8 +191,20 @@ function WorkflowReply({ job, onDownload, onRetry, onEdit, onAnswered }: { onAns
     duration: elapsedBetween(step.started_at, step.finished_at, now),
   }));
 
+  const renderTurn = (item: typeof turns[number], index: number) => {
+    const roundDuration = item.events.reduce((sum, event) => sum + (typeof event.data?.duration_ms === "number" ? event.data.duration_ms : 0), 0);
+    const defaultOpen = (running && item.turn === latestTurn) || (needsAttention && index === turns.length - 1);
+    return <RunDisclosure key={item.turn} className="agent-trace-turn"
+      open={manualTurns[item.turn] ?? defaultOpen}
+      onOpenChange={open => setManualTurns(current => ({ ...current, [item.turn]: open }))}
+      heading={<><span>第 {item.turn} 轮</span><small>{item.events.filter(event => event.event_type === "tool").length} 项操作</small>
+        {roundDuration > 0 && <time title="已记录的模型与工具耗时合计">记录耗时 {formatDuration(roundDuration)}</time>}</>}>
+      {item.events.map(event => <TraceEvent event={event} forceComplete={!running} key={event.id} />)}
+    </RunDisclosure>;
+  };
+
   return <div className={`agent-run ${running ? "is-running" : `is-${job.status}`}`}>
-    <button type="button" className="agent-run-summary" aria-expanded={traceOpen} onClick={() => setTraceOpen((open) => !open)}>
+    <button type="button" className="agent-run-summary" aria-expanded={traceOpen} onClick={() => setManualTraceOpen(!traceOpen)}>
       <span className="agent-run-state">{running ? <i className="agent-inline-spinner" /> : job.status === "succeeded" ? <Check /> : <AlertTriangle />}</span>
       <span>
         <strong>{running ? latestTurn ? `正在处理 · 第 ${latestTurn} 轮` : "正在启动独立沙箱" : job.status === "succeeded" ? "处理完成" : workflowStatusLabels[job.status]}</strong>
@@ -198,27 +215,24 @@ function WorkflowReply({ job, onDownload, onRetry, onEdit, onAnswered }: { onAns
     </button>
 
     <WorkflowQuestion job={job} onAnswered={onAnswered} />
-    {job.execution_plan && <details className="panel"><summary>执行计划 · {job.execution_plan.goal}</summary><ol>{job.execution_plan.steps.map((step) => <li key={step.id}><strong>{step.title}</strong> · {{ pending: "待执行", in_progress: "执行中", completed: "已完成", skipped: "已跳过" }[step.status] || step.status}{step.evidence && <p>{step.evidence}</p>}</li>)}</ol></details>}
-    {traceOpen && <div className="agent-run-trace">
-      {preludeEvents.map((event) => <TraceEvent event={event} forceComplete={!running} key={event.id} />)}
-      {turns.length > 0 && <details className="agent-trace-process" open={running}>
-        <summary>
-          <span className="agent-trace-process-node">{running ? <i className="agent-inline-spinner" /> : <Check />}</span>
-          <span><strong>{running ? `正在执行第 ${latestTurn} 轮` : "执行过程"}</strong><small>{running ? `${toolEvents.length} 项操作已调用` : `${turns.length} 轮 · ${toolEvents.length} 项操作`}</small></span>
-          <ChevronDown />
-        </summary>
-        <div>
-          {running && latestTurn > 1 && <div className="agent-trace-prior"><Check /><span>前 {latestTurn - 1} 轮已完成</span><small>{toolEvents.filter((event) => Number(event.data?.turn) < latestTurn).length} 项操作</small></div>}
-          {(running ? turns.filter((item) => item.turn === latestTurn) : turns).map((item) => <details className="agent-trace-turn" key={`turn-${item.turn}`} open={running && item.turn === latestTurn}>
-            <summary><span>第 {item.turn} 轮</span><small>{item.events.filter((event) => event.event_type === "tool").length} 项操作</small><ChevronDown /></summary>
-            <div>{item.events.map((event) => <TraceEvent event={event} forceComplete={!running} key={event.id} />)}</div>
-          </details>)}
-        </div>
-      </details>}
+    {job.execution_plan && <ExecutionPlanCard key={job.id} plan={job.execution_plan} status={job.status} />}
+    <div className="agent-run-trace" hidden={!traceOpen}>
+      {preludeEvents.length > 0 && <RunDisclosure className="agent-trace-preparation" heading={<><strong>准备环境</strong><small>{preludeEvents.length} 项记录</small></>} defaultOpen={running && latestTurn === 0}>
+        {preludeEvents.map(event => <TraceEvent event={event} forceComplete={!running} key={event.id} />)}
+      </RunDisclosure>}
+      {turns.length > 0 && <RunDisclosure className="agent-trace-process" defaultOpen={running || needsAttention}
+        heading={<><strong>执行过程</strong><small>{turns.length} 轮 · {toolEvents.length} 次工具调用</small></>}>
+        {turns.length > 1 && <RunDisclosure className="agent-trace-history" defaultOpen={false}
+          heading={<><span>前 {turns.length - 1} 轮</span><small>展开查看历史记录</small></>}>
+          {turns.slice(0, -1).map(renderTurn)}
+        </RunDisclosure>}
+        {turns.slice(-1).map(item => renderTurn(item, turns.length - 1))}
+      </RunDisclosure>}
+
       {closingEvents.map((event) => <TraceEvent event={event} forceComplete={!running} key={event.id} />)}
       {running && latestTurn === 0 && <div className="agent-trace-waiting"><i /><span>Worker 正在为本次任务准备一次性隔离环境</span></div>}
       {stageRows.length > 0 && <details className="agent-stage-details"><summary>阶段耗时<ChevronDown /></summary><div>{stageRows.map((step) => <p key={step.id}><span>{step.name}</span><small>{formatDuration(step.duration)}</small></p>)}</div></details>}
-    </div>}
+    </div>
 
     {job.error_message && <div className="agent-run-error"><AlertTriangle /><span><strong>{job.error_code || "TASK_FAILED"}</strong><small>{job.error_message}</small></span></div>}
     {finalEvent && <MarkdownContent className="agent-run-answer">{finalEvent.detail}</MarkdownContent>}
@@ -229,7 +243,7 @@ function WorkflowReply({ job, onDownload, onRetry, onEdit, onAnswered }: { onAns
       <span>{formatDuration(totalDuration)}</span><i />
       <span>{latestTurn} 轮 · {toolEvents.length} 次工具调用</span>
       <i /><span>{job.network_enabled ? `运行联网${job.network_enabled_by.length ? ` · ${job.network_enabled_by.map((item) => item.skill_name).join("、")}` : ""}` : "沙箱断网"}</span>
-      {failedTools.length > 0 && job.status === "succeeded" && <><i /><span>已自动纠正 {failedTools.length} 次异常</span></>}
+      {failedTools.length > 0 && job.status === "succeeded" && <><i /><span>执行中有 {failedTools.length} 次异常记录</span></>}
     </footer>}
   </div>;
 }
@@ -871,7 +885,7 @@ export function DashboardPage() {
               <div className="agent-workspace-bubble"><StructuredPrompt parts={message.content.parts} fallback={String(message.content.message || "")} />
                 {(message.files.length > 0 || (message.content.files?.length || 0) > 0) && <div className="agent-workspace-files">{message.files.length > 0 ? message.files.map((file) => <span className={file.purged_at ? "expired" : ""} key={file.id}><Paperclip />{file.filename}<small>{file.purged_at ? "已到期" : formatSize(file.size_bytes)}</small>{!file.purged_at && attachmentAnalysisLabel(file) && <em><Check />{attachmentAnalysisLabel(file)}</em>}</span>) : message.content.files?.map((file, index) => <span key={`${file.filename}-${index}`}><Paperclip />{file.filename}<small>{formatSize(file.size_bytes)}</small></span>)}</div>}
               </div><time>{formatTime(message.created_at)}</time>
-            </article> : <article className="agent-workspace-message assistant" key={message.id}><div>{message.kind === "workflow" && message.job ? <WorkflowReply job={message.job} onDownload={(job, artifact) => void downloadArtifact(job, artifact)} onRetry={(job) => void retryJob(job)} onEdit={editFailedJob} onAnswered={(updated) => { setActiveConversation((current) => current ? { ...current, messages: current.messages.map((item) => item.job?.id === updated.id ? { ...item, job: updated } : item) } : current); }} /> : <><MarkdownContent className="agent-workspace-answer">{String(message.content.message || "")}</MarkdownContent><time>{formatTime(message.created_at)}{message.model_name ? ` · ${message.model_name}` : ""}{typeof message.content.latency_ms === "number" ? ` · ${formatDuration(message.content.latency_ms)}` : ""}</time></>}</div></article>)}
+            </article> : <article className="agent-workspace-message assistant" key={message.id}><div>{message.kind === "workflow" && message.job ? <WorkflowReply key={message.job.id} job={message.job} onDownload={(job, artifact) => void downloadArtifact(job, artifact)} onRetry={(job) => void retryJob(job)} onEdit={editFailedJob} onAnswered={(updated) => { setActiveConversation((current) => current ? { ...current, messages: current.messages.map((item) => item.job?.id === updated.id ? { ...item, job: updated } : item) } : current); }} /> : <><MarkdownContent className="agent-workspace-answer">{String(message.content.message || "")}</MarkdownContent><time>{formatTime(message.created_at)}{message.model_name ? ` · ${message.model_name}` : ""}{typeof message.content.latency_ms === "number" ? ` · ${formatDuration(message.content.latency_ms)}` : ""}</time></>}</div></article>)}
             {streamingTurn?.conversationId === activeConversation.id && <>
               <article className="agent-workspace-message user streaming-user">
                 <div className="agent-workspace-bubble">{streamingTurn.prompt}{streamingTurn.attachments.length > 0 && <div className="agent-workspace-files">{streamingTurn.attachments.map((file, index) => <span key={`${file.name}-${index}`}><Paperclip />{file.name}<small>{formatSize(file.size)}</small></span>)}</div>}</div>
