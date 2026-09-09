@@ -239,6 +239,79 @@ def test_agent_loop_executes_platform_verifier_before_finish(client, user_header
         assert job.execution_plan['steps'][0]['status'] == 'completed'
 
 
+def test_agent_loop_recovers_when_file_tools_leave_workspace(client, user_headers, fake_model_gateway):
+    from app.database import SessionLocal
+    from app.models import WorkflowJob
+    from app.sandbox_agent_loop import _run_agent_loop
+    from test_workflow_jobs import create_version, sandbox_skill_zip
+    _, version = create_version(client, user_headers, slug='orchestration-path-denied', package=sandbox_skill_zip())
+    created = client.post('/api/v1/jobs', headers=user_headers, data={'version_id': version['id'], 'instruction': 'answer 42'}).json()
+
+    class PathGuardSandbox(MemorySandbox):
+        async def read_text(self, path, offset=0, limit=30000):
+            if not path.startswith('/workspace'):
+                raise SandboxRuntimeError('SANDBOX_PATH_DENIED', 'Path must stay inside /workspace')
+            return await super().read_text(path, offset=offset, limit=limit)
+        async def write_text(self, path, content):
+            if not path.startswith('/workspace'):
+                raise SandboxRuntimeError('SANDBOX_PATH_DENIED', 'Path must stay inside /workspace')
+            await super().write_text(path, content)
+        async def list_files(self, path):
+            if not path.startswith('/workspace'):
+                raise SandboxRuntimeError('SANDBOX_PATH_DENIED', 'Path must stay inside /workspace')
+            return await super().list_files(path)
+
+    def last_payload(messages, tool):
+        return next(json.loads(item['content'])['payload'] for item in reversed(messages) if isinstance(item.get('content'), str) and item['content'].startswith('{"tool_result": "%s"' % tool))
+
+    class ScriptedGateway:
+        connection = SimpleNamespace(context_tokens=48000)
+        def __init__(self):
+            self.turn = 0
+        async def agent_step(self, *, messages):
+            self.turn += 1
+            steps = [{'id': 'make', 'title': 'Make', 'status': 'in_progress', 'evidence': '', 'output_refs': ['/workspace/output/result.txt']}, {'id': 'verify', 'title': 'Verify', 'status': 'pending', 'evidence': '', 'depends_on': ['make']}]
+            base = {'action': 'update_plan', 'goal': 'answer 42', 'steps': steps, 'success_criteria': ['answer is 42'], 'validation_step_id': 'verify'}
+            if self.turn == 1:
+                action = base
+            elif self.turn == 2:
+                action = {'action': 'list_files', 'path': '/usr/local/lib/python3.12'}
+            elif self.turn == 3:
+                assert last_payload(messages, 'list_files') == {'ok': False, 'error_code': 'SANDBOX_PATH_DENIED', 'message': 'Path must stay inside /workspace', 'requested_path': '/usr/local/lib/python3.12', 'hint': 'list_files is limited to paths inside /workspace; start from /workspace.'}
+                action = {'action': 'read_file', 'path': '/usr/local/lib/python3.12/site-packages/reportlab/pdfbase/_cidfontdata.py'}
+            elif self.turn == 4:
+                payload = last_payload(messages, 'read_file')
+                assert payload['ok'] is False and payload['error_code'] == 'SANDBOX_PATH_DENIED' and payload['hint']
+                action = {'action': 'write_file', 'path': '/etc/skillgo-write', 'content': 'x'}
+            elif self.turn == 5:
+                payload = last_payload(messages, 'write_file')
+                assert payload['ok'] is False and payload['error_code'] == 'SANDBOX_PATH_DENIED' and payload['hint']
+                action = {'action': 'read_file', 'path': '/workspace/input/data.txt'}
+            elif self.turn == 6:
+                assert last_payload(messages, 'read_file') == '21'
+                action = {'action': 'run_verifier', 'argv': ['verify']}
+            elif self.turn == 7:
+                proof = last_payload(messages, 'run_verifier')
+                self.proof_id = proof['verification_id']
+                assert proof['ok']
+                action = {'action': 'record_validation', 'verification_id': self.proof_id, 'status': 'passed', 'summary': 'verified', 'evidence': 'observed 42', 'checks': ['answer 42']}
+            elif self.turn == 8:
+                for step in steps:
+                    step.update(status='completed', evidence='verified output')
+                action = base
+            elif self.turn == 9:
+                action = {'action': 'complete_skill', 'skill_index': 1, 'evidence': 'verified output'}
+            else:
+                assert self.turn == 10
+                action = {'action': 'finish', 'summary': 'answer 42', 'artifacts': ['/workspace/output/result.txt']}
+            return ModelResult(action, 'scripted', {})
+    with SessionLocal() as db:
+        job = db.get(WorkflowJob, created['id'])
+        contexts = [{'name': 'Test', 'version': '1', 'root': '/workspace/skill', 'skill_md': '# Answer', 'runtime_requirements': {}}]
+        result = asyncio.run(_run_agent_loop(db, job, PathGuardSandbox(), skill_contexts=contexts, gateway=ScriptedGateway(), job_cancelled=lambda: False))
+        assert result[1] == ['/workspace/output/result.txt']
+
+
 def test_automatic_mode_and_answer_are_scoped_to_owner(client, user_headers, owner_headers, fake_model_gateway):
     from app.database import SessionLocal
     from app.models import WorkflowJob, WorkflowJobMemory, JobStatus, RunStatus

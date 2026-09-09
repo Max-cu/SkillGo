@@ -787,16 +787,20 @@ async def _run_agent_loop(
                 try:
                     payload = await sandbox.list_files(requested_path)
                 except SandboxRuntimeError as exc:
-                    if exc.code != "SANDBOX_LIST_FAILED":
+                    if exc.code not in {"SANDBOX_LIST_FAILED", "SANDBOX_PATH_DENIED"}:
                         raise
                     payload = {
                         "ok": False,
                         "error_code": exc.code,
                         "message": str(exc)[:1000],
                         "requested_path": requested_path[:500],
-                        "hint": "List /workspace first, then use an exact path returned by the tool.",
                     }
-                    progress_detail = f"目录路径无效，Agent 正在自动修正：{requested_path[:160]}"
+                    if exc.code == "SANDBOX_PATH_DENIED":
+                        payload["hint"] = "list_files is limited to paths inside /workspace; start from /workspace."
+                        progress_detail = f"目录路径越界，Agent 正在自动修正：{requested_path[:160]}"
+                    else:
+                        payload["hint"] = "List /workspace first, then use an exact path returned by the tool."
+                        progress_detail = f"目录路径无效，Agent 正在自动修正：{requested_path[:160]}"
                 payload = await _append_tool_result_with_offload(
                     messages,
                     result,
@@ -830,16 +834,24 @@ async def _run_agent_loop(
                             limit=int(action.get("limit") or 30_000),
                         )
                     except SandboxRuntimeError as exc:
-                        if exc.code != "SANDBOX_READ_FAILED":
+                        if exc.code not in {"SANDBOX_READ_FAILED", "SANDBOX_PATH_DENIED"}:
                             raise
                         payload = {
                             "ok": False,
                             "error_code": exc.code,
                             "message": str(exc)[:1000],
                             "requested_path": requested_path[:500],
-                            "hint": "Call list_files on /workspace and retry with the exact text-file path.",
                         }
-                        progress_detail = f"文件路径不可读，Agent 正在自动修正：{requested_path[:160]}"
+                        if exc.code == "SANDBOX_PATH_DENIED":
+                            payload["hint"] = (
+                                "read_file is limited to paths inside /workspace. "
+                                "Copy the file into /workspace/work first, or read system files "
+                                "inside the sandbox with run_python using open()."
+                            )
+                            progress_detail = f"读取路径越界，Agent 正在改用沙箱内方式：{requested_path[:160]}"
+                        else:
+                            payload["hint"] = "Call list_files on /workspace and retry with the exact text-file path."
+                            progress_detail = f"文件路径不可读，Agent 正在自动修正：{requested_path[:160]}"
                 payload = await _append_tool_result_with_offload(
                     messages,
                     result,
@@ -861,7 +873,7 @@ async def _run_agent_loop(
                         "bytes": len(content.encode("utf-8")),
                     }
                 except SandboxRuntimeError as exc:
-                    if exc.code not in {"SANDBOX_WRITE_FAILED", "SANDBOX_WRITE_TOO_LARGE"}:
+                    if exc.code not in {"SANDBOX_WRITE_FAILED", "SANDBOX_WRITE_TOO_LARGE", "SANDBOX_PATH_DENIED"}:
                         raise
                     payload = {
                         "ok": False,
@@ -869,9 +881,13 @@ async def _run_agent_loop(
                         "message": str(exc)[:1000],
                         "requested_path": path[:500],
                         "execution_started": True,
-                        "hint": "Use a path under /workspace/output and split large text into smaller writes.",
                     }
-                    progress_detail = f"写入未完成，Agent 正在自动修正：{path[:160]}"
+                    if exc.code == "SANDBOX_PATH_DENIED":
+                        payload["hint"] = "write_file is limited to paths inside /workspace; write under /workspace/work or /workspace/output."
+                        progress_detail = f"写入路径越界，Agent 正在自动修正：{path[:160]}"
+                    else:
+                        payload["hint"] = "Use a path under /workspace/output and split large text into smaller writes."
+                        progress_detail = f"写入未完成，Agent 正在自动修正：{path[:160]}"
                 _append_tool_result(
                     messages, result, action_name, payload, tool_call_id=tool_call_id
                 )
