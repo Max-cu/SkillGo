@@ -129,11 +129,11 @@ def _finish_tool_event(event: JobEvent, payload: object) -> None:
             }
             event.detail = "本次工具操作未完成，Agent 正在根据诊断自动调整"
         elif "exit_code" in payload:
-            event.detail = f"命令执行完成 · exit {payload.get('exit_code')}"
+            event.data = {**(event.data or {}), "exit_code": payload.get("exit_code")}
         elif "bytes" in payload:
-            event.detail = f"文件写入完成 · {payload.get('bytes')} 字节"
+            event.data = {**(event.data or {}), "bytes": payload.get("bytes")}
         elif isinstance(payload.get("path"), str):
-            event.detail = str(payload["path"])[:500]
+            event.data = {**(event.data or {}), "result_path": str(payload["path"])[:500]}
 
 
 def _event_duration_ms(started_at: float) -> int:
@@ -524,11 +524,20 @@ async def _run_agent_loop(
         )
         reasoning_event.status = "succeeded"
         reasoning_event.detail = f"已规划 {len(calls)} 个工具操作"
+        summary_source = ""
+        if isinstance(result.assistant_message, dict):
+            for field in ("reasoning_content", "content"):
+                value = result.assistant_message.get(field)
+                if isinstance(value, str) and value.strip():
+                    summary_source = value
+                    break
         reasoning_event.data = {
             **(reasoning_event.data or {}),
             "planned_operations": len(calls),
             "duration_ms": _event_duration_ms(reasoning_started_at),
         }
+        if summary_source:
+            reasoning_event.data["summary"] = " ".join(summary_source.split())[:160]
         transport_stats = getattr(result, "transport_stats", None)
         if transport_stats:
             reasoning_event.data["model_transport"] = transport_stats

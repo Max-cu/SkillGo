@@ -1112,6 +1112,12 @@ input:focus, textarea:focus, select:focus { border-color: var(--focus); box-shad
 .agent-run .agent-trace-copy small { font-size: 12px; line-height: 1.5; }
 .agent-trace-detail-inline { flex: 0 1 auto; min-width: 0; color: #8a90a0; font-size: 11.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .agent-run .agent-trace-event time { flex-shrink: 0; margin-left: auto; color: #8a90a0; font-size: 11.5px; font-variant-numeric: tabular-nums; }
+.agent-run .agent-trace-event.thinking { min-height: 26px; padding: 2px 0; }
+.agent-run .agent-trace-event.thinking time { color: #b3b9c6; }
+.agent-trace-node-dot { position: relative; }
+.agent-trace-node-dot::after { content: ""; position: absolute; inset: 50% auto auto 50%; width: 5px; height: 5px; margin: -2.5px 0 0 -2.5px; border-radius: 50%; background: #b3b9c6; }
+.agent-trace-thinking-text { flex: 0 1 auto; min-width: 0; color: #7d8492; font-size: 11.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.agent-trace-bytes { flex-shrink: 0; color: #9ba1ac; font-size: 11px; font-variant-numeric: tabular-nums; }
 .agent-run .agent-trace-event .agent-trace-detail { margin: 0 0 8px 28px; padding: 10px; font-size: 12px; }
 .agent-run .agent-trace-preparation > .run-disclosure-trigger { color: #687080; font-size: 12px; }
 .agent-run .agent-trace-preparation > .run-disclosure-trigger strong { font-weight: 500; }

@@ -141,11 +141,22 @@ function TraceEvent({ event, forceComplete = false }: { event: WorkflowJobEvent;
   const skillName = typeof event.data?.skill_name === "string" ? event.data.skill_name : "";
   const diagnostic = typeof event.data?.diagnostic === "string" ? event.data.diagnostic : "";
   const path = typeof event.data?.path === "string" ? event.data.path : "";
+  const bytes = typeof event.data?.bytes === "number" ? event.data.bytes : 0;
+  const summary = typeof event.data?.summary === "string" ? event.data.summary : "";
+  const isReasoning = event.event_type === "reasoning";
   const turn = Number(event.data?.turn) || 0;
   const running = !forceComplete && (event.status === "running" || event.status === "queued");
   const failed = event.status === "failed";
   const stopped = forceComplete && ["running", "queued", "waiting_user"].includes(event.status);
   const shortPath = path.split("/").filter(Boolean).slice(-2).join("/");
+
+  if (isReasoning && !failed) {
+    return <div className="agent-trace-event thinking" title={turn > 0 ? `第 ${turn} 轮` : undefined}>
+      <span className="agent-trace-node agent-trace-node-dot" aria-hidden="true" />
+      <span className="agent-trace-copy"><span className="agent-trace-thinking-text">{summary || event.detail || "正在分析"}</span></span>
+      {duration && <time>{duration}</time>}
+    </div>;
+  }
 
   const className = `agent-trace-event ${failed ? "failed" : running ? "running" : stopped ? "stopped" : "succeeded"}`;
   return <div className={className} title={[turn > 0 ? `第 ${turn} 轮` : "", path].filter(Boolean).join(" · ") || undefined}>
@@ -153,6 +164,7 @@ function TraceEvent({ event, forceComplete = false }: { event: WorkflowJobEvent;
     <span className="agent-trace-copy"><strong>{event.title}</strong>{event.detail && event.detail !== path && <small className="agent-trace-detail-inline">{event.detail}</small>}</span>
     {skillName && <span className="agent-trace-skill">{skillName}</span>}
     {shortPath && !failed && <code className="agent-trace-path">{shortPath}</code>}
+    {bytes > 0 && !failed && <span className="agent-trace-bytes">{formatSize(bytes)}</span>}
     {duration && <time>{duration}</time>}
     {failed && (diagnostic || event.detail) && <details className="agent-trace-error-details"><summary>查看错误详情</summary><pre>{diagnostic || event.detail}</pre></details>}
   </div>;
@@ -169,7 +181,7 @@ function WorkflowReply({ job, onDownload, onRetry, onEdit, onAnswered }: { onAns
   const latestTurn = Math.max(0, ...job.events.map((item) => typeof item.data?.turn === "number" ? item.data.turn : 0));
   const totalDuration = elapsedBetween(job.started_at || job.created_at, job.finished_at, now);
   const visibleEvents = job.events.filter((item) => !["artifact", "result", "error"].includes(item.event_type));
-  const actionEvents = visibleEvents.filter((item) => item.event_type !== "reasoning" || item.status === "failed");
+  const actionEvents = visibleEvents.filter((item) => item.event_type !== "reasoning" || item.status === "failed" || typeof item.data?.summary === "string" || item.status === "running");
   const latestEvent = [...job.events].reverse().find((item) => !["result", "artifact"].includes(item.event_type));
   const stageRows = job.steps.filter((step) => step.started_at).map((step) => ({
     ...step,
