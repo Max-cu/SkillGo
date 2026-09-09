@@ -34,14 +34,14 @@ def _transport_error(exc: httpx.HTTPError, timeout_seconds: float) -> ModelGatew
         budget = getattr(exc, "budget_seconds", timeout_seconds)
         return ModelGatewayError(
             "MODEL_FIRST_RESPONSE_TIMEOUT",
-            f"模型在首响应等待时间内没有返回任何数据（预算 {budget:g} 秒，重试后仍无响应），请检查模型负载或调整首响应等待时间",
+            f"模型在首响应等待时间内没有返回有效生成内容（每次尝试预算 {budget:g} 秒，含响应头等待；心跳不计为进展），请检查模型负载或调整首响应等待时间",
             details=diagnostics,
         )
     if isinstance(exc, ModelStreamStall):
         budget = getattr(exc, "budget_seconds", timeout_seconds)
         return ModelGatewayError(
             "MODEL_STREAM_STALLED",
-            f"模型响应流已开始但在生成中途停滞（超过 {budget:g} 秒无新数据，重试后仍停滞），请检查模型服务或中间网关",
+            f"模型响应流已开始但在生成中途停滞（超过 {budget:g} 秒无有效生成进展；心跳不计为进展），请检查模型服务或中间网关",
             details=diagnostics,
         )
     if isinstance(exc, (httpx.ConnectTimeout, httpx.ConnectError)):

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import AsyncExitStack
 import json
 import time
 import logging
@@ -16,7 +17,7 @@ RETRYABLE_STATUS = frozenset({429, 502, 503, 504})
 
 
 class ModelFirstResponseTimeout(httpx.ReadTimeout):
-    """The response stream produced no data within the first-response budget."""
+    """No meaningful generation arrived within the first-response budget."""
 
     def __init__(self, message: str, *, budget_seconds: float) -> None:
         super().__init__(message)
@@ -63,7 +64,8 @@ def _with_diagnostics(exc: BaseException, stats: dict[str, Any]) -> BaseExceptio
 
 
 def _reset_attempt_stats(stats: dict[str, Any]) -> None:
-    stats.update({"chunks": 0, "bytes": 0, "first_chunk_ms": None, "done": False})
+    stats.update({"chunks": 0, "bytes": 0, "first_chunk_ms": None, "done": False,
+                  "first_progress_ms": None, "progress_events": 0})
 
 
 def _merge_stream_events(events: list[dict[str, Any]]) -> dict[str, Any]:
@@ -125,49 +127,65 @@ def _merge_stream_events(events: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
-async def _consume_sse(
-    lines,
-    *,
-    first_chunk_timeout: float | None,
-    stall_timeout: float | None,
-    deadline: float,
-    request_started: float,
-    stats: dict[str, Any],
-) -> list[dict[str, Any]]:
-    """Read SSE data events under layered budgets.
+class _ProgressBudget:
+    """Absolute per-attempt deadlines, unaffected by heartbeats or empty deltas."""
 
-    Any received line (including SSE comments) counts as transport progress and
-    resets the first-response/stall budgets; the overall request deadline always
-    stays bounded.
-    """
-    events: list[dict[str, Any]] = []
-    while True:
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            raise httpx.ReadTimeout('Model request deadline exceeded')
-        budget = remaining
-        if stats.get("first_chunk_ms") is None and first_chunk_timeout is not None:
-            budget = min(budget, first_chunk_timeout)
-        elif stall_timeout is not None:
-            budget = min(budget, stall_timeout)
+    def __init__(self, connection, started, stats):
+        self.first = connection.first_chunk_timeout_seconds or None
+        self.stall = connection.stream_stall_timeout_seconds or None
+        self.started = started
+        self.last_progress = None
+        self.stats = stats
+
+    def advance(self):
+        now = time.monotonic()
+        if self.last_progress is None:
+            self.stats["first_progress_ms"] = round((now - self.started) * 1000)
+        self.last_progress = now
+        self.stats["progress_events"] += 1
+
+    async def wait(self, operation):
+        budget = self.first if self.last_progress is None else self.stall
+        origin = self.started if self.last_progress is None else self.last_progress
+        remaining = None if budget is None else origin + budget - time.monotonic()
         try:
-            async with asyncio.timeout(budget):
-                line = await lines.__anext__()
-        except TimeoutError:
-            if deadline - time.monotonic() <= 0:
-                raise httpx.ReadTimeout('Model request deadline exceeded')
-            if stats.get("first_chunk_ms") is None and first_chunk_timeout is not None:
-                raise ModelFirstResponseTimeout(
-                    f'No response data within {first_chunk_timeout:g} seconds',
-                    budget_seconds=first_chunk_timeout,
-                )
-            raise ModelStreamStall(
-                f'No new response data within {stall_timeout:g} seconds',
-                budget_seconds=stall_timeout or 0,
-            )
+            # Explicitly yield even for buffered lines: an endless ready iterator
+            # must not starve cancellation or defeat the absolute deadline.
+            async with asyncio.timeout(remaining) as timer:
+                await asyncio.sleep(0)
+                if remaining is not None and remaining <= 0:
+                    raise TimeoutError
+                return await operation()
+        except TimeoutError as exc:
+            if not timer.expired() and (remaining is None or remaining > 0):
+                raise
+            kind = ModelFirstResponseTimeout if self.last_progress is None else ModelStreamStall
+            raise kind(f'No generation progress within {budget:g} seconds',
+                       budget_seconds=budget) from exc
+
+
+def _has_generation_progress(event):
+    for choice in event.get("choices") or ():
+        delta = choice.get("delta") or {}
+        if any(isinstance(delta.get(key), str) and delta[key]
+               for key in ("content", "reasoning_content")):
+            return True
+        for call in delta.get("tool_calls") or ():
+            function = call.get("function") or {}
+            if any(isinstance(function.get(key), str) and function[key]
+                   for key in ("arguments", "name")):
+                return True
+    return False
+
+
+async def _consume_sse(lines, *, progress, request_started, stats):
+    events = []
+    while True:
+        try:
+            line = await progress.wait(lines.__anext__)
         except StopAsyncIteration:
             break
-        if stats.get("first_chunk_ms") is None:
+        if stats["first_chunk_ms"] is None:
             stats["first_chunk_ms"] = round((time.monotonic() - request_started) * 1000)
         stats["bytes"] += len(line.encode("utf-8", "replace")) + 1
         if not line.startswith("data:"):
@@ -178,8 +196,17 @@ async def _consume_sse(
         if data == "[DONE]":
             stats["done"] = True
             break
+        try:
+            event = json.loads(data)
+            if not isinstance(event, dict):
+                raise ValueError("SSE event must be an object")
+            meaningful = _has_generation_progress(event)
+        except (ValueError, TypeError, AttributeError) as exc:
+            raise httpx.RemoteProtocolError('Invalid model SSE event') from exc
         stats["chunks"] += 1
-        events.append(json.loads(data))
+        events.append(event)
+        if meaningful:
+            progress.advance()
     return events
 
 
@@ -199,26 +226,29 @@ async def _streamed_attempt(
     Returns None when the server answered with a retryable HTTP status.
     """
     request_headers = {**headers, "Accept": "text/event-stream"}
-    async with client.stream("POST", url, headers=request_headers, json={**body, "stream": True}) as response:
+    progress = _ProgressBudget(connection, attempt_started, stats)
+    # AsyncExitStack registers cleanup only after a successful, bounded enter.
+    async with AsyncExitStack() as stack:
+        response = await progress.wait(lambda: stack.enter_async_context(
+            client.stream("POST", url, headers=request_headers, json={**body, "stream": True})))
         if response.status_code in RETRYABLE_STATUS:
             return None
         if response.status_code >= 400:
             # Read the error body so HTTPStatusError handling can inspect the text.
-            await response.aread()
+            await progress.wait(response.aread)
             response.raise_for_status()
         content_type = response.headers.get("content-type", "").lower()
         if "text/event-stream" not in content_type:
             # Some gateways ignore stream=true and answer with one buffered JSON
-            # document; only the overall deadline bounds that read.
-            raw = await response.aread()
+            # document; require the complete buffered response within the first
+            # response budget, including the time already spent awaiting headers.
+            raw = await progress.wait(response.aread)
             stats["bytes"] += len(raw)
             stats["first_chunk_ms"] = round((time.monotonic() - attempt_started) * 1000)
             return response
         events = await _consume_sse(
             response.aiter_lines(),
-            first_chunk_timeout=connection.first_chunk_timeout_seconds or None,
-            stall_timeout=connection.stream_stall_timeout_seconds or None,
-            deadline=deadline,
+            progress=progress,
             request_started=attempt_started,
             stats=stats,
         )
@@ -241,8 +271,8 @@ async def post_json(connection, url: str, *, headers: dict, body: dict):
     retries; 0 disables it so only the first-response and stream stall
     budgets bound the call), an optional first-response budget and an
     optional stream stall budget from the connection. Retries only happen
-    before any response data is returned, so an executed tool operation is
-    never repeated.
+    before meaningful generation is received. Partial generations are not
+    replayed automatically; callers only receive fully assembled responses.
     """
     deadline = time.monotonic() + connection.timeout_seconds if connection.timeout_seconds > 0 else float("inf")
     stats: dict[str, Any] = {"attempts": 0, "chunks": 0, "bytes": 0, "first_chunk_ms": None, "done": False}
@@ -272,7 +302,7 @@ async def post_json(connection, url: str, *, headers: dict, body: dict):
                 logger.warning('Model transport attempt=%d duration_ms=%d error=%s first_chunk_ms=%s chunks=%d bytes=%d',
                                attempt + 1, round((time.monotonic() - started) * 1000),
                                type(exc).__name__, stats["first_chunk_ms"], stats["chunks"], stats["bytes"])
-                if attempt == 2:
+                if attempt == 2 or stats["progress_events"]:
                     raise
             except TimeoutError as exc:
                 deadline_error = httpx.ReadTimeout('Model request deadline exceeded')

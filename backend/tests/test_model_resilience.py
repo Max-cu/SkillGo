@@ -207,10 +207,10 @@ def test_stream_stall_timeout_is_classified_with_diagnostics(monkeypatch):
     error = _transport_error(excinfo.value, 0.5)
     assert error.code == 'MODEL_STREAM_STALLED'
     assert error.details['first_chunk_ms'] is not None
-    assert error.details['attempts'] == 3
+    assert error.details['attempts'] == 1
 
 
-def test_buffered_json_response_only_uses_total_deadline(monkeypatch):
+def test_buffered_json_response_within_first_response_budget(monkeypatch):
     payload = {'model': 'test-model', 'choices': [{'index': 0, 'finish_reason': 'stop',
                'message': {'role': 'assistant', 'content': 'ok'}}], 'usage': {}}
     response = FakeStreamResponse(content_type='application/json',
@@ -218,7 +218,7 @@ def test_buffered_json_response_only_uses_total_deadline(monkeypatch):
     client = StreamClient([response])
     monkeypatch.setattr(model_adapter.httpx, 'AsyncClient', lambda **kwargs: client)
     connection = _connection(timeout_seconds=5, agent_options={
-        'first_chunk_timeout_seconds': 0.05, 'stream_stall_timeout_seconds': 0.05})
+        'first_chunk_timeout_seconds': 0.5, 'stream_stall_timeout_seconds': 0.05})
 
     result = asyncio.run(model_adapter.post_json(connection, 'https://model.test', headers={}, body={}))
 
@@ -237,7 +237,7 @@ def test_truncated_stream_without_finish_is_transport_error(monkeypatch):
 
     error = _transport_error(excinfo.value, 5)
     assert error.code == 'MODEL_TRANSPORT_ERROR'
-    assert error.details['attempts'] == 3
+    assert error.details['attempts'] == 1
 
 
 @pytest.mark.parametrize('exception', [httpx.ConnectTimeout, httpx.ReadError, httpx.RemoteProtocolError])
@@ -341,7 +341,7 @@ def test_zero_total_budget_still_enforces_stream_stall(monkeypatch):
     error = _transport_error(excinfo.value, 0)
     assert error.code == 'MODEL_STREAM_STALLED'
     assert excinfo.value.diagnostics['first_chunk_ms'] is not None
-    assert excinfo.value.diagnostics['attempts'] == 3
+    assert excinfo.value.diagnostics['attempts'] == 1
 
 
 def test_transport_error_without_total_budget_mentions_layered_detection():

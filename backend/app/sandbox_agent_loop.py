@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import hashlib
@@ -36,6 +37,23 @@ logger = logging.getLogger(__name__)
 
 class AgentJobCancelled(RuntimeError):
     pass
+
+
+async def _await_model_with_cancellation(operation, job_cancelled, *, poll_seconds=1.0):
+    task = asyncio.create_task(operation)
+    try:
+        while not task.done():
+            if job_cancelled():
+                raise AgentJobCancelled("Workflow job was cancelled")
+            await asyncio.wait({task}, timeout=poll_seconds)
+        if job_cancelled():
+            raise AgentJobCancelled("Workflow job was cancelled")
+        return task.result()
+    finally:
+        if not task.done():
+            task.cancel()
+        # Await transport cleanup before the worker reclaims the sandbox.
+        await asyncio.gather(task, return_exceptions=True)
 
 
 class AgentNeedsInput(RuntimeError):
@@ -474,7 +492,8 @@ async def _run_agent_loop(
         }
         db.commit()
         try:
-            result = await gateway.agent_step(messages=model_messages)
+            result = await _await_model_with_cancellation(
+                gateway.agent_step(messages=model_messages), job_cancelled)
         except ModelGatewayError as exc:
             reasoning_event.status = "failed"
             reasoning_event.detail = str(exc)
