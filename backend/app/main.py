@@ -152,4 +152,4 @@ def health() -> dict[str, str]:
 
 @app.get("/api/v1")
 def api_root() -> dict[str, str]:
-    return {"name": "SkillGo API", "version": "0.3.0"}
+    return {"name": "SkillGo API", "version": "0.3.1"}

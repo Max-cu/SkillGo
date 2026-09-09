@@ -2,7 +2,9 @@
 
 所有重要变更都记录在此文件中。版本号遵循 [Semantic Versioning](https://semver.org/)。
 
-## [Unreleased]
+## [0.3.1] - 2026-09-09
+
+本版本集中升级模型调用的传输韧性，超时语义对齐 QwenPaw：只要响应持续流动即不掐断任务，卡死在空闲检测窗口内被发现。
 
 ### Changed
 
@@ -183,7 +185,8 @@
 - 任务容器默认非 root、只读根文件系统、去除 Linux Capabilities 并限制 CPU、内存和 PID。
 - 本机密钥、运行数据、用户文件和备份默认被版本库忽略。
 
-[Unreleased]: https://github.com/Max-cu/SkillGo/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/Max-cu/SkillGo/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/Max-cu/SkillGo/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/Max-cu/SkillGo/compare/v0.2.6...v0.3.0
 [0.2.6]: https://github.com/Max-cu/SkillGo/compare/v0.2.5...v0.2.6
 [0.2.5]: https://github.com/Max-cu/SkillGo/compare/v0.2.4...v0.2.5
