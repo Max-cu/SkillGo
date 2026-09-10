@@ -95,7 +95,7 @@ function formatStorageBytes(size: number) {
 const executionModeLabels: Record<string, string> = {
   instruction_only: "纯指令",
   platform_tools: "平台工具",
-  sandbox_required: "沙箱工作流",
+  sandbox_required: "沙箱任务",
 };
 
 const workflowStatusLabels: Record<WorkflowJobStatus, string> = {
@@ -356,7 +356,7 @@ export function SkillDetailPage() {
       <div className="detail-breadcrumb"><Link to="/">Skill 市场</Link><ChevronRight size={15} /><span>{categoryLabel(skill.category)}</span></div>
       <div className="detail-title"><span className="skill-icon large"><Workflow /></span><div><span className="category-pill">{categoryLabel(skill.category)}</span><h1>{skill.name}</h1><p>{skill.summary}</p></div></div>
       <div className="detail-tabs" role="tablist" aria-label="Skill 详情"><button className={activeTab === "about" ? "active" : ""} aria-selected={activeTab === "about"} onClick={() => setActiveTab("about")}>说明</button><button className={activeTab === "versions" ? "active" : ""} aria-selected={activeTab === "versions"} onClick={() => setActiveTab("versions")}>版本 {skill.versions?.length || 0}</button><button className={activeTab === "permissions" ? "active" : ""} aria-selected={activeTab === "permissions"} onClick={() => setActiveTab("permissions")}>权限</button></div>
-      {activeTab === "about" && <section className="readme"><h2>关于这个 Skill</h2><p>{skill.description || "作者暂未添加详细说明。"}</p><h3>工作流能力</h3><p>该 Skill 的每次执行都会锁定版本和权限快照，并生成可追溯的运行记录。</p></section>}
+      {activeTab === "about" && <section className="readme"><h2>关于这个 Skill</h2><p>{skill.description || "作者暂未添加详细说明。"}</p><h3>执行能力</h3><p>该 Skill 的每次执行都会锁定版本和权限快照，并生成可追溯的运行记录。</p></section>}
       {activeTab === "versions" && <section className="public-version-list">{[...(skill.versions || [])].reverse().map((item) => <article key={item.id}><div><strong>v{item.version}</strong><span>{skillTypeLabels[item.skill_type]}</span></div><StatusBadge status={item.status} /><code>{item.package_sha256.slice(0, 16)}…</code><time>{new Date(item.created_at).toLocaleDateString("zh-CN")}</time></article>)}</section>}
       {activeTab === "permissions" && <section className="permission-panel"><div className="security-note"><ShieldCheck /><span>此版本声明的权限在发布前已记录并审核</span></div>{permissionEntries.length ? <dl>{permissionEntries.map(([name, value]) => <div key={name}><dt>{name}</dt><dd>{Array.isArray(value) ? value.length ? value.join("、") : "无" : JSON.stringify(value)}</dd></div>)}</dl> : <p>此版本未申请额外权限。</p>}</section>}
     </div>
@@ -641,7 +641,7 @@ export function ManageSkillPage() {
       <aside className="panel upload-panel">
         <section className={`community-publish-card ${isCommunityPublic ? "published" : ""}`}><div className="community-publish-icon">{isCommunityPublic ? <Check /> : <CloudUpload />}</div><div><span className="eyebrow">COMMUNITY</span><h2>{isCommunityPublic ? "已在社区展示" : "发布到社区"}</h2><p>{isCommunityPublic ? "首页访客可以发现、查看并下载已审核版本。" : hasPublishedVersion ? "这个 Skill 已有审核通过的版本，可以立即公开展示。" : "版本审核通过后，才可以安全地发布到公开社区。"}</p></div><button className={`button full ${isCommunityPublic ? "secondary" : "primary"}`} type="button" disabled={visibilityBusy || (!isCommunityPublic && !hasPublishedVersion)} onClick={() => { setVisibilityError(""); setVisibilityTarget(isCommunityPublic ? "private" : "public"); }}>{isCommunityPublic ? <LockKeyhole size={15} /> : <CloudUpload size={15} />}{isCommunityPublic ? "从社区下架" : hasPublishedVersion ? "发布到社区" : "等待版本审核"}</button></section>
         {endpointSecret && <div className="secret-reveal"><span className="eyebrow">仅显示一次</span><h3>{endpointSecret.name}</h3><p>调用地址 <code>{endpointInvokePath(endpointSecret)}</code></p><div><code>{endpointSecret.api_key}</code><button type="button" title="复制 API Key" onClick={() => navigator.clipboard.writeText(endpointSecret.api_key)}><Copy size={16} /></button></div></div>}
-        <h2>上传新版本</h2><p>标准包由平台递增版本；SkillGo 扩展包使用声明的语义化版本。</p><form onSubmit={upload}><SkillPackagePicker compact required file={packageFile} busy={uploadBusy} onChange={(file) => { setPackageFile(file); setMessage(""); }} /><button className="button primary full" type="submit" disabled={!packageFile || uploadBusy}>{uploadBusy ? "正在上传并校验…" : packageFile ? "上传并校验" : "请先选择 ZIP"}</button></form>{message && <div className="inline-message" aria-live="polite">{message}</div>}{canDelete && <div className="danger-zone"><h3>删除 Skill</h3><p>同时移除版本包、工作流任务、Endpoint 和运行记录。</p><button className="button danger full" type="button" onClick={() => setDeleteOpen(true)}><Trash2 size={16} />删除这个 Skill</button></div>}
+        <h2>上传新版本</h2><p>标准包由平台递增版本；SkillGo 扩展包使用声明的语义化版本。</p><form onSubmit={upload}><SkillPackagePicker compact required file={packageFile} busy={uploadBusy} onChange={(file) => { setPackageFile(file); setMessage(""); }} /><button className="button primary full" type="submit" disabled={!packageFile || uploadBusy}>{uploadBusy ? "正在上传并校验…" : packageFile ? "上传并校验" : "请先选择 ZIP"}</button></form>{message && <div className="inline-message" aria-live="polite">{message}</div>}{canDelete && <div className="danger-zone"><h3>删除 Skill</h3><p>同时移除版本包、执行任务、Endpoint 和运行记录。</p><button className="button danger full" type="button" onClick={() => setDeleteOpen(true)}><Trash2 size={16} />删除这个 Skill</button></div>}
       </aside>
     </div>
     {visibilityTarget && <div className="modal-backdrop" role="presentation"><section className={`confirm-dialog community-visibility-dialog ${visibilityTarget === "public" ? "publish" : "unpublish"}`} role="alertdialog" aria-modal="true" aria-labelledby="community-visibility-title"><span className="confirm-icon">{visibilityTarget === "public" ? <CloudUpload /> : <LockKeyhole />}</span><h2 id="community-visibility-title">{visibilityTarget === "public" ? "确认发布到社区？" : "确认从社区下架？"}</h2><p>{visibilityTarget === "public" ? "公开后，所有访客都可以在首页发现这个 Skill，并查看和下载已经审核通过的版本。未发布版本仍然不会公开。" : "下架后，首页和社区详情将立即隐藏；现有版本、任务和 API 不会被删除。"}</p>{visibilityError && <div className="form-error" aria-live="polite">{visibilityError}</div>}<div><button className="button ghost" type="button" disabled={visibilityBusy} onClick={() => { setVisibilityTarget(null); setVisibilityError(""); }}>取消</button><button className={`button ${visibilityTarget === "public" ? "primary" : "danger"}`} type="button" disabled={visibilityBusy} onClick={() => void confirmVisibility()}>{visibilityTarget === "public" ? <CloudUpload size={16} /> : <LockKeyhole size={16} />}{visibilityBusy ? "正在更新…" : visibilityTarget === "public" ? "确认公开" : "确认下架"}</button></div></section></div>}
@@ -731,7 +731,7 @@ export function LegacyWorkflowPage() {
       setJobs((current) => [job, ...current.filter((item) => item.id !== job.id)]);
       setSelectedJobId(job.id);
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "工作流启动失败");
+      setError(reason instanceof Error ? reason.message : "任务启动失败");
     } finally { setBusy(false); }
   }
 
@@ -753,8 +753,8 @@ export function LegacyWorkflowPage() {
   }
 
   return <>
-    <Breadcrumbs items={[{ label: "工作台", to: "/app" }, { label: "我的 Skill", to: "/app/skills" }, { label: skill.name, to: `/app/skills/${skill.id}` }, { label: "运行工作流" }]} />
-    <PageTitle eyebrow="WORKFLOW RUNNER" title={skill.name} description="文件满足输入条件后自动创建任务，工作流会持续运行到完成、失败或确实需要你补充信息。" action={<Link className="button ghost" to={`/app/skills/${skill.id}`}><ArrowLeft size={16} />返回 Skill 详情</Link>} />
+    <Breadcrumbs items={[{ label: "工作台", to: "/app" }, { label: "我的 Skill", to: "/app/skills" }, { label: skill.name, to: `/app/skills/${skill.id}` }, { label: "运行任务" }]} />
+    <PageTitle eyebrow="TASK RUNNER" title={skill.name} description="文件满足输入条件后自动创建任务，任务会持续运行到完成、失败或确实需要你补充信息。" action={<Link className="button ghost" to={`/app/skills/${skill.id}`}><ArrowLeft size={16} />返回 Skill 详情</Link>} />
     <div className="workflow-run-layout">
       <aside className="workflow-launch panel">
         <label>Skill 版本<select value={selectedVersion.id} disabled={busy} onChange={(event) => changeVersion(event.target.value)}>{[...versions].reverse().map((version) => <option key={version.id} value={version.id}>v{version.version} · {executionModeLabels[version.execution_mode] || version.execution_mode}</option>)}</select></label>
@@ -769,7 +769,7 @@ export function LegacyWorkflowPage() {
           <label className="workflow-instruction">补充要求（可选）<textarea rows={3} maxLength={20000} value={instruction} disabled={busy} onChange={(event) => setInstruction(event.target.value)} placeholder="例如：重点检查日期、金额和前后矛盾" /></label>
           <label className={`workflow-file-trigger ${busy ? "busy" : ""}`}>
             {busy ? <RotateCw className="spin-icon" /> : <UploadCloud />}
-            <strong>{busy ? "工作流正在执行…" : "上传文件并自动开始"}</strong>
+            <strong>{busy ? "任务正在执行…" : "上传文件并自动开始"}</strong>
             <span>TXT、DOCX、XLSX、CSV、JSON，最大 10 MB</span>
             <input type="file" disabled={busy} accept=".txt,.md,.csv,.json,.yaml,.yml,.docx,.xlsx" onChange={startFromFile} />
           </label>
@@ -789,7 +789,7 @@ export function LegacyWorkflowPage() {
         </> : <EmptyState title={selectedVersion.runtime_runnable ? "上传文件即可开始" : "等待运行环境"} description={selectedVersion.runtime_runnable ? "不需要再发送“看看”或“继续”，平台会自动执行到终态。" : selectedVersion.runtime_block_reason || "当前版本暂不可运行。"} />}
       </section>
 
-      <aside className="workflow-history panel"><h2>历史任务</h2>{jobs.filter((item) => item.skill_version_id === selectedVersion.id).length ? <div>{jobs.filter((item) => item.skill_version_id === selectedVersion.id).map((job) => <button className={job.id === selectedJobId ? "active" : ""} key={job.id} onClick={() => setSelectedJobId(job.id)}><span><strong>{job.input_files[0]?.filename || "工作流任务"}</strong><small>{new Date(job.created_at).toLocaleString("zh-CN")}</small></span><i className={job.status}>{workflowStatusLabels[job.status]}</i></button>)}</div> : <p>这个版本还没有任务记录。</p>}</aside>
+      <aside className="workflow-history panel"><h2>历史任务</h2>{jobs.filter((item) => item.skill_version_id === selectedVersion.id).length ? <div>{jobs.filter((item) => item.skill_version_id === selectedVersion.id).map((job) => <button className={job.id === selectedJobId ? "active" : ""} key={job.id} onClick={() => setSelectedJobId(job.id)}><span><strong>{job.input_files[0]?.filename || "执行任务"}</strong><small>{new Date(job.created_at).toLocaleString("zh-CN")}</small></span><i className={job.status}>{workflowStatusLabels[job.status]}</i></button>)}</div> : <p>这个版本还没有任务记录。</p>}</aside>
     </div>
   </>;
 }
@@ -1154,7 +1154,7 @@ export function RunSkillPage() {
   if (!skill) return <EmptyState title="没有找到这个 Skill" description="你可能没有运行权限。" />;
   const versions = (skill.versions || []).filter((version) => version.execution_mode === "instruction_only");
   const selectedVersion = versions.find((version) => version.id === selectedVersionId) || versions[versions.length - 1];
-  if (!selectedVersion) return <EmptyState title="这个 Skill 不能使用对话调试" description="它需要工作流运行器、平台工具或 Linux 沙箱。" action={<Link className="button primary" to={`/app/skills/${skill.id}/workflow`}>查看工作流运行条件</Link>} />;
+  if (!selectedVersion) return <EmptyState title="这个 Skill 不能使用对话调试" description="它需要任务运行器、平台工具或 Linux 沙箱。" action={<Link className="button primary" to={`/app/skills/${skill.id}/workflow`}>查看任务运行条件</Link>} />;
   const versionConversations = conversations
     .filter((item) => item.skill_version_id === selectedVersion.id)
     .sort((left, right) => new Date(right.updated_at).getTime() - new Date(left.updated_at).getTime());
@@ -1315,7 +1315,7 @@ export function RunSkillPage() {
   }
   return <>
     <Breadcrumbs items={[{ label: "工作台", to: "/app" }, { label: "我的 Skill", to: "/app/skills" }, { label: skill.name, to: `/app/skills/${skill.id}` }, { label: "对话调试" }]} />
-    <PageTitle eyebrow="INSTRUCTION DEBUG" title={`${skill.name} · 对话调试`} description="仅用于调试纯指令 Skill。需要脚本、工具或正式产物时，请使用“运行工作流”。" action={<Link className="button ghost" to={`/app/skills/${skill.id}`}><ArrowLeft size={16} />返回 Skill 详情</Link>} />
+    <PageTitle eyebrow="INSTRUCTION DEBUG" title={`${skill.name} · 对话调试`} description="仅用于调试纯指令 Skill。需要脚本、工具或正式产物时，请使用“运行任务”。" action={<Link className="button ghost" to={`/app/skills/${skill.id}`}><ArrowLeft size={16} />返回 Skill 详情</Link>} />
     <div className="agent-console">
       <aside className="agent-conversations">
         <div className="agent-conversations-head"><div><span className="eyebrow">CONVERSATIONS</span><strong>会话</strong></div><button type="button" aria-label="新建会话" title="新建会话" disabled={busy || contextBusy} onClick={() => void createConversation()}><Plus /></button></div>

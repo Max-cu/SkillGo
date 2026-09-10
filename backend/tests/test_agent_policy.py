@@ -8,7 +8,7 @@ ARTIFACT_SNAPSHOT = {
 }
 
 
-def _completed_plan() -> dict:
+def _completed_plan(*, verified=False) -> dict:
     return {
         "goal": "Inspect, process, and verify the requested Skill result",
         "steps": [
@@ -21,7 +21,7 @@ def _completed_plan() -> dict:
             {
                 "id": "verify",
                 "title": "Concentrated final verification",
-                "status": "completed",
+                "status": "completed" if verified else "pending",
                 "evidence": "verify.py observed the requested output properties",
             },
         ],
@@ -105,6 +105,31 @@ def test_plan_requires_evidence_for_completed_steps():
     assert result["error_code"] == "PLAN_EVIDENCE_REQUIRED"
 
 
+def test_final_plan_step_requires_current_validation_and_cannot_be_skipped():
+    state = AgentExecutionState(skill_count=1)
+    assert state.update_plan(_completed_plan())["ok"]
+    assert state.update_plan(_completed_plan(verified=True))["error_code"] == "PLAN_VERIFICATION_REQUIRED"
+    _record_verifier(state)
+    assert _pass_validation(state)["ok"]
+    skipped = _completed_plan(verified=True)
+    skipped['steps'][-1]['status'] = 'skipped'
+    assert state.update_plan(skipped)["error_code"] == "PLAN_VERIFICATION_REQUIRED"
+    assert state.update_plan(_completed_plan(verified=True))["ok"]
+    state.record({'action': 'run_python', 'code': 'partial_write_then_fail()'}, {'exit_code': 1})
+    assert state.plan['steps'][-1]['status'] == 'pending'
+    assert state.update_plan(_completed_plan(verified=True))["error_code"] == "PLAN_VERIFICATION_REQUIRED"
+
+
+def test_new_requirements_cannot_reuse_completed_verification():
+    state = AgentExecutionState(skill_count=1)
+    assert state.update_plan(_completed_plan())["ok"]
+    _record_verifier(state)
+    assert _pass_validation(state)["ok"]
+    updated = _completed_plan(verified=True)
+    updated['success_criteria'].append('All records are covered')
+    assert state.update_plan(updated)['error_code'] == 'PLAN_VERIFICATION_REQUIRED'
+
+
 def test_validation_requires_a_real_recent_tool_observation():
     state = AgentExecutionState(skill_count=1)
     result = _pass_validation(state)
@@ -155,11 +180,12 @@ def test_complete_workflow_requires_skill_plan_and_current_validation():
         state.finish_blocker(current_artifacts=ARTIFACT_SNAPSHOT) or ""
     )
     assert state.complete_skill(1, "/workspace/output/result.docx")["ok"] is True
-    assert "record_validation" in (
+    assert "incomplete step ids" in (
         state.finish_blocker(current_artifacts=ARTIFACT_SNAPSHOT) or ""
     )
     _record_verifier(state)
     assert _pass_validation(state)["ok"] is True
+    assert state.update_plan(_completed_plan(verified=True))["ok"] is True
     assert state.finish_blocker(current_artifacts=ARTIFACT_SNAPSHOT) is None
     assert "differ" in (
         state.finish_blocker(
@@ -184,7 +210,7 @@ def test_workspace_mutation_invalidates_previous_validation():
         {"exit_code": 0, "stdout": "rewritten", "stderr": ""},
     )
     assert state.validation is None
-    assert "record_validation" in (
+    assert "incomplete step ids" in (
         state.finish_blocker(current_artifacts=ARTIFACT_SNAPSHOT) or ""
     )
 

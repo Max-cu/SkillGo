@@ -145,6 +145,7 @@ class AgentExecutionState:
             return {"ok": False, "error_code": "PLAN_INVALID", "message": "success_criteria must contain 1-8 items"}
 
         steps: list[dict[str, Any]] = []
+        previous = {step['id']: step for step in (self.plan or {}).get('steps', [])}
         seen_ids: set[str] = set()
         in_progress = 0
         for position, raw_step in enumerate(raw_steps, 1):
@@ -163,11 +164,11 @@ class AgentExecutionState:
             seen_ids.add(step_id)
             step = {"id": step_id, "title": title, "status": status, "evidence": evidence}
             for key in ("depends_on", "input_refs", "output_refs"):
-                values = raw_step.get(key, [])
+                values = raw_step.get(key, previous.get(step_id, {}).get(key, []))
                 if not isinstance(values, list) or len(values) > 32 or not all(isinstance(v, str) and v for v in values):
                     return {"ok": False, "error_code": "PLAN_INVALID", "message": f"{key} must be a string array (at most 32 items)"}
                 step[key] = list(dict.fromkeys(values))
-            index = raw_step.get("skill_index")
+            index = raw_step.get("skill_index", previous.get(step_id, {}).get("skill_index"))
             if index is not None and (type(index) is not int or not 1 <= index <= self.skill_count):
                 return {"ok": False, "error_code": "PLAN_INVALID", "message": "Invalid skill_index"}
             step["skill_index"] = index
@@ -201,6 +202,13 @@ class AgentExecutionState:
             return True
         if not all(visit(step["id"]) for step in steps):
             return {"ok": False, "error_code": "PLAN_DEPENDENCY_INVALID", "message": "Dependencies must reference existing steps and have no cycles."}
+        if by_id[validation_step_id]['status'] in {'completed', 'skipped'}:
+            if (not self.validation or self.validation.get('status') != 'passed'
+                    or self.validation.get('mutation_epoch') != self.mutation_epoch
+                    or criteria != self.requirements):
+                return {"ok": False, "error_code": "PLAN_VERIFICATION_REQUIRED", "message": "Keep final verification pending/in_progress until run_verifier and record_validation pass for the current requirements and outputs."}
+            if by_id[validation_step_id]['status'] == 'skipped':
+                return {"ok": False, "error_code": "PLAN_VERIFICATION_REQUIRED", "message": "Final verification cannot be skipped; mark it completed after validation passes."}
         for step in steps:
             if step["status"] in {"in_progress", "completed"}:
                 if any(by_id[dep]["status"] not in {"completed", "skipped"} for dep in step["depends_on"]):
@@ -380,6 +388,11 @@ class AgentExecutionState:
             self.validation = None
             self.verification = None
             self._observation_cache.clear()
+            if self.plan:
+                for step in self.plan['steps']:
+                    if step['id'] == self.validation_step_id and step['status'] == 'completed':
+                        step['status'] = 'pending'
+                        step['evidence'] = 'Workspace changed; rerun final verification.'
             # Invalidation is conservative; a successful no-op is not progress.
             observable = {key: payload[key] for key in ('exit_code', 'stdout', 'stderr', 'path', 'bytes', 'artifacts') if key in payload}
             signature = hashlib.sha256(json.dumps(observable, sort_keys=True, ensure_ascii=False).encode()).hexdigest()

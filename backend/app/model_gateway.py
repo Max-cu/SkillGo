@@ -186,7 +186,9 @@ SANDBOX_AGENT_TOOLS: list[dict[str, Any]] = [
             "name": "update_plan",
             "description": (
                 "Create or replace the trusted execution plan for a complex task. Keep it concise, "
-                "mark at most one step in_progress, and attach evidence to completed/skipped steps."
+                "mark at most one step in_progress, and attach evidence to completed/skipped steps. "
+                "Declare dependencies and input/output files. Update after each stage. Final verification "
+                "can be completed only after run_verifier and record_validation pass; it cannot be skipped."
             ),
             "parameters": {
                 "type": "object",

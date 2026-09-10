@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import itertools
 import json
 import logging
 import hashlib
@@ -260,7 +261,7 @@ Execution protocol updates (these refine the earlier rules):
 - Each run_python call starts a fresh Python process: imports and variables NEVER survive between calls. Save reusable parsing/processing code as a module under /workspace/work, and persist intermediate data to files. Import that module in later calls instead of assuming previous variables still exist.
 - For large structured input, inspect a bounded sample and the actual parse error, then run a complete parser over the original file in the sandbox. Save normalized records with source references; report counts and errors rather than printing the entire dataset. Never silently skip malformed records or invent missing values. Reuse the successful parser for later processing.
 - Keep generated code in cohesive reusable modules; avoid regenerating a whole rules engine or report after a small correction. Preserve all required rules and validation. Batch independent inspections when useful; do not add a model round merely to rediscover saved data.
-- Create a concise plan with depends_on, skill_index, input_refs and output_refs for relevant steps. Use exact absolute workspace paths. Keep one active step; finish upstream steps before starting dependents. Preserve success_criteria across replans; they are identified r1, r2, etc. Replan only affected descendants after changed inputs/outputs.
+- Create a concise plan with depends_on, skill_index, input_refs and output_refs for relevant steps. Use exact absolute workspace paths. Keep one active step; finish upstream steps before starting dependents. Declare file inputs/outputs for processing steps and put measurable completion conditions in success_criteria. Update the plan after each stage completes and before starting the next. Keep final verification pending/in_progress until run_verifier and record_validation pass; never skip it. Omitted dependency/file fields on an existing step retain their previous values; send explicit arrays when replanning. Preserve success_criteria across replans; they are identified r1, r2, etc. Replan only affected descendants after changed inputs/outputs.
 - SKILL examples are format demonstrations, never task facts. Bind numbers, units, names and sources to current input; surface contradictory or missing material data with ask_user. Original user requirements remain authoritative.
 - Final verification uses run_verifier, not an ordinary command. Prepare a read-only program whose stdout is exactly JSON {"checks":[{"requirement_id":"r1","passed":true,"observed":"actual measured value"}]}. Cover every success criterion. Include meaningful expected/actual comparisons; do not print invented pass claims. After run_verifier succeeds, call record_validation with its verification_id, then finish. Failed verification cannot be overridden by a model claim.
 - A fixed_execution Skill must be run with run_fixed_skill; load its instructions first. Do not recreate its calculation in model code. Later phases may consume the exact files it produced.
@@ -727,6 +728,7 @@ async def _run_agent_loop(
                 )
             elif action_name == "update_plan":
                 refs = [path for step in action.get('steps', []) if isinstance(step, dict) for key in ('input_refs', 'output_refs') for path in step.get(key, []) if isinstance(path, str)]
+                refs.extend(path for step in (execution_state.plan or {}).get('steps', []) for key in ('input_refs', 'output_refs') for path in step.get(key, []))
                 try:
                     files = await snapshot_step_files(sandbox, refs)
                     payload = execution_state.update_plan(action, files=files)

@@ -182,6 +182,22 @@ def test_input_change_invalidates_step_and_descendants_only():
     assert state.completed_skill_indexes == set()
 
 
+def test_status_only_replan_preserves_dependency_and_file_contracts():
+    state = AgentExecutionState(skill_count=2)
+    files = {'/workspace/input/data.txt': 'a', '/workspace/output/result.txt': 'b', '/workspace/output/report.txt': 'c'}
+    assert state.update_plan(plan(), files=files)['ok']
+    revised = plan()
+    for step in revised['steps']:
+        for key in ('depends_on', 'input_refs', 'output_refs', 'skill_index'):
+            step.pop(key, None)
+    assert state.update_plan(revised, files=files)['ok']
+    assert state.plan['steps'][1]['depends_on'] == ['compute']
+    assert state.plan['steps'][0]['skill_index'] == 1
+    assert state.update_plan(revised, files={})['error_code'] == 'PLAN_FILE_MISSING'
+    state.invalidate_changed_steps({**files, '/workspace/input/data.txt': 'changed'})
+    assert all(step['status'] == 'pending' for step in state.plan['steps'])
+
+
 def test_requirements_cannot_disappear_on_replan():
     state = AgentExecutionState(skill_count=2)
     assert state.update_plan(plan())['ok']
