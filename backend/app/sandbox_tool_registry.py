@@ -141,6 +141,10 @@ def validate_agent_action(action: dict[str, Any]) -> str | None:
             )
         program = PurePosixPath(argv[0]).name.casefold()
         command_words = [item.casefold() for item in argv[1:4]]
+        package_manager = program in {'pip', 'pip3', 'npm', 'pnpm', 'yarn', 'uv'} or (
+            program.startswith('python') and argv[1:3] == ['-m', 'pip'])
+        if (package_manager and any(word in {'install', 'add', 'i', 'ci', 'sync', 'update', 'upgrade'} for word in argv[1:])) or program in {'npx', 'pnpx', 'uvx'}:
+            return 'Dependency installation is managed by the platform; use an available capability or report the missing capability. Business network access does not grant installation permission.'
         system_package_install = (
             program in {"apt", "apt-get", "apk"}
             and bool(command_words)
@@ -148,8 +152,8 @@ def validate_agent_action(action: dict[str, Any]) -> str | None:
         )
         if system_package_install:
             return (
-                "system package installation is disabled; use task-local pip/npm dependencies "
-                "inside /workspace or an approved Skill script"
+                "system package installation is disabled; use available platform capabilities "
+                "or ask the platform administrator to prepare a compatible runtime"
             )
         shell_tokens = {
             "|",

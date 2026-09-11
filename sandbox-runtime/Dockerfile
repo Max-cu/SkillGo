@@ -8,8 +8,13 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 RUN sed -i 's|http://deb.debian.org|https://deb.debian.org|g' /etc/apt/sources.list.d/debian.sources \
     && apt-get -o Acquire::Retries=5 update \
     && apt-get install -y --no-install-recommends bash ca-certificates curl git jq nodejs npm unzip wget \
+        libreoffice-writer libreoffice-calc libreoffice-impress poppler-utils qpdf ffmpeg \
+        fontconfig fonts-noto-cjk \
     && rm -rf /var/lib/apt/lists/* \
     && python -m pip install --no-cache-dir \
+        PyMuPDF==1.26.4 \
+        Pillow==12.3.0 \
+        pandas==2.3.2 \
         python-docx==1.2.0 \
         openpyxl==3.1.5 \
         python-pptx==1.0.2 \
@@ -17,8 +22,10 @@ RUN sed -i 's|http://deb.debian.org|https://deb.debian.org|g' /etc/apt/sources.l
         pypdf==5.9.0 \
         pdfplumber==0.11.7 \
     && npm install --global docx@9.5.1 \
-    && groupadd --gid 10001 sandbox \
-    && useradd --uid 10001 --gid 10001 --no-create-home --shell /usr/sbin/nologin sandbox \
+    && (getent group sandbox >/dev/null || groupadd --gid 10001 sandbox) \
+    && (id sandbox >/dev/null 2>&1 || useradd --uid 10001 --gid 10001 --no-create-home --shell /usr/sbin/nologin sandbox) \
+    && test "$(id -u sandbox)" = 10001 \
+    && test "$(id -g sandbox)" = 10001 \
     && mkdir -p /workspace /tmp \
     && chown 10001:10001 /workspace /tmp
 

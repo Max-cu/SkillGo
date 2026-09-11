@@ -36,6 +36,12 @@ SkillGo 面向需要私有化部署、多人共用和业务集成的团队。它
   <img src="docs/assets/skillgo-workbench.png" width="100%" alt="SkillGo 任务工作台与独立沙箱执行过程" />
 </p>
 
+## 能力与运行环境
+
+普通 Skill 可仅提供 SKILL.md，也可在 YAML frontmatter 中添加 `capabilities`（如 `pdf.render`、`office.docx`、`fonts.cjk`）。平台将声明映射到受控能力目录，任务运行前实测库、命令和字体；必需能力缺失时在模型执行前明确报错。文档推断只是建议，不自动授予安装或联网权限。
+
+Agent 使用平台提供的环境清单，常见 pip/npm 安装命令被拒绝。运行时构建和环境升级尚未开放；旧 Skill 若依赖临时安装，需要管理员预先准备环境。分期设计、兼容边界和验证方式见 [能力环境设计](docs/capability-environments-2026-09-10.md)。
+
 ## 项目定位
 
 当前编排方式是 Agent 驱动的任务执行：同一任务内由一个 Agent 在独立沙箱中顺序协调所选 Skill。界面的“执行计划”描述业务步骤，平台检查已声明的依赖、输入输出文件和最终验证证据；固定的任务阶段用于跟踪运行生命周期。当前不提供通用 DAG 调度、条件分支、任务内并发或子 Agent。内部 `workflow` API 路径保留兼容，不代表这些扩展能力已经实现。

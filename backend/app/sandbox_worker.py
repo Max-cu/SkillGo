@@ -35,6 +35,7 @@ from .execution_runtime import (
 from .model_gateway import ModelGatewayError, OpenAICompatibleGateway, get_model_gateway
 from .models import AgentRun, Artifact, JobStatus, JobStepStatus, RunStatus, User, WorkflowJob, WorkflowJobMemory, utcnow
 from .runtime_profile import version_runtime_profile
+from .environment_capabilities import preflight_environment
 from .sandbox_agent_loop import (
     AgentNeedsInput,
     AgentJobCancelled as JobCancelled,
@@ -455,8 +456,8 @@ async def execute_sandbox_job(
                 if dependency_files:
                     runtime_requirements = {
                         **runtime_requirements,
-                        "network": True,
                         "dependency_download": True,
+                        "dependency_preparation": "platform",
                         "dependency_files": dependency_files[:50],
                     }
                 archive_path = f"skill-packages/{index:02d}.zip"
@@ -526,6 +527,14 @@ async def execute_sandbox_job(
                             setup.stderr or f"Could not unpack Skill package: {context['name']}",
                         )
                 available_binaries = await _preflight_sandbox_binaries(sandbox, skill_contexts)
+                environment = await preflight_environment(sandbox, skill_contexts)
+                if job.memory is None:
+                    job.memory = WorkflowJobMemory(data={})
+                job.memory.data = {**(job.memory.data or {}), 'environment': environment}
+                await sandbox.write_text('/workspace/work/environment.json', json.dumps(environment, ensure_ascii=False, indent=2))
+                add_job_event(db, job, 'status', '运行环境已核验',
+                              '可用能力：' + '、'.join(environment['capabilities']),
+                              status='succeeded', data={'capabilities': environment['capabilities']})
                 add_job_event(
                     db,
                     job,

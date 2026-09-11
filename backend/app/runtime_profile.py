@@ -7,6 +7,7 @@ from urllib.parse import urlsplit
 
 from .skill_execution_spec import SkillExecutionSpecError, fixed_execution_spec
 from .skill_metadata import parse_skill_frontmatter
+from .environment_capabilities import capability_requirements
 
 
 SCRIPT_SUFFIXES = {".py", ".js", ".mjs", ".cjs", ".sh", ".ps1", ".bat", ".cmd", ".jar"}
@@ -317,7 +318,6 @@ def detect_runtime_profile(
         bool(network_rules)
         or _has_declared_requirement(frontmatter, NETWORK_KEYS)
         or _has_declared_requirement(manifest, NETWORK_KEYS)
-        or dependency_download
         or any(binary in NETWORK_CLIENTS for binary in binaries)
         or bool(
         re.search(r"联网|网络访问|online lookup|internet access|web search", skill_md, re.IGNORECASE)
@@ -350,7 +350,8 @@ def detect_runtime_profile(
     compatible_instruction_requires_sandbox = (
         not platform_tools and (bool(document_artifacts) or bool(tool_adapters))
     )
-    requires_sandbox = package_requires_sandbox or compatible_instruction_requires_sandbox
+    capability_profile = capability_requirements(skill_md, manifest)
+    requires_sandbox = package_requires_sandbox or compatible_instruction_requires_sandbox or bool(capability_profile['declared_capabilities'])
     if requires_sandbox:
         execution_mode = "sandbox_required"
         runtime_status = "awaiting_sandbox"
@@ -385,6 +386,7 @@ def detect_runtime_profile(
         "runnable": runtime_status == "available",
         "block_reason": block_reason,
         "requirements": {
+            **capability_profile,
             "runtimes": runtimes,
             "scripts": script_files[:100],
             "tools": tools,
@@ -401,6 +403,7 @@ def detect_runtime_profile(
             "network_rules": network_rules,
             "network_targets": network_targets,
             "dependency_download": dependency_download,
+            "dependency_preparation": "platform" if dependency_download else "none",
             "dependency_files": dependency_files[:50],
             "expected_artifacts": expected_artifacts,
             "fixed_execution": fixed_execution is not None,

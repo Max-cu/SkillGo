@@ -13,6 +13,7 @@ import yaml
 from .config import settings
 from .models import SkillType
 from .skill_execution_spec import SkillExecutionSpecError, fixed_execution_spec
+from .environment_capabilities import capability_requirements
 from .skill_metadata import SkillFrontmatterError, parse_skill_frontmatter
 
 
@@ -239,7 +240,8 @@ def validate_skill_package(data: bytes) -> ValidatedPackage:
         raise PackageValidationError("schemas and permissions must be objects")
     try:
         fixed_execution_spec(manifest)
-    except SkillExecutionSpecError as exc:
+        capability_requirements(skill_md, manifest)
+    except (SkillExecutionSpecError, ValueError) as exc:
         raise PackageValidationError(str(exc)) from exc
 
     return ValidatedPackage(

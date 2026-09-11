@@ -299,7 +299,15 @@ class AgentExecutionState:
                 "failure_number": self.validation_failures,
             }
         self.validation = normalized
-        return {"ok": True, "validation": deepcopy(normalized)}
+        synchronized = False
+        if self.plan and all(step['status'] in {'completed', 'skipped'}
+                             for step in self.plan['steps'] if step['id'] != self.validation_step_id):
+            for step in self.plan['steps']:
+                if step['id'] == self.validation_step_id:
+                    step['status'] = 'completed'
+                    step['evidence'] = f"Platform verification {recent_proof['verification_id']} passed: {len(recent_proof['checks'])} checks."
+                    synchronized = True
+        return {"ok": True, "validation": deepcopy(normalized), "validation_step_completed": synchronized}
 
     def block_workflow(self, summary: str, evidence: str) -> dict[str, Any]:
         """Allow an honest blocked outcome only after a real failed operation."""

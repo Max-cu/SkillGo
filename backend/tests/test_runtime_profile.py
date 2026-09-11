@@ -5,7 +5,7 @@ from app import config
 from app.runtime_profile import detect_runtime_profile, version_runtime_profile
 
 
-def test_runtime_profile_enables_network_for_declared_dependency_download():
+def test_runtime_profile_separates_dependency_preparation_from_business_network():
     profile = detect_runtime_profile(
         skill_md="# Skill\nRun `pip install custom-parser` before scripts/review.py.",
         manifest={"spec": {"type": "code"}},
@@ -14,7 +14,7 @@ def test_runtime_profile_enables_network_for_declared_dependency_download():
 
     requirements = profile["requirements"]
     assert requirements["dependency_download"] is True
-    assert requirements["network"] is True
+    assert requirements["network"] is False
 
 
 def test_runtime_profile_keeps_offline_skill_without_network():
@@ -29,7 +29,7 @@ def test_runtime_profile_keeps_offline_skill_without_network():
     assert requirements["network"] is False
 
 
-def test_runtime_profile_enables_network_for_dependency_manifest():
+def test_runtime_profile_keeps_dependency_manifest_off_business_network():
     profile = detect_runtime_profile(
         skill_md="# Skill\nRun the bundled processor.",
         manifest={"spec": {"type": "code"}},
@@ -38,7 +38,7 @@ def test_runtime_profile_enables_network_for_dependency_manifest():
 
     requirements = profile["requirements"]
     assert requirements["dependency_files"] == ["requirements.txt"]
-    assert requirements["network"] is True
+    assert requirements["network"] is False
 
 
 def test_runtime_profile_adapts_nested_third_party_binary_metadata_generically():

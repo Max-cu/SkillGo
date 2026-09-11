@@ -108,6 +108,9 @@ class DockerSandbox:
             "environment": {
                 "HOME": "/workspace/home",
                 "PIP_TARGET": "/workspace/deps/python",
+                "PIP_NO_INDEX": "1",
+                "PIP_DISABLE_PIP_VERSION_CHECK": "1",
+                "NPM_CONFIG_OFFLINE": "true",
                 "PYTHONPATH": "/workspace/deps/python",
                 "NPM_CONFIG_CACHE": "/workspace/.npm-cache",
                 "NPM_CONFIG_PREFIX": "/workspace/deps/node",

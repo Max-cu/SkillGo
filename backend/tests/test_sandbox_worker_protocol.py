@@ -331,13 +331,9 @@ def test_invalid_run_python_action_is_rejected(field, value, expected):
         ["python3", "-m", "pip", "install", "python-docx"],
     ],
 )
-def test_task_local_runtime_dependency_install_is_allowed(argv):
-    assert (
-        _validate_agent_action(
-            {"action": "command", "argv": argv, "cwd": "/workspace/skill"}
-        )
-        is None
-    )
+def test_task_runtime_dependency_install_requires_platform_preparation(argv):
+    error = _validate_agent_action({"action": "command", "argv": argv, "cwd": "/workspace/skill"})
+    assert "managed by the platform" in error
 
 
 @pytest.mark.parametrize("argv", [["apt-get", "install", "curl"], ["apk", "add", "curl"]])

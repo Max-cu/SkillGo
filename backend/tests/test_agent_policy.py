@@ -277,3 +277,26 @@ def test_explicit_multi_skill_loading_and_completion_follow_user_order():
     assert state.complete_skill(1, "first output")["ok"] is True
     assert state.read_skill(2, contexts)["ok"] is True
     assert state.complete_skill(2, "second output")["ok"] is True
+
+
+def test_successful_validation_syncs_plan_without_an_extra_model_turn():
+    state = AgentExecutionState(skill_count=1, loaded_skills={1}, completed_skill_indexes={1})
+    assert state.update_plan(_completed_plan())["ok"]
+    _record_verifier(state)
+    result = _pass_validation(state)
+    assert result['validation_step_completed'] is True
+    assert state.plan['steps'][-1]['status'] == 'completed'
+    assert 'verified-1' in state.plan['steps'][-1]['evidence']
+    assert state.finish_blocker(current_artifacts=ARTIFACT_SNAPSHOT) is None
+
+
+def test_validation_does_not_complete_unfinished_business_steps():
+    state = AgentExecutionState(skill_count=1)
+    plan = _completed_plan()
+    plan['steps'][0]['status'] = 'in_progress'
+    assert state.update_plan(plan)['ok']
+    _record_verifier(state)
+    result = _pass_validation(state)
+    assert result['validation_step_completed'] is False
+    assert state.plan['steps'][0]['status'] == 'in_progress'
+    assert state.plan['steps'][-1]['status'] == 'pending'
