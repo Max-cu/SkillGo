@@ -40,7 +40,7 @@ async def run_verifier(sandbox, action: dict[str, Any], *, requirements: list[st
         try:
             return await snapshot_sandbox_artifacts(sandbox)
         except SandboxRuntimeError as exc:
-            if exc.code not in {'ARTIFACT_CONTENT_INVALID', 'SANDBOX_ARTIFACT_MISSING'}:
+            if exc.code not in {'ARTIFACT_CONTENT_INVALID', 'SANDBOX_ARTIFACT_MISSING', 'SANDBOX_ARTIFACT_SIZE', 'SANDBOX_ARTIFACT_INVALID'}:
                 raise
             snapshot_error = str(exc)
             return {}

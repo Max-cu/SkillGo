@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import io
 import json
+import logging
 import tarfile
 from dataclasses import dataclass
 from pathlib import PurePosixPath
@@ -10,11 +11,13 @@ from typing import Iterable
 
 import docker
 from docker.errors import DockerException, ImageNotFound, NotFound
+from requests.exceptions import RequestException
 
 from .config import settings
 
 
 WORKSPACE_ROOT = PurePosixPath("/workspace")
+logger = logging.getLogger(__name__)
 
 
 class SandboxRuntimeError(RuntimeError):
@@ -140,15 +143,17 @@ class DockerSandbox:
                 self.container.remove(force=True)
             except NotFound:
                 pass
-            except DockerException:
-                pass
+            except (DockerException, RequestException):
+                logger.exception("Sandbox container cleanup failed job_id=%s execution_id=%s", self.job_id, self.execution_id)
             finally:
                 self.container = None
         if self.volume is not None:
             try:
                 self.volume.remove(force=True)
-            except DockerException:
+            except NotFound:
                 pass
+            except (DockerException, RequestException):
+                logger.exception("Sandbox volume cleanup failed job_id=%s execution_id=%s", self.job_id, self.execution_id)
             finally:
                 self.volume = None
 
@@ -395,7 +400,10 @@ path.write_bytes(base64.b64decode(sys.argv[2]))
             size = int(stat.get("size") or 0)
             if size <= 0 or size > settings.sandbox_max_artifact_bytes:
                 raise SandboxRuntimeError(
-                    "SANDBOX_ARTIFACT_SIZE", "Artifact is empty or exceeds the configured limit"
+                    "SANDBOX_ARTIFACT_SIZE",
+                    f"Artifact {'is empty' if size <= 0 else 'exceeds the configured limit'}: "
+                    f"{target}; size_bytes={size}; limit_bytes={settings.sandbox_max_artifact_bytes}. "
+                    "Regenerate empty output or reduce oversized output before retrying verification."
                 )
             payload = b"".join(stream)
         except NotFound as exc:

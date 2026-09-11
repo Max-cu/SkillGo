@@ -555,3 +555,23 @@ def test_worker_releases_sandbox_and_resumes_answer_without_spending_crash_budge
     second = sandbox_worker._claim_job('test-worker')
     assert second.attempt == 2
     assert second.execution_id != first.execution_id
+
+@pytest.mark.parametrize('code', ['SANDBOX_ARTIFACT_SIZE', 'SANDBOX_ARTIFACT_INVALID'])
+def test_artifact_failure_is_recoverable_and_repair_can_be_verified(code):
+    class BrokenSandbox(MemorySandbox):
+        broken = True
+        def download_file(self, path):
+            if self.broken:
+                raise SandboxRuntimeError(code, f'{path}; size_bytes=101; limit_bytes=100')
+            return super().download_file(path)
+    sandbox = BrokenSandbox()
+    proof = asyncio.run(run_verifier(sandbox, {'argv': ['verify']}, requirements=['correct']))
+    assert proof['ok'] is False
+    assert proof['error_code'] == 'VERIFIER_FAILED'
+    assert '/workspace/output/result.txt' in proof['message']
+    assert 'size_bytes=101' in proof['message']
+    assert proof['full_result_path'] in sandbox.files
+    sandbox.broken = False
+    repaired = asyncio.run(run_verifier(sandbox, {'argv': ['verify']}, requirements=['correct']))
+    assert repaired['ok'] is True
+    assert repaired['verification_id'] != proof['verification_id']
