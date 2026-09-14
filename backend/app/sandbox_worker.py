@@ -858,6 +858,22 @@ async def execute_sandbox_job(
                 error_message=job.error_message,
             )
             db.commit()
+        finally:
+            # A request arriving during the final turn must not remain pending.
+            try:
+                from .models import JobEvent
+                db.rollback()
+                db.refresh(job, attribute_names=['status'])
+                if job.status != JobStatus.RUNNING:
+                    for event in db.scalars(select(JobEvent).where(
+                        JobEvent.job_id == job.id, JobEvent.event_type == 'sandbox_restart',
+                        JobEvent.status.in_(['queued', 'running']))):
+                        event.status = 'cancelled'
+                        event.detail = '任务已停止执行，未继续切换沙箱'
+                    db.commit()
+            except Exception:
+                db.rollback()
+                logger.exception('Could not settle sandbox restart requests job_id=%s', job.id)
 
 
 def _active_leased_job_ids() -> set[str]:

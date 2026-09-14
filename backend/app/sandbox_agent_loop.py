@@ -10,6 +10,8 @@ from pathlib import PurePosixPath
 from typing import Any, Callable
 
 from sqlalchemy.orm import Session
+from sqlalchemy import select
+from .sandbox_checkpoint import replace_sandbox
 
 from .agent_kernel import AgentSession, ToolCallContext, ToolPipeline
 from .agent_policy import AgentExecutionState, action_fingerprint
@@ -450,6 +452,33 @@ async def _run_agent_loop(
     for turn_number in turn_numbers:
         if job_cancelled():
             raise AgentJobCancelled("Workflow job was cancelled")
+        # Only between complete turns: all dispatched tool results and messages
+        # are present, so no pending call is replayed after a handover.
+        restart = db.scalars(select(JobEvent).where(
+            JobEvent.job_id == job.id, JobEvent.event_type == 'sandbox_restart',
+            JobEvent.status == 'queued').order_by(JobEvent.sequence)).first()
+        if restart is not None and sandbox.container is not None:
+            restart.status = 'running'
+            restart.data = {'next_turn': turn_number, 'completed_operations': tool_operation_count}
+            db.commit()
+            try:
+                evidence = await replace_sandbox(sandbox, job_cancelled)
+                restart.status = 'succeeded'
+                restart.detail = '工作文件已校验，已在相同环境的新沙箱继续任务'
+                restart.data = {**restart.data, **evidence}
+                messages.append({'role': 'user', 'content':
+                    'The platform restored all /workspace files into a new sandbox with the same image. '
+                    'Your plan and completed tool results remain authoritative. Continue the next operation; '
+                    'do not replay completed work. Previous processes and /tmp files are not restored.'})
+            except Exception as exc:
+                restart.status = 'failed'
+                restart.detail = '沙箱切换失败，已保留原工作区'
+                restart.data = {**restart.data, 'error_type': type(exc).__name__}
+                logger.exception('Sandbox handover failed job_id=%s', job.id)
+                if job_cancelled():
+                    db.commit()
+                    raise AgentJobCancelled('Workflow job was cancelled')
+            db.commit()
         agent_session.start_turn(turn_number)
         agent_session.start_step(turn_number)
         set_step(

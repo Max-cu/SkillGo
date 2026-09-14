@@ -21,7 +21,7 @@ from ..deps import current_user
 from ..execution_runtime import ensure_job_run, fail_run
 from ..model_gateway import ModelGatewayError, OpenAICompatibleGateway, get_model_gateway
 from ..models import AgentConversation, AgentMessage, AgentMessageFile, Artifact, Endpoint, JobInputFile, JobStatus, JobStep, JobStepStatus, Skill, SkillVersion, User, VersionStatus, WorkflowEndpointRequest, WorkflowJob, WorkflowJobModel, WorkflowJobPrompt, WorkflowJobSkill, utcnow
-from ..models import WorkflowJobMemory, RunStatus
+from ..models import WorkflowJobMemory, RunStatus, JobEvent
 from pydantic import BaseModel, Field
 from ..runtime_profile import version_runtime_profile
 from ..schemas import ArtifactRead, Message, WorkflowJobRead
@@ -1296,6 +1296,27 @@ def cancel_workflow_job(
 ) -> Message:
     job = _owned_job(db, job_id, user)
     return _cancel_job(db, job, actor=user)
+
+
+@router.post('/jobs/{job_id}/sandbox/restart', response_model=Message)
+def restart_job_sandbox(job_id: str, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    job = _owned_job(db, job_id, user)
+    db.refresh(job, with_for_update=True)
+    if job.status != JobStatus.RUNNING or job.execution_mode != 'sandbox_required':
+        raise HTTPException(status_code=409, detail='Only running Agent sandbox tasks can be transferred')
+    versions = [item.skill_version for item in job.skill_bindings] or [job.skill_version]
+    if any(v.runtime_profile.get('requirements', {}).get('fixed_execution') for v in versions):
+        raise HTTPException(status_code=409, detail='Fixed entrypoint tasks cannot be transferred')
+    requests = db.scalars(select(JobEvent).where(JobEvent.job_id == job.id,
+        JobEvent.event_type == 'sandbox_restart')).all()
+    if any(e.status in {'queued', 'running'} for e in requests):
+        return Message(message='Sandbox restart is already pending')
+    if len(requests) >= 3:
+        raise HTTPException(status_code=409, detail='Sandbox restart limit reached for this task')
+    add_job_event(db, job, 'sandbox_restart', '已请求切换沙箱',
+                  '当前工具轮结束后保存工作文件并恢复到相同环境', status='queued')
+    db.commit()
+    return Message(message='Sandbox restart queued for the next completed tool turn')
 
 
 @router.delete("/jobs/{job_id}", status_code=status.HTTP_204_NO_CONTENT)
