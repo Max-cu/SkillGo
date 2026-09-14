@@ -112,6 +112,7 @@ class VersionRead(BaseModel):
     runtime_status: str
     runtime_runnable: bool
     runtime_block_reason: str | None
+    environment_preparation: dict = Field(default_factory=dict)
     runtime_requirements: dict
     runtime_reasons: list[str]
     review_note: str | None

@@ -25,6 +25,9 @@ services:
       context: ./backend
     environment:
       SKILLGO_ENVIRONMENT: production
+      SKILLGO_ENVIRONMENT_PREPARATION_ENABLED: ${SKILLGO_ENVIRONMENT_PREPARATION_ENABLED:-false}
+      SKILLGO_ENVIRONMENT_BASE_IMAGE: ${SKILLGO_ENVIRONMENT_BASE_IMAGE:-}
+      SKILLGO_ENVIRONMENT_QUEUE_WAIT_SECONDS: ${SKILLGO_ENVIRONMENT_QUEUE_WAIT_SECONDS:-3600}
       SKILLGO_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-skillgo}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-skillgo}
       SKILLGO_STORAGE_ROOT: /var/lib/skillgo/storage
       SKILLGO_JWT_SECRET: ${SKILLGO_JWT_SECRET:?set SKILLGO_JWT_SECRET}
@@ -92,6 +95,9 @@ services:
       - "${SKILLGO_DOCKER_GID:-999}"
     environment:
       SKILLGO_ENVIRONMENT: production
+      SKILLGO_ENVIRONMENT_PREPARATION_ENABLED: ${SKILLGO_ENVIRONMENT_PREPARATION_ENABLED:-false}
+      SKILLGO_ENVIRONMENT_BASE_IMAGE: ${SKILLGO_ENVIRONMENT_BASE_IMAGE:-}
+      SKILLGO_ENVIRONMENT_QUEUE_WAIT_SECONDS: ${SKILLGO_ENVIRONMENT_QUEUE_WAIT_SECONDS:-3600}
       SKILLGO_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-skillgo}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-skillgo}
       SKILLGO_STORAGE_ROOT: /var/lib/skillgo/storage
       SKILLGO_JWT_SECRET: ${SKILLGO_JWT_SECRET:?set SKILLGO_JWT_SECRET}
@@ -142,6 +148,35 @@ services:
     deploy:
       replicas: 5
     profiles: ["sandbox"]
+
+  environment-worker:
+    build:
+      context: ./backend
+    command: ["python", "-m", "app.environment_worker"]
+    user: "10001:10001"
+    group_add: ["${SKILLGO_DOCKER_GID:-999}"]
+    environment:
+      SKILLGO_ENVIRONMENT: production
+      SKILLGO_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-skillgo}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-skillgo}
+      SKILLGO_ENVIRONMENT_PREPARATION_ENABLED: ${SKILLGO_ENVIRONMENT_PREPARATION_ENABLED:-false}
+      SKILLGO_ENVIRONMENT_BASE_IMAGE: ${SKILLGO_ENVIRONMENT_BASE_IMAGE:-}
+      SKILLGO_ENVIRONMENT_BUILD_SECONDS: ${SKILLGO_ENVIRONMENT_BUILD_SECONDS:-900}
+      SKILLGO_SANDBOX_RUNTIME: ${SKILLGO_SANDBOX_RUNTIME:-runsc}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    networks: [backend]
+    depends_on:
+      db:
+        condition: service_healthy
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    read_only: true
+    tmpfs: ["/tmp:rw,nosuid,nodev,noexec,size=64m"]
+    mem_limit: 512m
+    cpus: 0.5
+    pids_limit: 128
+    restart: unless-stopped
+    profiles: ["environments"]
 
   sandbox-runtime:
     image: ${SKILLGO_SANDBOX_IMAGE:-skillgo/sandbox-runtime:local}

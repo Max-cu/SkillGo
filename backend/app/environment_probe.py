@@ -10,6 +10,7 @@ import sys
 
 # Small functional checks, not only import discovery. No network or user files.
 PROBES = {
+    "qrcode": "import io,qrcode; b=io.BytesIO(); qrcode.make('probe').save(b,format='PNG'); assert b.getvalue()",
     "pymupdf": "import pymupdf; d=pymupdf.open(); p=d.new_page(); p.insert_text((20,20),'probe'); assert 'probe' in p.get_text(); assert p.get_pixmap().width > 0; assert d.tobytes()",
     "pypdf": "from pypdf import PdfWriter,PdfReader; import io; w=PdfWriter(); w.add_blank_page(100,100); b=io.BytesIO(); w.write(b); b.seek(0); assert len(PdfReader(b).pages)==1",
     "pdfplumber": "import pdfplumber; assert callable(pdfplumber.open)",
@@ -25,7 +26,7 @@ def probe():
     providers = {}
     imports = {'pymupdf': ['pymupdf', 'fitz'], 'pypdf': ['pypdf'], 'pdfplumber': ['pdfplumber'],
                'reportlab': ['reportlab'], 'python-docx': ['docx'], 'openpyxl': ['openpyxl'],
-               'python-pptx': ['pptx'], 'Pillow': ['PIL'], 'pandas': ['pandas']}
+               'python-pptx': ['pptx'], 'Pillow': ['PIL'], 'pandas': ['pandas'], 'qrcode': ['qrcode']}
     for package, code in PROBES.items():
         try:
             version = importlib.metadata.version(package)

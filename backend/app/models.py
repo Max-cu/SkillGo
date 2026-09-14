@@ -160,6 +160,18 @@ class SkillVersion(TimestampMixin, Base):
 
     skill: Mapped[Skill] = relationship(back_populates="versions")
 
+    environment_binding: Mapped["SkillEnvironmentBinding | None"] = relationship(
+        cascade="all, delete-orphan", uselist=False)
+
+    @property
+    def environment_preparation(self) -> dict:
+        binding = self.environment_binding
+        if binding is None:
+            return {"status": "legacy", "capabilities": [], "message": "Uses platform runtime preflight"}
+        env = binding.environment
+        return {"status": env.status, "digest": env.digest, "capabilities": env.spec.get("capabilities", []),
+                "message": env.error_message, "analysis": binding.analysis}
+
     @property
     def skill_name(self) -> str:
         return self.skill.name
@@ -833,3 +845,23 @@ class Artifact(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
 
     job: Mapped[WorkflowJob] = relationship(back_populates="artifacts")
+
+
+class PreparedEnvironment(TimestampMixin, Base):
+    __tablename__ = "prepared_environments"
+    digest: Mapped[str] = mapped_column(String(64), primary_key=True)
+    status: Mapped[str] = mapped_column(String(20), default="queued", index=True)
+    spec: Mapped[dict] = mapped_column(JSON)
+    image_id: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    inventory: Mapped[dict] = mapped_column(JSON, default=dict)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    attempt: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    lease_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class SkillEnvironmentBinding(Base):
+    __tablename__ = "skill_environment_bindings"
+    version_id: Mapped[str] = mapped_column(ForeignKey("skill_versions.id", ondelete="CASCADE"), primary_key=True)
+    environment_digest: Mapped[str] = mapped_column(ForeignKey("prepared_environments.digest"), index=True)
+    analysis: Mapped[dict] = mapped_column(JSON, default=dict)
+    environment: Mapped[PreparedEnvironment] = relationship()

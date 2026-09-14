@@ -63,11 +63,13 @@ class DockerSandbox:
         job_id: str,
         execution_id: str | None = None,
         network_enabled: bool = False,
+        image_id: str | None = None,
     ) -> None:
         self.client = client
         self.job_id = job_id
         self.execution_id = execution_id or job_id
         self.network_enabled = network_enabled
+        self.image = image_id or settings.sandbox_image
         self.container = None
         self.volume = None
 
@@ -92,7 +94,7 @@ class DockerSandbox:
         if self.volume is None:
             raise SandboxRuntimeError("SANDBOX_NOT_RUNNING", "Sandbox workspace is not ready")
         kwargs = {
-            "image": settings.sandbox_image,
+            "image": self.image,
             "command": ["sleep", "infinity"],
             "name": f"skillgo-job-{self.execution_id}",
             "detach": True,
@@ -132,7 +134,7 @@ class DockerSandbox:
             self.container.start()
         except ImageNotFound as exc:
             raise SandboxRuntimeError(
-                "SANDBOX_IMAGE_MISSING", f"Sandbox image is unavailable: {settings.sandbox_image}"
+                "SANDBOX_IMAGE_MISSING", f"Sandbox image is unavailable: {self.image}"
             ) from exc
         except DockerException as exc:
             raise SandboxRuntimeError("SANDBOX_START_FAILED", f"Could not start sandbox: {exc}") from exc
@@ -186,7 +188,7 @@ class DockerSandbox:
         helper = None
         try:
             helper = self.client.containers.create(
-                image=settings.sandbox_image,
+                image=self.image,
                 command=["sleep", "infinity"],
                 name=f"skillgo-stage-{self.execution_id}",
                 detach=True,

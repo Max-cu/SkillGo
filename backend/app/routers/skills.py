@@ -17,6 +17,7 @@ from ..schemas import Message, SkillCreate, SkillDetail, SkillPackageAnalysis, S
 from ..services import add_audit, get_skill_or_none, latest_version, skill_read
 from ..skill_analysis import analyze_package
 from ..skill_package import PackageValidationError, validate_skill_package
+from ..environment_preparation import bind_version_environment, require_ready_version
 from ..runtime_profile import detect_runtime_profile
 from ..storage import storage
 
@@ -291,6 +292,8 @@ def delete_skill(
     db.execute(delete(WorkflowJob).where(WorkflowJob.id.in_(workflow_job_ids)))
     db.execute(delete(Conversation).where(Conversation.skill_id == skill.id))
     db.execute(delete(Favorite).where(Favorite.skill_id == skill.id))
+    from ..models import SkillEnvironmentBinding
+    db.execute(delete(SkillEnvironmentBinding).where(SkillEnvironmentBinding.version_id.in_(select(SkillVersion.id).where(SkillVersion.skill_id == skill.id))))
     db.execute(delete(SkillVersion).where(SkillVersion.skill_id == skill.id))
     db.execute(delete(Skill).where(Skill.id == skill.id))
     add_audit(
@@ -390,6 +393,7 @@ async def upload_version(
     db.flush()
     key = f"skill-packages/{skill.id}/{version.id}/{validated.sha256}.zip"
     version.package_path = storage.put(key, data)
+    bind_version_environment(db, version, package=data)
     add_audit(
         db,
         actor=user,
@@ -422,6 +426,7 @@ def submit_version(
         raise HTTPException(status_code=404, detail="Version not found")
     if version.status not in (VersionStatus.READY, VersionStatus.REJECTED):
         raise HTTPException(status_code=409, detail="Version cannot be submitted")
+    require_ready_version(version)
     version.status = VersionStatus.SUBMITTED
     version.review_note = None
     add_audit(
@@ -493,3 +498,26 @@ def download_version(
         media_type="application/zip",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
+
+
+@router.post("/skills/{skill_id}/versions/{version_id}/environment/retry", response_model=VersionRead)
+def retry_environment(skill_id: str, version_id: str, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    skill = get_skill_or_none(db, skill_id)
+    version = db.get(SkillVersion, version_id)
+    if skill is None or not _can_manage(skill, user) or version is None or version.skill_id != skill.id:
+        raise HTTPException(status_code=404, detail="Version not found")
+    env = bind_version_environment(db, version)
+    if env is not None and env.status == 'failed':
+        from ..environment_preparation import environment_spec
+        try:
+            if env.spec != environment_spec(env.spec['capabilities'], env.spec.get('base_image')):
+                raise ValueError('Platform catalog changed; upload a new version to resolve again')
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        from sqlalchemy import update
+        from ..models import PreparedEnvironment
+        db.execute(update(PreparedEnvironment).where(PreparedEnvironment.digest == env.digest, PreparedEnvironment.status == 'failed').values(status='queued', error_message=None, attempt=None))
+    add_audit(db, actor=user, action='skill.environment.retry', resource_type='skill_version', resource_id=version.id)
+    db.commit()
+    db.refresh(version)
+    return version

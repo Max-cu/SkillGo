@@ -8,7 +8,7 @@ from pathlib import Path
 from .skill_metadata import parse_skill_frontmatter
 from .sandbox_runtime import SandboxRuntimeError
 
-CATALOG_VERSION = 1
+CATALOG_VERSION = 2
 # Each capability is satisfied by any complete provider group.
 CAPABILITIES = {
     "pdf.read": [["pymupdf"], ["pypdf"], ["pdfplumber"]],
@@ -20,6 +20,7 @@ CAPABILITIES = {
     "office.pptx": [["python-pptx"]],
     "office.convert": [["libreoffice"]],
     "image.basic": [["Pillow"]],
+    "image.qr": [["qrcode"]],
     "data.tabular": [["pandas"]],
     "media.convert": [["ffmpeg"]],
     "fonts.cjk": [["fonts.cjk"]],

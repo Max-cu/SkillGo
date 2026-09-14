@@ -70,7 +70,7 @@ def test_sandbox_network_mode_is_selected_per_task(enabled, expected_mode):
 
 @pytest.mark.parametrize('size', [0, 101])
 def test_artifact_size_error_identifies_file_and_limit(monkeypatch, size):
-    monkeypatch.setattr('app.sandbox_runtime.settings', SimpleNamespace(sandbox_max_artifact_bytes=100))
+    monkeypatch.setattr('app.sandbox_runtime.settings', SimpleNamespace(sandbox_max_artifact_bytes=100, sandbox_image="test-image"))
     sandbox = DockerSandbox(SimpleNamespace(), job_id='size-job')
     def stream():
         raise AssertionError('Rejected artifact must not be downloaded')

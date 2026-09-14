@@ -468,6 +468,8 @@ def _prepare_file_job(
     analysis: AttachmentAnalysis | None = None,
 ) -> tuple[WorkflowJob, str | None, dict]:
     selected_versions = versions or [version]
+    from ..environment_preparation import prepare_job_environment
+    prepared_environment = prepare_job_environment(db, selected_versions)
     profile = _job_runtime_profile(selected_versions)
     network_versions = [item for item in selected_versions if item.network_enabled]
     job = WorkflowJob(
@@ -492,6 +494,10 @@ def _prepare_file_job(
     )
     db.add(job)
     db.flush()
+    if prepared_environment is not None:
+        job.memory = WorkflowJobMemory(data={"prepared_environment_digest": prepared_environment.digest})
+        add_job_event(db, job, "status", "运行环境准备", "就绪后自动进入执行队列",
+                      data={"environment_digest": prepared_environment.digest, "environment_status": prepared_environment.status})
     for position, selected_version in enumerate(selected_versions, 1):
         db.add(
             WorkflowJobSkill(
@@ -830,7 +836,9 @@ async def create_workflow_job(
             message = (item.content or {}).get('message')
             if item.role in {'user', 'assistant'} and isinstance(message, str):
                 context.append({'role': item.role, 'content': message[:2000]})
-    job.memory = WorkflowJobMemory(data={'context': context, 'answers': []})
+    if job.memory is None:
+        job.memory = WorkflowJobMemory(data={})
+    job.memory.data = {**job.memory.data, 'context': context, 'answers': []}
     extracted_texts = [extracted_text]
     for (extra_data, extra_filename, extra_content_type), analysis in zip(
         resolved_inputs[1:], analyses[1:]
@@ -1418,10 +1426,12 @@ async def retry_workflow_job(
         analysis=source_analyses[0],
     )
     if source.memory:
-        job.memory = WorkflowJobMemory(data={
+        if job.memory is None:
+            job.memory = WorkflowJobMemory(data={})
+        job.memory.data = {**job.memory.data,
             'context': source.memory.data.get('context', []),
             'answers': source.memory.data.get('answers', []),
-        })
+        }
     extracted_texts = [first_text]
     for (data, filename, content_type), analysis in zip(
         stored_inputs[1:], source_analyses[1:]

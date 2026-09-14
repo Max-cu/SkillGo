@@ -60,6 +60,8 @@ def approve_version(
     version = db.get(SkillVersion, version_id)
     if version is None or version.status not in (VersionStatus.SUBMITTED, VersionStatus.REVIEWING):
         raise HTTPException(status_code=404, detail="Pending version not found")
+    from ..environment_preparation import require_ready_version
+    require_ready_version(version)
     version.status = VersionStatus.PUBLISHED
     if version.execution_mode != "sandbox_required":
         version.network_enabled = False
@@ -389,3 +391,18 @@ def system_summary(
         runs=db.scalar(select(func.count()).select_from(Run)) or 0,
         endpoints=db.scalar(select(func.count()).select_from(Endpoint)) or 0,
     )
+
+
+@router.post("/admin/environments/{digest}/revoke", response_model=Message)
+def revoke_environment(digest: str, payload: ReviewDecision, actor: User = Depends(admin_user), db: Session = Depends(get_db)):
+    from ..models import PreparedEnvironment
+    env = db.get(PreparedEnvironment, digest)
+    if env is None:
+        raise HTTPException(status_code=404, detail="Environment not found")
+    env.status = 'revoked'
+    env.attempt = None
+    env.error_message = payload.note or 'Environment disabled by administrator'
+    add_audit(db, actor=actor, action='environment.revoke', resource_type='environment', resource_id=digest,
+              details={'note': payload.note})
+    db.commit()
+    return Message(message='Environment disabled for new task execution')

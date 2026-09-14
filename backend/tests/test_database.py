@@ -25,7 +25,7 @@ def test_blank_database_is_created_and_stamped_at_head():
     assert set(Base.metadata.tables).issubset(tables)
     assert "alembic_version" in tables
     with target.connect() as connection:
-        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "20260907_0007"
+        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "20260911_0008"
 
 
 def test_complete_legacy_database_is_adopted_without_losing_rows():
@@ -47,7 +47,7 @@ def test_complete_legacy_database_is_adopted_without_losing_rows():
     assert "favorites" in inspect(target).get_table_names()
     with target.connect() as connection:
         assert connection.scalar(text("SELECT count(*) FROM users")) == 1
-        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "20260907_0007"
+        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "20260911_0008"
 
 
 def test_v010_database_receives_storage_lifecycle_migration_without_data_loss():
@@ -79,7 +79,7 @@ def test_v010_database_receives_storage_lifecycle_migration_without_data_loss():
         assert column_name in {column["name"] for column in inspector.get_columns(table_name)}
     with target.connect() as connection:
         assert connection.scalar(text("SELECT count(*) FROM users")) == 1
-        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "20260907_0007"
+        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "20260911_0008"
 
 
 def test_v022_database_receives_network_policy_columns_with_safe_defaults():
@@ -131,7 +131,7 @@ def test_v022_database_receives_network_policy_columns_with_safe_defaults():
         assert connection.scalar(
             text("SELECT network_enabled FROM skill_versions WHERE id='v1'")
         ) == 0
-        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "20260907_0007"
+        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "20260911_0008"
 
 
 def test_v024_database_receives_model_api_format_with_safe_default():
@@ -148,7 +148,7 @@ def test_v024_database_receives_model_api_format_with_safe_default():
         column["name"] for column in inspect(target).get_columns("model_connection_configs")
     }
     with target.connect() as connection:
-        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "20260907_0007"
+        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "20260911_0008"
 
 
 def test_v026_database_receives_orchestration_memory_and_model_options():
@@ -218,7 +218,7 @@ def test_v023_database_receives_attachment_intelligence_columns_safely():
         assert connection.scalar(
             text("SELECT is_default_vision FROM model_connection_configs WHERE id='m1'")
         ) == 0
-        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "20260907_0007"
+        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "20260911_0008"
 
 
 def test_incomplete_legacy_table_is_not_falsely_stamped():

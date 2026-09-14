@@ -105,14 +105,20 @@ def _lease_is_after(value, reference) -> bool:
 
 def _claim_job(worker_id: str = WORKER_ID) -> JobLease | None:
     with SessionLocal() as db:
+        from .models import PreparedEnvironment
         statement = (
             select(WorkflowJob)
+            .outerjoin(WorkflowJobMemory, WorkflowJobMemory.job_id == WorkflowJob.id)
+            .outerjoin(PreparedEnvironment, PreparedEnvironment.digest == WorkflowJobMemory.data['prepared_environment_digest'].as_string())
             .where(
                 WorkflowJob.status == JobStatus.QUEUED,
                 WorkflowJob.execution_mode == "sandbox_required",
+                or_(PreparedEnvironment.digest.is_(None),
+                    PreparedEnvironment.status.not_in(['queued', 'building', 'probing']),
+                    WorkflowJob.created_at < utcnow() - timedelta(seconds=settings.environment_queue_wait_seconds)),
             )
             .order_by(WorkflowJob.created_at)
-            .with_for_update(skip_locked=True)
+            .with_for_update(of=WorkflowJob, skip_locked=True)
         )
         job = db.scalars(statement).first()
         if job is None:
@@ -431,6 +437,10 @@ async def execute_sandbox_job(
                 if job.skill_bindings
                 else [job.skill_version]
             )
+            for version in selected_versions:
+                binding = version.environment_binding
+                if binding and binding.environment.status in {'failed', 'revoked'}:
+                    raise SandboxRuntimeError('SANDBOX_ENVIRONMENT_UNAVAILABLE', 'Skill 环境准备失败或已停用')
             staged_packages: dict[str, bytes] = {}
             skill_contexts: list[dict[str, Any]] = []
             for index, version in enumerate(selected_versions, 1):
@@ -476,6 +486,25 @@ async def execute_sandbox_job(
                         "runtime_requirements": runtime_requirements,
                     }
                 )
+            prepared_image = None
+            digest = (job.memory.data or {}).get('prepared_environment_digest') if job.memory else None
+            if digest:
+                from .models import PreparedEnvironment
+                prepared = db.get(PreparedEnvironment, digest)
+                if prepared is None or prepared.status != 'ready' or not prepared.image_id:
+                    raise SandboxRuntimeError('SANDBOX_ENVIRONMENT_NOT_READY',
+                        '运行环境尚未就绪：' + (prepared.error_message or prepared.status if prepared else 'missing'))
+                prepared_image = prepared.image_id
+                from docker.errors import ImageNotFound
+                try:
+                    actual_image = client.images.get(prepared_image).id
+                except ImageNotFound as exc:
+                    prepared.status = 'failed'
+                    prepared.error_message = 'Prepared image is missing; retry environment preparation'
+                    db.commit()
+                    raise SandboxRuntimeError('SANDBOX_ENVIRONMENT_IMAGE_MISSING', prepared.error_message) from exc
+                if actual_image != prepared_image:
+                    raise SandboxRuntimeError('SANDBOX_ENVIRONMENT_MISMATCH', 'Prepared image identity changed')
             input_files = {
                 f"input/{item.filename}": storage.read(item.storage_path)
                 for item in job.input_files
@@ -489,6 +518,7 @@ async def execute_sandbox_job(
                 job_id=job.id,
                 execution_id=lease.execution_id if lease is not None else None,
                 network_enabled=network_enabled,
+                **({"image_id": prepared_image} if prepared_image else {}),
             ) as sandbox:
                 sandbox.put_files({**staged_packages, **input_files})
                 workspace_setup = await sandbox.command(

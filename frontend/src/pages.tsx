@@ -526,6 +526,21 @@ export function ManageSkillPage() {
   const [deleteBusy, setDeleteBusy] = useState(false);
   const [deleteError, setDeleteError] = useState("");
   const [networkBusyId, setNetworkBusyId] = useState("");
+  const environmentPending = skill?.versions?.some((v) => ["queued", "building", "probing"].includes(v.environment_preparation?.status || ""));
+  useEffect(() => {
+    if (!environmentPending) return;
+    let disposed = false;
+    const timer = window.setInterval(() => {
+      void api<Skill>(`/skills/${skillId}`).then((next) => { if (!disposed) setData(next); }).catch(() => {});
+    }, 5000);
+    return () => { disposed = true; window.clearInterval(timer); };
+  }, [environmentPending, skillId, setData]);
+  async function retryEnvironment(version: SkillVersion) {
+    try {
+      const next = await api<SkillVersion>(`/skills/${skillId}/versions/${version.id}/environment/retry`, { method: "POST" });
+      setData((current) => current ? { ...current, versions: current.versions?.map((v) => v.id === next.id ? next : v) } : current);
+    } catch (reason) { setMessage(reason instanceof Error ? reason.message : "环境重试失败"); }
+  }
   if (loading) return <div className="detail-loading" />;
   if (error || !skill) return <EmptyState title="没有找到这个 Skill" description="你可能没有管理权限。" />;
   const currentSkill = skill;
@@ -629,11 +644,16 @@ export function ManageSkillPage() {
             </div>
             <div className="version-actions">
               <StatusBadge status={version.status} />
-              {(version.status === "ready" || version.status === "rejected") && <button className="button secondary compact" onClick={() => submitVersion(version)}>提交审核</button>}
+              {(version.status === "ready" || version.status === "rejected") && <button className="button secondary compact" disabled={Boolean(version.environment_preparation && !["legacy", "ready"].includes(version.environment_preparation.status))} onClick={() => submitVersion(version)}>提交审核</button>}
               {version.execution_mode === "instruction_only" && <Link className="button secondary compact" to={`/app/skills/${currentSkill.id}/run?version=${version.id}`}><MessageSquareText size={15} />对话调试</Link>}
               {version.status === "published" && version.runtime_runnable && ["instruction_only", "sandbox_required"].includes(version.execution_mode) && <button className="button secondary compact" onClick={() => deploy(version)}><Zap size={15} />发布为 API</button>}
               <Link className="button primary compact" to={`/app/skills/${currentSkill.id}/workflow?version=${version.id}`}><Play size={15} />用 Agent 运行</Link>
             </div>
+            {version.environment_preparation && version.environment_preparation.status !== "legacy" && <p className="review-note" role="status">
+              运行环境：{({ queued: "排队准备", building: "准备依赖", probing: "验证能力", ready: "已就绪", failed: "准备失败", revoked: "已停用" } as Record<string, string>)[version.environment_preparation.status] || version.environment_preparation.status}
+              {version.environment_preparation.message && ` · ${version.environment_preparation.message}`}
+              {version.environment_preparation.status === "failed" && <button type="button" className="button secondary compact" onClick={() => void retryEnvironment(version)}>重试准备</button>}
+            </p>}
             {version.runtime_block_reason && <p className="runtime-warning"><AlertTriangle />{version.runtime_block_reason}</p>}{version.review_note && <p className="review-note">审核意见：{version.review_note}</p>}
           </article>;
         })}</div> : <EmptyState title="还没有版本" description="上传一个符合规范的 ZIP 包开始。" />}
