@@ -27,13 +27,26 @@ IMPORT_CAPABILITIES = {'fitz': 'pdf.read', 'pymupdf': 'pdf.read', 'docx': 'offic
 def analyze_capabilities(skill_md, manifest):
     analysis = capability_requirements(skill_md, manifest)
     # Imports in examples are hints, never executable code or arbitrary pip requirements.
-    imports = set(re.findall(r'(?:from|import)\s+([A-Za-z_][A-Za-z_0-9]*)', skill_md))
+    # Only import statements, not prose such as "do not import qrcode".
+    imports = set(re.findall(r'^\s*(?:from|import)\s+([A-Za-z_][A-Za-z_0-9]*)', skill_md, re.M))
     inferred = set(analysis['inferred_capabilities'])
-    if '二维码' in skill_md or re.search(r'\bqr[ -]?code\b', skill_md, re.I):
-        inferred.add('image.qr')
+    evidence = []
+    for number, line in enumerate(skill_md.splitlines(), 1):
+        for clause in re.split(r'[。；;.!?\n]', line):
+            if re.search(r'禁止|严禁|不要|无需|不得|不需要|不生成|不创建|\b(?:not|never|without|avoid)\b', clause, re.I):
+                continue
+            if re.search(r'(?:生成|创建|制作|绘制|输出)\s*(?:一个|新的|彩色)?\s*二维码|\b(?:generate|create|make|render)\s+(?:(?:a|an|the|new)\s+)?qr[ -]?codes?\b', clause, re.I):
+                inferred.add('image.qr')
+                evidence.append({'capability': 'image.qr', 'source': 'generation_intent', 'line': number})
     inferred.update(IMPORT_CAPABILITIES[n] for n in imports if n in IMPORT_CAPABILITIES)
+    evidence.extend({'capability': IMPORT_CAPABILITIES[n], 'source': 'import_statement', 'module': n}
+                    for n in sorted(imports) if n in IMPORT_CAPABILITIES)
+    evidence.extend({'capability': c, 'source': 'declaration'} for c in analysis['declared_capabilities'])
+    explained = {item['capability'] for item in evidence}
+    evidence.extend({'capability': c, 'source': 'document_hint'} for c in sorted(inferred - explained))
+    analysis['evidence'] = evidence
     analysis['inferred_capabilities'] = sorted(inferred - set(analysis['declared_capabilities']))
-    analysis['method'] = 'declarations_and_catalog_hints_v1'
+    analysis['method'] = 'declarations_and_catalog_hints_v2'
     analysis['limitations'] = 'Hints are not a complete semantic dependency analysis; only catalog capabilities can be prepared.'
     return analysis
 

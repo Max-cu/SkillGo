@@ -12,6 +12,43 @@ from app.environment_builder import run_container
 
 BASE = 'sha256:' + 'a'*64
 
+@pytest.mark.parametrize('text', [
+    '严禁遮挡原文、数字、编号、签章、表格线、尺寸、二维码。',
+    'Preserve existing QR codes. Do not generate QR codes.',
+    '无需生成二维码', 'Do not import qrcode', '识别二维码',
+])
+def test_mentions_do_not_install_qr_generator(text):
+    analysis = prep.analyze_capabilities(text, {})
+    assert 'image.qr' not in analysis['inferred_capabilities']
+    assert not prep.environment_spec(analysis['inferred_capabilities'], BASE)['wheels']
+
+@pytest.mark.parametrize('text', ['生成二维码', 'Create a QR code', 'import qrcode\nqrcode.make("test")'])
+def test_qr_generation_has_traceable_preparation(text):
+    analysis = prep.analyze_capabilities(text, {})
+    assert 'image.qr' in analysis['inferred_capabilities']
+    assert any(e['capability'] == 'image.qr' for e in analysis['evidence'])
+    assert prep.environment_spec(analysis['inferred_capabilities'], BASE)['wheels'][0]['name'] == 'qrcode'
+
+def test_inferred_extension_build_is_reused_for_another_skill(db, monkeypatch):
+    first, second = version(db), version(db, 'other')
+    first.skill_md += '\nCreate a QR code'
+    second.skill_md += '\n生成二维码'
+    env = prep.bind_version_environment(db, first)
+    db.commit()
+    calls = []
+    def build(client, spec, attempt, on_probing):
+        calls.append(spec)
+        on_probing()
+        return BASE, {'capabilities': ['image.qr', 'pdf.read']}
+    monkeypatch.setattr(worker, 'build_environment', build)
+    assert worker.process_one(None)
+    db.expire_all()
+    reused = prep.bind_version_environment(db, second)
+    assert reused.digest == env.digest and reused.status == 'ready'
+    db.commit()
+    assert not worker.process_one(None)
+    assert len(calls) == 1
+
 @pytest.fixture
 def db(monkeypatch):
     engine = create_engine('sqlite://')
