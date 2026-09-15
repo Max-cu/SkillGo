@@ -906,18 +906,26 @@ def _recover_interrupted_jobs() -> list[ReclaimedSandbox]:
     )
     with SessionLocal() as db:
         jobs = db.scalars(
-            select(WorkflowJob).where(
+            select(WorkflowJob).outerjoin(AgentRun, AgentRun.workflow_job_id == WorkflowJob.id).where(
                 WorkflowJob.execution_mode == "sandbox_required",
                 WorkflowJob.status.in_(active_statuses),
-            ).with_for_update(skip_locked=True)
+                # Do not lock healthy tasks on every idle Worker poll. Their
+                # event writes also touch AgentRun and may acquire the reverse
+                # lock order, which otherwise deadlocks with this scanner.
+                or_(AgentRun.id.is_(None), AgentRun.status != RunStatus.RUNNING,
+                    AgentRun.lease_token.is_(None), AgentRun.lease_expires_at.is_(None),
+                    AgentRun.lease_expires_at <= now),
+            ).with_for_update(skip_locked=True, of=WorkflowJob)
         ).all()
         for job in jobs:
             run = db.scalar(
                 select(AgentRun)
                 .where(AgentRun.workflow_job_id == job.id)
-                .with_for_update()
+                .with_for_update(skip_locked=True)
             )
             if run is None:
+                if db.scalar(select(AgentRun.id).where(AgentRun.workflow_job_id == job.id)):
+                    continue  # Busy run; retry on a later poll, never wait holding the job lock.
                 run = ensure_job_run(db, job)
             lease_is_current = (
                 run.status == RunStatus.RUNNING

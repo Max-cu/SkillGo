@@ -147,6 +147,10 @@ def test_expired_worker_lease_is_requeued_and_fenced(
     assert first.job_id == job_id
     assert first.attempt == 1
 
+    # Healthy leases must be excluded before the recovery scanner locks jobs.
+    assert _recover_interrupted_jobs() == []
+    assert _heartbeat_job(first) is True
+
     with SessionLocal() as db:
         run = db.get(AgentRun, first.run_id)
         assert run is not None
