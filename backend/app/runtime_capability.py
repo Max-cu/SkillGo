@@ -6,7 +6,7 @@ from docker.errors import DockerException
 from requests.exceptions import RequestException
 
 from .config import settings
-from .environment_capabilities import preflight_environment
+from .environment_capabilities import CAPABILITIES, preflight_environment
 from .environment_preparation import environment_spec, enqueue_environment
 from .models import PreparedEnvironment
 from .sandbox_checkpoint import replace_sandbox
@@ -31,12 +31,17 @@ async def request_capability(db, job, sandbox, capability, cancelled):
             if previous.status != 'ready':
                 raise ValueError('Current environment is no longer ready')
             expected = environment_spec(previous.spec['capabilities'], previous.spec['base_image'])
-            if expected != previous.spec:
+            # Catalog/probe additions are compatible if the pinned dependencies,
+            # base, platform and policy are unchanged. Candidate probes still
+            # verify every capability before adopting the new environment.
+            compatible_keys = set(expected) - {'probe_digest', 'extension_digest'}
+            if any(expected[key] != previous.spec.get(key) for key in compatible_keys):
                 raise ValueError('Pinned environment policy changed; upload a new Skill version')
         elif current.get('image_id') != spec['base_image']:
             raise ValueError('Current image has no compatible pinned environment binding')
     except ValueError as exc:
-        return failure('ENVIRONMENT_CAPABILITY_UNSUPPORTED', str(exc))
+        return {**failure('ENVIRONMENT_CAPABILITY_UNSUPPORTED', str(exc)),
+                'supported_capabilities': sorted(CAPABILITIES)}
     attempts = int(memory.get('environment_upgrade_attempts', 0))
     if attempts >= 2:
         return failure('ENVIRONMENT_UPGRADE_LIMIT', 'At most two upgrade attempts are allowed per task')

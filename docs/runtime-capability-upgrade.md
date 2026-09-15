@@ -6,6 +6,12 @@ Agent 工具 `request_capability` 接收 `capability` 和 `reason`，必须单�
 
 构建完成后冻结旧沙箱，恢复工作文件到新环境。采用前核验镜像 ID、原有全部能力与新增能力，并检查环境没有撤销。写入新的 environment.json，再切换。成功后更新任务自己的环境绑定，不改变 Skill 版本；使 Agent 缓存观察和最终验证失效，要求重新验证。构建或恢复失败保留原环境，供 Agent 换策略或再次请求。
 
-限制：仍不支持 Worker 崩溃后恢复、进程内存或 /tmp 恢复。等待构建时占用当前 Worker；这版没有挂起任务释放 Worker 的调度机制。当前目录中的底座外扩展为 image.qr，不代表自动安装任意库。网络权限保持原任务授权。
+限制：仍不支持 Worker 崩溃后恢复、进程内存或 /tmp 恢复。等待构建时占用当前 Worker；这版没有挂起任务释放 Worker 的调度机制。目录支持受控扩展，不代表自动安装任意库。网络权限保持原任务授权。
+
+目录第三版增加 text.markdown（Markdown 转 HTML）、image.barcode（一维条形码 SVG）、data.xml（defusedxml 解析 XML），保留 image.qr。版本与 wheel 哈希由平台锁定，分别参考 [Markdown](https://pypi.org/project/Markdown/3.10.3/)、[python-barcode](https://pypi.org/project/python-barcode/0.16.1/)、[defusedxml](https://pypi.org/project/defusedxml/0.7.1/)。Markdown 转换不等于 HTML 净化，条形码生成不包含识别扫描条码。
+
+上传分析支持带别名、多模块的导入语句以及有限的明确任务意图。否定语句不触发新扩展；不认识的导入模块列为待确认（也可能是本地模块），不会自动安装任意包。界面分别展示声明、推断和待确认项。不是完整语义推理，运行期实际探针仍是可用能力的依据。
+
+扩充目录后，运行期升级允许仅目录/探针摘要不同的旧环境参与，但必须保持原基础镜像、平台、策略和依赖锁完全一致，并重新验证候选环境。历史 Skill 绑定不会被修改；原始依赖版本变化依然拒绝。
 
 验收分两部分：本地 Agent 工具分发及失败/取消/额度测试；服务器独立测试进程从无 qrcode 的基础环境请求 image.qr、恢复计数文件、生成 PNG，再从同一基础环境重复验证缓存复用。测试代码不替换生产服务代码；发布需要另行构建部署。

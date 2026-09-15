@@ -652,6 +652,10 @@ export function ManageSkillPage() {
             {version.environment_preparation && version.environment_preparation.status !== "legacy" && <p className="review-note" role="status">
               运行环境：{({ queued: "排队准备", building: "准备依赖", probing: "验证能力", ready: "已就绪", failed: "准备失败", revoked: "已停用" } as Record<string, string>)[version.environment_preparation.status] || version.environment_preparation.status}
               {version.environment_preparation.message && ` · ${version.environment_preparation.message}`}
+              {Boolean(version.environment_preparation.analysis?.declared_capabilities?.length) && <><br />明确声明：{version.environment_preparation.analysis?.declared_capabilities?.join('、')}</>}
+              {Boolean(version.environment_preparation.analysis?.inferred_capabilities?.length) && <><br />平台识别：{version.environment_preparation.analysis?.inferred_capabilities?.join('、')}</>}
+              {Boolean(version.environment_preparation.analysis?.unresolved_imports?.length) && <><br />待确认模块：{version.environment_preparation.analysis?.unresolved_imports?.join('、')}（未自动安装，可能是本地模块或暂未支持的依赖）</>}
+              {Boolean(version.environment_preparation.analysis?.unsupported_capabilities?.length) && <><br />暂不支持：{version.environment_preparation.analysis?.unsupported_capabilities?.join('、')}</>}
               {version.environment_preparation.status === "failed" && <button type="button" className="button secondary compact" onClick={() => void retryEnvironment(version)}>重试准备</button>}
             </p>}
             {version.runtime_block_reason && <p className="runtime-warning"><AlertTriangle />{version.runtime_block_reason}</p>}{version.review_note && <p className="review-note">审核意见：{version.review_note}</p>}

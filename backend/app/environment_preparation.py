@@ -6,6 +6,7 @@ import re
 import ast
 import io
 import zipfile
+import sys
 from sqlalchemy.exc import IntegrityError
 from .config import settings
 from .environment_capabilities import CAPABILITIES, capability_requirements
@@ -13,6 +14,10 @@ from .models import PreparedEnvironment, SkillEnvironmentBinding
 
 POLICY_VERSION = 1
 EXTENSIONS = {
+    'text.markdown': {'wheels': [{'name': 'Markdown', 'version': '3.10.3', 'filename': 'markdown-3.10.3-py3-none-any.whl', 'url': 'https://files.pythonhosted.org/packages/64/69/4a5af2bc115a9a33fefe51709749de8262be3f9ba063d1753a837cdbc49c/markdown-3.10.3-py3-none-any.whl', 'sha256': 'fa6c92a00a4a3c98b22728c64a935ae1928250ae65058a6ded814d2cc29a4cea'}], 'probe': "import markdown; assert markdown.markdown('# probe') == '<h1>probe</h1>'"},
+    'image.barcode': {'wheels': [{'name': 'python-barcode', 'version': '0.16.1', 'filename': 'python_barcode-0.16.1-py3-none-any.whl', 'url': 'https://files.pythonhosted.org/packages/b2/34/810885dca784b02e5ad0f71ced9c06ba5e9d33a6493bc886f7470ce82a39/python_barcode-0.16.1-py3-none-any.whl', 'sha256': '5776567478c9a0dae473374bb86631ba0b5ea99aaf302763b364e367ac51f367'}], 'probe': "import io,barcode; b=io.BytesIO(); barcode.get('code128','SkillGo').write(b); assert b'<svg' in b.getvalue()"},
+    'data.xml': {'wheels': [{'name': 'defusedxml', 'version': '0.7.1', 'filename': 'defusedxml-0.7.1-py2.py3-none-any.whl', 'url': 'https://files.pythonhosted.org/packages/07/6c/aa3f2f849e01cb6a001cd8554a88d4c77c5c1a31c95bdf1cf9301e6d9ef4/defusedxml-0.7.1-py2.py3-none-any.whl', 'sha256': 'a352e7e428770286cc899e2542b6cdaedb2b4953ff269a210103ec58f6198a61'}], 'probe': "from defusedxml.ElementTree import fromstring; assert fromstring('<root><value>42</value></root>').findtext('value') == '42'"},
+
     'image.qr': {
         'wheels': [{'name': 'qrcode', 'version': '8.2', 'filename': 'qrcode-8.2-py3-none-any.whl',
                     'url': 'https://files.pythonhosted.org/packages/dd/b8/d2d6d731733f51684bbf76bf34dab3b70a9148e8f2cef2bb544fccec681a/qrcode-8.2-py3-none-any.whl',
@@ -21,14 +26,33 @@ EXTENSIONS = {
     },
 }
 IMPORT_CAPABILITIES = {'fitz': 'pdf.read', 'pymupdf': 'pdf.read', 'docx': 'office.docx',
-    'openpyxl': 'office.xlsx', 'pptx': 'office.pptx', 'PIL': 'image.basic', 'pandas': 'data.tabular', 'qrcode': 'image.qr'}
+    'openpyxl': 'office.xlsx', 'pptx': 'office.pptx', 'PIL': 'image.basic', 'pandas': 'data.tabular', 'qrcode': 'image.qr', 'markdown': 'text.markdown', 'barcode': 'image.barcode', 'defusedxml': 'data.xml',
+    'pypdf': 'pdf.read', 'pdfplumber': 'pdf.read', 'reportlab': 'pdf.write', 'numpy': 'data.tabular'}
+
+
+def import_evidence(skill_md):
+    """Parse import statements without executing code, including aliases/lists."""
+    found = []
+    for number, line in enumerate(skill_md.splitlines(), 1):
+        if not re.match(r'^\s*(?:from|import)\s+', line):
+            continue
+        try:
+            tree = ast.parse(line.strip())
+        except SyntaxError:
+            continue
+        for node in ast.walk(tree):
+            names = ([alias.name for alias in node.names] if isinstance(node, ast.Import)
+                     else [node.module] if isinstance(node, ast.ImportFrom) and node.level == 0 else [])
+            found.extend({'module': name.split('.')[0], 'line': number} for name in names if name)
+    return found
 
 
 def analyze_capabilities(skill_md, manifest):
     analysis = capability_requirements(skill_md, manifest)
     # Imports in examples are hints, never executable code or arbitrary pip requirements.
     # Only import statements, not prose such as "do not import qrcode".
-    imports = set(re.findall(r'^\s*(?:from|import)\s+([A-Za-z_][A-Za-z_0-9]*)', skill_md, re.M))
+    import_refs = import_evidence(skill_md)
+    imports = {item['module'] for item in import_refs}
     inferred = set(analysis['inferred_capabilities'])
     evidence = []
     for number, line in enumerate(skill_md.splitlines(), 1):
@@ -38,15 +62,28 @@ def analyze_capabilities(skill_md, manifest):
             if re.search(r'(?:生成|创建|制作|绘制|输出)\s*(?:一个|新的|彩色)?\s*二维码|\b(?:generate|create|make|render)\s+(?:(?:a|an|the|new)\s+)?qr[ -]?codes?\b', clause, re.I):
                 inferred.add('image.qr')
                 evidence.append({'capability': 'image.qr', 'source': 'generation_intent', 'line': number})
+            for cap, pattern in {
+                'image.barcode': r'(?:生成|创建|制作|绘制|输出)\s*(?:一维)?条[形码]*码|\b(?:generate|create|render)\s+(?:(?:a|the)\s+)?barcodes?\b',
+                'text.markdown': r'markdown\s*(?:转换?为|转成|转为|to|into)\s*html',
+                'data.xml': r'(?:解析|读取)\s*XML|\b(?:parse|read)\s+(?:an?\s+)?XML\b',
+            }.items():
+                if re.search(pattern, clause, re.I):
+                    inferred.add(cap)
+                    evidence.append({'capability': cap, 'source': 'task_intent', 'line': number})
     inferred.update(IMPORT_CAPABILITIES[n] for n in imports if n in IMPORT_CAPABILITIES)
-    evidence.extend({'capability': IMPORT_CAPABILITIES[n], 'source': 'import_statement', 'module': n}
-                    for n in sorted(imports) if n in IMPORT_CAPABILITIES)
+    evidence.extend({'capability': IMPORT_CAPABILITIES[item['module']], 'source': 'import_statement', **item}
+                    for item in import_refs if item['module'] in IMPORT_CAPABILITIES)
     evidence.extend({'capability': c, 'source': 'declaration'} for c in analysis['declared_capabilities'])
     explained = {item['capability'] for item in evidence}
     evidence.extend({'capability': c, 'source': 'document_hint'} for c in sorted(inferred - explained))
     analysis['evidence'] = evidence
     analysis['inferred_capabilities'] = sorted(inferred - set(analysis['declared_capabilities']))
-    analysis['method'] = 'declarations_and_catalog_hints_v2'
+    analysis['method'] = 'declarations_and_catalog_hints_v3'
+    analysis['unresolved_imports'] = sorted(imports - set(IMPORT_CAPABILITIES) - sys.stdlib_module_names)[:32]
+    analysis['unsupported_capabilities'] = sorted(set(analysis['declared_capabilities']) - set(CAPABILITIES))
+    analysis['warnings'] = (
+        ['存在未映射的导入模块；可能是本地模块或未支持的依赖，平台不会据此自动安装。']
+        if analysis['unresolved_imports'] else [])
     analysis['limitations'] = 'Hints are not a complete semantic dependency analysis; only catalog capabilities can be prepared.'
     return analysis
 

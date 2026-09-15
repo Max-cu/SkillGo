@@ -8,9 +8,12 @@ from pathlib import Path
 from .skill_metadata import parse_skill_frontmatter
 from .sandbox_runtime import SandboxRuntimeError
 
-CATALOG_VERSION = 2
+CATALOG_VERSION = 3
 # Each capability is satisfied by any complete provider group.
 CAPABILITIES = {
+    "text.markdown": [["markdown"]],
+    "image.barcode": [["python-barcode"]],
+    "data.xml": [["defusedxml"]],
     "pdf.read": [["pymupdf"], ["pypdf"], ["pdfplumber"]],
     "pdf.render": [["pymupdf"], ["pdftoppm"]],
     "pdf.write": [["pymupdf"], ["reportlab"]],
@@ -72,6 +75,7 @@ async def preflight_environment(sandbox, skill_contexts: list[dict]) -> dict:
     payload["image_id"] = (getattr(container, "attrs", {}) or {}).get("Image")
     payload["inventory_digest"] = hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
     payload["capabilities"] = resolve_capabilities(payload["providers"])
+    payload["requestable_capabilities"] = sorted(CAPABILITIES)
     payload["network_enabled"] = bool(sandbox.network_enabled)
     from .config import settings
     payload["environment_upgrade_supported"] = settings.environment_preparation_enabled

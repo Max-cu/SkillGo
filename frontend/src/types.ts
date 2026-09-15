@@ -38,7 +38,10 @@ export interface SkillVersion {
   runtime_status: "available" | "awaiting_platform_tools" | "awaiting_sandbox" | string;
   runtime_runnable: boolean;
   runtime_block_reason: string | null;
-  environment_preparation?: { status: string; capabilities: string[]; message?: string | null; digest?: string };
+  environment_preparation?: { status: string; capabilities: string[]; message?: string | null; digest?: string; analysis?: {
+    declared_capabilities?: string[]; inferred_capabilities?: string[];
+    unresolved_imports?: string[]; unsupported_capabilities?: string[]; warnings?: string[];
+  } };
   runtime_requirements: {
     runtimes?: string[];
     scripts?: string[];
