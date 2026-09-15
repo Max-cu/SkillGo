@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import select
 from .sandbox_checkpoint import replace_sandbox
 from .runtime_capability import request_capability
+from .durable_checkpoint import save_checkpoint, mark_inflight, state_to_json, state_from_json
 
 from .agent_kernel import AgentSession, ToolCallContext, ToolPipeline
 from .agent_policy import AgentExecutionState, action_fingerprint
@@ -397,6 +398,7 @@ async def _run_agent_loop(
     skill_contexts: list[dict[str, Any]],
     gateway: OpenAICompatibleGateway,
     job_cancelled: Callable[[], bool],
+    checkpoint_fence: Callable[[], None] | None = None,
 ) -> tuple[str, list[str], int, int]:
     file_tree = await sandbox.list_files("/workspace")
     skill_root = str(skill_contexts[0]["root"])
@@ -449,10 +451,29 @@ async def _run_agent_loop(
     tool_operation_count = 0
     singleton_tool_turns = 0
 
+    resume = getattr(sandbox, 'durable_resume', None)
+    next_turn = 1
+    if resume:
+        expected_versions = [(x['skill_version_id']) for x in job.selected_skills]
+        if resume['versions'] != expected_versions or resume['model_name'] != job.model_name:
+            raise SandboxRuntimeError('CHECKPOINT_CONFIGURATION_CHANGED', 'Skill/model selection changed since snapshot')
+        messages = resume['messages']
+        execution_state = state_from_json(resume['execution_state'])
+        next_turn = resume['next_turn']
+        repeated_action, repeat_count = resume['repeated_action'], resume['repeat_count']
+        recoverable_errors, tool_operation_count = resume['recoverable_errors'], resume['tool_operation_count']
+        singleton_tool_turns = resume['singleton_tool_turns']
+        for context, executed in zip(skill_contexts, resume['fixed_executed']): context['fixed_executed'] = executed
+        job.memory.data = {**job.memory.data, **resume['memory']}
+        db.commit()
+        messages.append({'role': 'user', 'content': 'The Worker recovered a verified persistent workspace snapshot. Continue the next turn; completed tool results are preserved. Processes and /tmp were not restored.'})
+    durable = bool(settings.durable_checkpoints_enabled or resume) and isinstance(sandbox, DockerSandbox)
+    fence = checkpoint_fence or (lambda: None)
+
     # 0 disables the reasoning-turn cap (QwenPaw semantics: runaway protection
     # relies on the doom-loop guard and per-layer idle checks instead).
     turns_limit = settings.sandbox_max_agent_turns
-    turn_numbers = itertools.count(1) if turns_limit <= 0 else range(1, turns_limit + 1)
+    turn_numbers = itertools.count(next_turn) if turns_limit <= 0 else range(next_turn, turns_limit + 1)
     for turn_number in turn_numbers:
         if job_cancelled():
             raise AgentJobCancelled("Workflow job was cancelled")
@@ -483,6 +504,17 @@ async def _run_agent_loop(
                     db.commit()
                     raise AgentJobCancelled('Workflow job was cancelled')
             db.commit()
+        if durable:
+            await save_checkpoint(db, job, sandbox, {
+                'next_turn': turn_number, 'messages': messages,
+                'execution_state': state_to_json(execution_state),
+                'versions': [x['skill_version_id'] for x in job.selected_skills], 'model_name': job.model_name,
+                'repeated_action': repeated_action, 'repeat_count': repeat_count,
+                'recoverable_errors': recoverable_errors, 'tool_operation_count': tool_operation_count,
+                'singleton_tool_turns': singleton_tool_turns,
+                'fixed_executed': [bool(c.get('fixed_executed')) for c in skill_contexts],
+                'memory': {k: v for k, v in job.memory.data.items() if k != 'durable_checkpoint'},
+            }, fence)
         agent_session.start_turn(turn_number)
         agent_session.start_step(turn_number)
         set_step(
@@ -601,6 +633,8 @@ async def _run_agent_loop(
             else 0,
         )
 
+        if durable:
+            mark_inflight(db, job, fence)
         for tool_call_id, action in calls:
             tool_operation_count += 1
             if tool_operation_count > settings.sandbox_max_agent_tool_calls:

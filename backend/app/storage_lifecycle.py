@@ -17,6 +17,7 @@ from .models import (
     SkillVersion,
     User,
     WorkflowJob,
+    WorkflowJobMemory,
     WorkspaceFile,
     utcnow,
 )
@@ -147,6 +148,14 @@ def cleanup_expired_storage(*, include_orphans: bool = True) -> CleanupResult:
                 ).with_for_update(skip_locked=True)
             ).all(),
         ]
+        for memory in db.scalars(select(WorkflowJobMemory).where(
+            WorkflowJobMemory.job_id.in_(eligible_jobs)
+        ).with_for_update(skip_locked=True)).all():
+            ref = (memory.data or {}).get('durable_checkpoint')
+            if ref:
+                paths.append(ref['key'])
+                released += ref.get('size', 0)
+                memory.data = {k: v for k, v in memory.data.items() if k != 'durable_checkpoint'}
         expired = [*conversation_files, *task_files]
         for item in expired:
             item.purged_at = now
@@ -183,6 +192,10 @@ def cleanup_expired_storage(*, include_orphans: bool = True) -> CleanupResult:
         grace = now - timedelta(hours=max(1, settings.storage_orphan_grace_hours))
         with SessionLocal() as db:
             referenced = set(db.scalars(select(SkillVersion.package_path)).all())
+            for data in db.scalars(select(WorkflowJobMemory.data)).all():
+                ref = (data or {}).get('durable_checkpoint')
+                if ref:
+                    referenced.add(ref['key'])
             for model in (AgentMessageFile, WorkspaceFile, JobInputFile, Artifact):
                 referenced.update(
                     db.scalars(

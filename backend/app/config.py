@@ -27,6 +27,7 @@ class Settings:
         "SKILLGO_DATABASE_URL", "sqlite:///./data/skillgo.db"
     )
     storage_root: Path = Path(os.getenv("SKILLGO_STORAGE_ROOT", "./storage"))
+    durable_checkpoints_enabled: bool = os.getenv("SKILLGO_DURABLE_CHECKPOINTS_ENABLED", "false").lower() == "true"
     jwt_secret: str = os.getenv(
         "SKILLGO_JWT_SECRET", "development-only-change-this-secret"
     )

@@ -23,6 +23,7 @@ from .artifact_validation import (
     validate_artifact_content as _validate_artifact_content,
 )
 from .config import settings
+from .durable_checkpoint import load_bundle, restore_bundle
 from .database import SessionLocal, initialize_schema
 from .deterministic_runtime import execute_fixed_skill
 from .workflow_tools import effective_instruction
@@ -389,6 +390,7 @@ async def execute_sandbox_job(
         if job is None:
             return
         run = ensure_job_run(db, job)
+        checkpoint = (job.memory.data or {}).get('durable_checkpoint') if job.memory else None
         if job.status == JobStatus.CANCELLED:
             fail_run(
                 db,
@@ -412,8 +414,8 @@ async def execute_sandbox_job(
                 data={
                     "attempt": run.attempt_count,
                     "worker": "direct",
-                    "restart_policy": "fresh_attempt",
-                    "workspace_restored": False,
+                    "restart_policy": "checkpoint" if checkpoint else "fresh_attempt",
+                    "workspace_restored": bool(checkpoint),
                 },
             )
         actor = db.get(User, job.user_id)
@@ -431,6 +433,10 @@ async def execute_sandbox_job(
             db.commit()
             return
         try:
+            try:
+                checkpoint_bundle = load_bundle(job)
+            except (OSError, ValueError, KeyError, zipfile.BadZipFile) as exc:
+                raise SandboxRuntimeError('CHECKPOINT_INVALID', 'Persistent snapshot is missing, damaged or incompatible; refusing fresh replay') from exc
             gateway = get_model_gateway().for_model(job.model_name)
             selected_versions = (
                 [binding.skill_version for binding in job.skill_bindings]
@@ -518,44 +524,51 @@ async def execute_sandbox_job(
                 job_id=job.id,
                 execution_id=lease.execution_id if lease is not None else None,
                 network_enabled=network_enabled,
-                **({"image_id": prepared_image} if prepared_image else {}),
+                **({"image_id": checkpoint_bundle[0]["image"]} if checkpoint_bundle else ({"image_id": prepared_image} if prepared_image else {})),
             ) as sandbox:
-                sandbox.put_files({**staged_packages, **input_files})
-                workspace_setup = await sandbox.command(
-                    [
-                        "mkdir",
-                        "-p",
-                        "/workspace/output",
-                        "/workspace/work",
-                        "/workspace/scripts",
-                        "/workspace/home",
-                        "/workspace/deps/python",
-                        "/workspace/deps/node",
-                    ],
-                    cwd="/workspace",
-                    timeout_seconds=30,
-                )
-                if workspace_setup.exit_code != 0:
-                    raise SandboxRuntimeError(
-                        "SANDBOX_WORKSPACE_SETUP_FAILED",
-                        workspace_setup.stderr or "Could not prepare standard workspace directories",
-                    )
-                for context in skill_contexts:
-                    setup = await sandbox.command(
+                if checkpoint_bundle:
+                    await restore_bundle(sandbox, checkpoint_bundle)
+                    add_job_event(db, job, 'status', '已恢复持久化任务快照',
+                                  '工作文件已校验，将从保存的执行轮继续', status='succeeded',
+                                  data={'next_turn': checkpoint_bundle[0]['state']['next_turn']})
+                    db.commit()
+                else:
+                    sandbox.put_files({**staged_packages, **input_files})
+                    workspace_setup = await sandbox.command(
                         [
-                            "python3",
-                            "-c",
-                            "import sys,zipfile;zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2])",
-                            str(context["archive_path"]),
-                            str(context["extract_root"]),
+                            "mkdir",
+                            "-p",
+                            "/workspace/output",
+                            "/workspace/work",
+                            "/workspace/scripts",
+                            "/workspace/home",
+                            "/workspace/deps/python",
+                            "/workspace/deps/node",
                         ],
-                        timeout_seconds=60,
+                        cwd="/workspace",
+                        timeout_seconds=30,
                     )
-                    if setup.exit_code != 0:
+                    if workspace_setup.exit_code != 0:
                         raise SandboxRuntimeError(
-                            "SANDBOX_PACKAGE_SETUP_FAILED",
-                            setup.stderr or f"Could not unpack Skill package: {context['name']}",
+                            "SANDBOX_WORKSPACE_SETUP_FAILED",
+                            workspace_setup.stderr or "Could not prepare standard workspace directories",
                         )
+                    for context in skill_contexts:
+                        setup = await sandbox.command(
+                            [
+                                "python3",
+                                "-c",
+                                "import sys,zipfile;zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2])",
+                                str(context["archive_path"]),
+                                str(context["extract_root"]),
+                            ],
+                            timeout_seconds=60,
+                        )
+                        if setup.exit_code != 0:
+                            raise SandboxRuntimeError(
+                                "SANDBOX_PACKAGE_SETUP_FAILED",
+                                setup.stderr or f"Could not unpack Skill package: {context['name']}",
+                            )
                 available_binaries = await _preflight_sandbox_binaries(sandbox, skill_contexts)
                 environment = await preflight_environment(sandbox, skill_contexts)
                 if job.memory is None:
@@ -635,6 +648,7 @@ async def execute_sandbox_job(
                         sandbox,
                         skill_contexts=skill_contexts,
                         gateway=gateway,
+                        checkpoint_fence=lambda: _assert_job_lease(db, lease, lease_lost, lock=True),
                         job_cancelled=lambda: _job_is_cancelled(
                             db,
                             job,
@@ -730,6 +744,8 @@ async def execute_sandbox_job(
                 resource_id=job.id,
                 details={"artifact_ids": [item.id for item in persisted], "runtime": settings.sandbox_runtime},
             )
+            if job.memory:
+                job.memory.data = {k: v for k, v in job.memory.data.items() if k != "durable_checkpoint"}
             complete_run(
                 db,
                 run,
@@ -749,6 +765,7 @@ async def execute_sandbox_job(
                 return
             if job.memory is None:
                 job.memory = WorkflowJobMemory(data={})
+            job.memory.data = {k: v for k, v in job.memory.data.items() if k != 'durable_checkpoint'}
             job.memory.data = {**job.memory.data, 'pending_question': {'id': uuid4().hex, 'question': str(exc)}}
             job.status = JobStatus.WAITING_USER
             run.status = RunStatus.WAITING_USER
@@ -953,6 +970,16 @@ def _recover_interrupted_jobs() -> list[ReclaimedSandbox]:
                     stale_artifact_paths.append(artifact.storage_path)
                     db.delete(artifact)
 
+            checkpoint = (job.memory.data or {}).get('durable_checkpoint') if job.memory else None
+            if checkpoint and checkpoint.get('status') != 'ready':
+                job.status = JobStatus.FAILED
+                job.error_code = 'CHECKPOINT_TOOL_UNCERTAIN'
+                job.error_message = 'Worker 在工具执行期间中断，结果不确定；已保留快照，未自动重跑操作'
+                job.finished_at = now
+                fail_run(db, run, error_code=job.error_code, error_message=job.error_message)
+                add_job_event(db, job, 'error', '任务需要确认恢复方式', job.error_message, status='failed')
+                continue
+
             answered_attempts = (job.memory.data or {}).get('resumed_attempts', 0) if job.memory else 0
             if run.attempt_count - answered_attempts >= settings.sandbox_worker_max_attempts:
                 for step in job.steps:
@@ -1019,8 +1046,8 @@ def _recover_interrupted_jobs() -> list[ReclaimedSandbox]:
                 data={
                     "attempt": previous_attempt,
                     "reason": "lease_expired",
-                    "restart_policy": "fresh_attempt",
-                    "workspace_preserved": False,
+                    "restart_policy": "checkpoint" if checkpoint else "fresh_attempt",
+                    "workspace_preserved": bool(checkpoint),
                 },
             )
             job.status = JobStatus.QUEUED
@@ -1032,12 +1059,12 @@ def _recover_interrupted_jobs() -> list[ReclaimedSandbox]:
                 job,
                 "status",
                 "正在自动恢复任务",
-                "上一执行进程中断；下一次尝试将在新的独立沙箱中从固定 Skill 版本和原始输入重新开始",
+                "上一执行进程中断；将在新沙箱中恢复持久化快照" if checkpoint else "上一执行进程中断；将在新沙箱中从原始输入重新开始",
                 status="queued",
                 data={
                     "interrupted_attempt": previous_attempt,
-                    "restart_policy": "fresh_attempt",
-                    "workspace_restored": False,
+                    "restart_policy": "checkpoint" if checkpoint else "fresh_attempt",
+                    "workspace_restored": bool(checkpoint),
                 },
             )
         db.commit()

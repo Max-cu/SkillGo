@@ -1330,6 +1330,8 @@ def delete_workflow_job(
     if job.status not in terminal:
         raise HTTPException(status_code=409, detail="运行中的任务不能删除，请先停止任务")
 
+    checkpoint = (job.memory.data or {}).get('durable_checkpoint') if job.memory else None
+    checkpoint_paths = [checkpoint['key']] if checkpoint else []
     input_paths = [item.storage_path for item in job.input_files]
     artifact_paths = [item.storage_path for item in job.artifacts]
     linked_message_ids = select(AgentMessage.id).where(AgentMessage.job_id == job.id)
@@ -1367,7 +1369,7 @@ def delete_workflow_job(
     db.delete(job)
     db.commit()
 
-    for path in [*input_paths, *artifact_paths, *linked_message_file_paths]:
+    for path in [*input_paths, *artifact_paths, *linked_message_file_paths, *checkpoint_paths]:
         try:
             storage.delete(path)
         except OSError:
