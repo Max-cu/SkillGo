@@ -25,6 +25,7 @@ BINARY_DOCUMENT_SUFFIXES = frozenset(
 TOOL_NAMES = frozenset(
     {
         "read_skill",
+        "request_capability",
         "complete_skill",
         "update_plan",
         "record_validation",
@@ -54,6 +55,12 @@ def validate_agent_action(action: dict[str, Any]) -> str | None:
         return f"Unknown sandbox tool: {action_name}"
     if "reason" in action and not isinstance(action.get("reason"), str):
         return "reason must be text"
+    if action_name == 'request_capability':
+        if not isinstance(action.get('capability'), str) or not 1 <= len(action['capability']) <= 80:
+            return 'capability must be a platform capability name of 1-80 characters'
+        if not isinstance(action.get('reason'), str) or not 1 <= len(action['reason'].strip()) <= 500:
+            return 'reason must contain 1-500 characters'
+        return None
     if action_name == "run_verifier":
         return validate_agent_action({**action, "action": "command"})
     if action_name == "run_fixed_skill":

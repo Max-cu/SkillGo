@@ -137,6 +137,12 @@ def environment_model_connection() -> ModelConnection:
 
 
 SANDBOX_AGENT_TOOLS: list[dict[str, Any]] = [
+    {'type': 'function', 'function': {
+        'name': 'request_capability',
+        'description': 'Request a platform capability missing from this sandbox (for example image.qr). Call alone. Platform prepares a verified environment and restores workspace; never install packages yourself. At most two upgrade attempts.',
+        'parameters': {'type': 'object', 'properties': {
+            'capability': {'type': 'string'}, 'reason': {'type': 'string'}},
+            'required': ['capability', 'reason'], 'additionalProperties': False}}},
     {
         "type": "function",
         "function": {

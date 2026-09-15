@@ -73,7 +73,8 @@ async def preflight_environment(sandbox, skill_contexts: list[dict]) -> dict:
     payload["inventory_digest"] = hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
     payload["capabilities"] = resolve_capabilities(payload["providers"])
     payload["network_enabled"] = bool(sandbox.network_enabled)
-    payload["environment_upgrade_supported"] = False
+    from .config import settings
+    payload["environment_upgrade_supported"] = settings.environment_preparation_enabled
     missing = sorted({name for ctx in skill_contexts for name in ctx.get("runtime_requirements", {}).get("declared_capabilities", [])} - set(payload["capabilities"]))
     if missing:
         raise SandboxRuntimeError("SANDBOX_DEPENDENCY_MISSING", "Declared capabilities unavailable: " + ", ".join(missing) + ". Ask the platform administrator to prepare a compatible runtime; task network permission is unchanged.")

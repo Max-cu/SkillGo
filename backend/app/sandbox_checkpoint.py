@@ -69,12 +69,12 @@ def export_workspace(sandbox):
             helper.remove(force=True)
 
 
-async def replace_sandbox(sandbox, cancelled):
+async def replace_sandbox(sandbox, cancelled, *, image_id=None, validate_candidate=None):
     candidate = None
     frozen = False
     try:
         sandbox.container.reload()
-        image = sandbox.container.attrs['Image']
+        image = image_id or sandbox.container.attrs['Image']
         await asyncio.to_thread(sandbox.container.pause)
         frozen = True
         files, modes, directories = await asyncio.to_thread(export_workspace, sandbox)
@@ -97,6 +97,8 @@ async def replace_sandbox(sandbox, cancelled):
             timeout_seconds=90, allow_large_arguments=True)
         if result.exit_code:
             raise ValueError('Restored workspace failed integrity verification')
+        if validate_candidate is not None:
+            await validate_candidate(candidate)
         if cancelled():
             raise RuntimeError('Task cancelled before sandbox handover')
         # Adoption preserves the caller's object and its context-manager cleanup.
