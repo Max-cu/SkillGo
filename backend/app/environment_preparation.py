@@ -109,7 +109,7 @@ def package_import_hints(package):
     return sorted({IMPORT_CAPABILITIES[name] for name in modules if name in IMPORT_CAPABILITIES})
 
 
-def environment_spec(capabilities, base_image=None):
+def environment_spec(capabilities, base_image=None, *, python_requirements=None, python_imports=None):
     base = base_image or settings.environment_base_image
     if not re.fullmatch(r'sha256:[0-9a-f]{64}', base):
         raise ValueError('Platform environment base must be pinned to an immutable local image ID')
@@ -127,8 +127,13 @@ def environment_spec(capabilities, base_image=None):
     from pathlib import Path
     probe_digest = hashlib.sha256(Path(__file__).with_name('environment_probe.py').read_bytes().replace(b'\r\n', b'\n')).hexdigest()
     extension_digest = hashlib.sha256(json.dumps(EXTENSIONS, sort_keys=True).encode()).hexdigest()
-    return {'policy': POLICY_VERSION, 'probe_digest': probe_digest, 'extension_digest': extension_digest, 'base_image': base, 'platform': 'linux/amd64',
+    result = {'policy': POLICY_VERSION, 'probe_digest': probe_digest, 'extension_digest': extension_digest, 'base_image': base, 'platform': 'linux/amd64',
             'capabilities': caps, 'wheels': [wheels[k] for k in sorted(wheels)]}
+    if python_requirements or python_imports:
+        from .python_dependencies import normalize_requirements, normalize_imports
+        result.update(python_requirements=normalize_requirements(python_requirements or []),
+                      python_imports=normalize_imports(python_imports or []), python_policy=1)
+    return result
 
 
 def enqueue_environment(db, spec, error=None):
@@ -155,7 +160,12 @@ def bind_version_environment(db, version, *, package=None):
     analysis['source_capabilities'] = package_import_hints(package) if package is not None else []
     caps = analysis['declared_capabilities'] + analysis['inferred_capabilities'] + analysis['source_capabilities']
     try:
-        spec = environment_spec(caps)
+        from .python_dependencies import analyze_python_dependencies
+        python_analysis = analyze_python_dependencies(version.skill_md, version.manifest or {}, package)
+        analysis.update(python_analysis)
+        analysis['unresolved_imports'] = []
+        analysis['warnings'] = []
+        spec = environment_spec(caps, python_requirements=python_analysis['python_requirements'], python_imports=python_analysis['python_imports'])
         error = None
     except ValueError as exc:
         spec = {'policy': POLICY_VERSION, 'base_image': settings.environment_base_image, 'capabilities': sorted(set(caps))}
@@ -183,7 +193,7 @@ def prepare_job_environment(db, versions):
     # Existing bindings remain authoritative after catalog/config changes.
     if len({e.digest for e in envs}) == 1:
         return envs[0]
-    common = [{k: v for k, v in e.spec.items() if k not in {'capabilities', 'wheels'}} for e in envs]
+    common = [{k: v for k, v in e.spec.items() if k not in {'capabilities', 'wheels', 'python_requirements', 'python_imports', 'python_policy'}} for e in envs]
     if any(item != common[0] for item in common[1:]):
         from fastapi import HTTPException
         raise HTTPException(status_code=409, detail='所选 Skill 的基础环境或构建策略不兼容，无法安全组合')
@@ -196,4 +206,9 @@ def prepare_job_environment(db, versions):
             wheels[wheel['name']] = wheel
     spec = {**common[0], 'capabilities': sorted({cap for e in envs for cap in e.spec['capabilities']}),
             'wheels': [wheels[name] for name in sorted(wheels)]}
+    if any(e.spec.get('python_requirements') or e.spec.get('python_imports') for e in envs):
+        from .python_dependencies import normalize_requirements, normalize_imports
+        spec.update(python_policy=1,
+            python_requirements=normalize_requirements([r for e in envs for r in e.spec.get('python_requirements',[])]),
+            python_imports=normalize_imports([r for e in envs for r in e.spec.get('python_imports',[])]))
     return enqueue_environment(db, spec)

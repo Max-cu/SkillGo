@@ -162,6 +162,28 @@ def test_mutable_base_and_arbitrary_package_rejected():
     with pytest.raises(ValueError): prep.environment_spec([], 'image:latest')
     with pytest.raises(ValueError): prep.environment_spec(['pip:whatever'], BASE)
 
+
+def test_generic_python_requirements_bind_and_build_with_generic_flag(db, monkeypatch):
+    v = version(db, name='generic', capabilities='')
+    v.skill_md = '---\nname: generic\n---\nimport scipy\n'
+    seen = []
+    env = prep.bind_version_environment(db, v)
+    db.commit()
+    assert env.status == 'queued'
+    assert env.spec.get('python_requirements') == ['scipy']
+    assert env.spec.get('python_imports') == ['scipy']
+
+    def build(client, spec, attempt, on_probing):
+        seen.append(spec)
+        on_probing()
+        return BASE, {'capabilities': [], 'python_imports_verified': True}
+    monkeypatch.setattr(worker, 'build_environment', build)
+    assert worker.process_one(None)
+    db.expire_all()
+    ready = db.get(PreparedEnvironment, env.digest)
+    assert ready.status == 'ready' and ready.image_id == BASE
+    assert seen[0]['python_requirements'] == ['scipy']
+
 def test_upload_status_publish_gate_and_retry(client, user_headers, monkeypatch):
     import io, zipfile
     from test_workflow_jobs import create_version

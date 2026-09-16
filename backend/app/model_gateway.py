@@ -138,6 +138,13 @@ def environment_model_connection() -> ModelConnection:
 
 SANDBOX_AGENT_TOOLS: list[dict[str, Any]] = [
     {'type': 'function', 'function': {
+        'name': 'request_python_dependencies',
+        'description': 'Request missing Python packages from public PyPI. No package allowlist. Call alone; use distribution names (e.g. scipy, opencv-python-headless), optional compatible versions, and optional import modules to verify. Independent builder resolves wheel dependencies and restores workspace in a new environment. Never pip install in the task sandbox. At most two upgrades per task.',
+        'parameters': {'type':'object','properties': {
+            'requirements': {'type':'array','items':{'type':'string'},'minItems':1,'maxItems':64},
+            'imports': {'type':'array','items':{'type':'string'},'maxItems':64},
+            'reason': {'type':'string'}}, 'required':['requirements','reason'],'additionalProperties':False}}},
+    {'type': 'function', 'function': {
         'name': 'request_capability',
         'description': 'Request a platform capability missing from this sandbox (for example image.qr). Call alone. Platform prepares a verified environment and restores workspace; never install packages yourself. At most two upgrade attempts.',
         'parameters': {'type': 'object', 'properties': {

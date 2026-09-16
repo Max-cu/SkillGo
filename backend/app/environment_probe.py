@@ -62,7 +62,7 @@ def probe():
             except subprocess.TimeoutExpired:
                 pass
     providers['fonts.cjk'] = {'available': bool(fonts), 'fonts': fonts, 'probe': 'fontconfig_match'}
-    return {'schema_version': 1, 'python': platform.python_version(), 'architecture': platform.machine(), 'providers': providers}
+    return {'schema_version': 1, 'python': platform.python_version(), 'architecture': platform.machine(), 'providers': providers, 'python_distributions': {d.metadata['Name']: d.version for d in importlib.metadata.distributions() if d.metadata['Name']}}
 
 if __name__ == '__main__':
     print(json.dumps(probe(), ensure_ascii=False))

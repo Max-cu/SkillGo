@@ -351,7 +351,12 @@ def detect_runtime_profile(
         not platform_tools and (bool(document_artifacts) or bool(tool_adapters))
     )
     capability_profile = capability_requirements(skill_md, manifest)
-    requires_sandbox = package_requires_sandbox or compatible_instruction_requires_sandbox or bool(capability_profile['declared_capabilities'])
+    from .python_dependencies import analyze_python_dependencies
+    try:
+        python_dependencies = bool(analyze_python_dependencies(skill_md, manifest)['python_requirements'])
+    except ValueError:
+        python_dependencies = True  # Environment preparation surfaces the validation error.
+    requires_sandbox = python_dependencies or package_requires_sandbox or compatible_instruction_requires_sandbox or bool(capability_profile['declared_capabilities'])
     if requires_sandbox:
         execution_mode = "sandbox_required"
         runtime_status = "awaiting_sandbox"

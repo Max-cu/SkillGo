@@ -13,7 +13,8 @@ from pathlib import Path
 from .config import settings
 from .environment_preparation import EXTENSIONS, environment_spec
 
-MAX_WHEEL_BYTES = 32 * 1024 * 1024
+MAX_WHEEL_BYTES = 128 * 1024 * 1024
+MAX_EXTENSION_BYTES = 256 * 1024 * 1024
 
 
 def archive_files(files):
@@ -34,11 +35,11 @@ def archive_files(files):
     return out.getvalue()
 
 
-def run_container(client, *, image, argv, attempt, network=False, user='10001:10001', writable=False):
+def run_container(client, *, image, argv, attempt, network=False, user='10001:10001', writable=False, large=False):
     return client.containers.create(image=image, command=argv, user=user, runtime=settings.sandbox_runtime or 'runsc',
         network_mode='bridge' if network else 'none', read_only=not writable,
-        tmpfs={'/tmp': 'rw,nosuid,nodev,size=128m,mode=1777'}, cap_drop=['ALL'],
-        security_opt=['no-new-privileges:true'], mem_limit='768m', nano_cpus=1000000000,
+        tmpfs={'/tmp': 'rw,nosuid,nodev,size='+('512m' if large else '128m')+',mode=1777'}, cap_drop=['ALL'],
+        security_opt=['no-new-privileges:true'], mem_limit='1536m' if large else '768m', nano_cpus=1000000000,
         pids_limit=64, labels={'skillgo.environment_build': 'true', 'skillgo.build_attempt': attempt},
         environment={'HOME': '/tmp', 'PIP_NO_INDEX': '1', 'PIP_DISABLE_PIP_VERSION_CHECK': '1'})
 
@@ -56,7 +57,7 @@ def wait_container(container, deadline):
 
 def build_environment(client, spec, attempt, on_probing=lambda: None):
     # Reject tampered DB specs and stale catalog policy; DB is not executable authority.
-    if spec != environment_spec(spec['capabilities'], spec['base_image']):
+    if spec != environment_spec(spec['capabilities'], spec['base_image'], python_requirements=spec.get('python_requirements'), python_imports=spec.get('python_imports')):
         raise ValueError('Environment specification no longer matches the platform catalog')
     base = client.images.get(spec['base_image'])
     if base.id != spec['base_image'] or base.attrs.get('Architecture') != 'amd64' or base.attrs.get('Os') != 'linux':
@@ -66,36 +67,55 @@ def build_environment(client, spec, attempt, on_probing=lambda: None):
     candidate = None
     try:
         files = {}
-        if spec['wheels']:
+        generic = bool(spec.get('python_requirements') or spec.get('python_imports'))
+        wheels = spec['wheels']
+        if generic:
+            resolver = Path(__file__).with_name('python_dependency_resolver.py').read_text(encoding='utf-8-sig')
+            requests = spec.get('python_requirements',[]) + [w['name']+'=='+w['version'] for w in wheels]
+            resolver_code = 'SPEC=' + repr({'requirements':requests}) + '\n' + resolver
+            resolving = run_container(client, image=base.id, argv=['python3','-I','-c',resolver_code],
+                                      attempt=attempt, network=True, large=True)
+            containers.append(resolving)
+            resolving.start()
+            wait_container(resolving, deadline)
+            resolved = json.loads(resolving.logs(stdout=True,stderr=False).decode())
+            wheels = resolved['wheels']
+            if len(wheels)>128: raise ValueError('Too many resolved dependencies')
+            resolving.remove(force=True)
+            containers.remove(resolving)
+        if wheels:
             # Fixed HTTPS host, no redirects, no pip, no import/install of downloaded content.
             downloader = """import hashlib,json,urllib.request,urllib.parse,base64
 class NoRedirect(urllib.request.HTTPRedirectHandler):
  def redirect_request(self,*args,**kwargs): raise ValueError('Redirects forbidden')
 opener=urllib.request.build_opener(urllib.request.ProxyHandler({}),NoRedirect())
 output={}
+total=0
 for w in WHEELS:
  u=urllib.parse.urlsplit(w['url'])
  assert u.scheme=='https' and u.netloc=='files.pythonhosted.org' and not u.query and not u.fragment
  assert '/' not in w['filename'] and w['filename'].endswith('.whl')
- with opener.open(w['url'],timeout=30) as r: data=r.read(33554433)
- assert len(data)<=33554432 and hashlib.sha256(data).hexdigest()==w['sha256']
+ with opener.open(w['url'],timeout=30) as r: data=r.read(134217729)
+ assert len(data)<=134217728 and hashlib.sha256(data).hexdigest()==w['sha256']
+ total+=len(data)
+ assert total<=201326592, 'Downloaded wheels exceed 192 MiB'
  output[w['filename']]=base64.b64encode(data).decode()
 print(json.dumps(output))
 """
-            code = 'WHEELS=' + repr(spec['wheels']) + '\n' + downloader
-            fetch = run_container(client, image=base.id, argv=['python3', '-I', '-c', code], attempt=attempt, network=True)
+            code = 'WHEELS=' + repr(wheels) + '\n' + downloader
+            fetch = run_container(client, image=base.id, argv=['python3', '-I', '-c', code], attempt=attempt, network=True, large=generic)
             containers.append(fetch)
             fetch.start()
             wait_container(fetch, deadline)
             downloaded = json.loads(fetch.logs().decode())
-            for wheel in spec['wheels']:
+            for wheel in wheels:
                 data = base64.b64decode(downloaded[wheel['filename']], validate=True)
                 if len(data) > MAX_WHEEL_BYTES or hashlib.sha256(data).hexdigest() != wheel['sha256']:
                     raise ValueError('Wheel digest/size mismatch')
                 files['skillgo-build/wheels/' + wheel['filename']] = data
             fetch.remove(force=True)
             containers.remove(fetch)
-            locks = '\n'.join(w['name']+'=='+w['version']+' --hash=sha256:'+w['sha256'] for w in spec['wheels'])
+            locks = '\n'.join(w['name']+'=='+w['version']+' --hash=sha256:'+w['sha256'] for w in wheels)
             files['skillgo-build/requirements.lock'] = locks.encode()
             install_code = """import importlib.metadata as m,json,subprocess,sys,os,pathlib,tarfile,io,base64
 assert sys.version_info[:2]==(3,12), 'Unsupported Python ABI'
@@ -110,22 +130,22 @@ for file in pathlib.Path(target).rglob('*'):
 b=io.BytesIO()
 with tarfile.open(fileobj=b,mode='w') as t:
  t.add(target,arcname='extension')
-assert len(b.getvalue())<=67108864
+assert len(b.getvalue())<=268435456
 print(base64.b64encode(b.getvalue()).decode())
 """
-            installer = run_container(client, image=base.id, argv=['python3', '-I', '-c', install_code], attempt=attempt, user='0:0', writable=True)
+            installer = run_container(client, image=base.id, argv=['python3', '-I', '-c', install_code], attempt=attempt, user='0:0', writable=True, large=generic)
             containers.append(installer)
             installer.put_archive('/opt', archive_files(files))
             installer.start()
             wait_container(installer, deadline)
             exported = base64.b64decode(installer.logs(stdout=True, stderr=False), validate=False)
-            if len(exported) > 64 * 1024 * 1024:
+            if len(exported) > MAX_EXTENSION_BYTES:
                 raise ValueError('Extension export too large')
             # No RUN instructions: only validated regular files from the isolated installer.
             context_files = {}
             with tarfile.open(fileobj=io.BytesIO(exported)) as tar:
                 members = tar.getmembers()
-                if len(members) > 10000 or sum(m.size for m in members) > 64 * 1024 * 1024:
+                if len(members) > 10000 or sum(m.size for m in members) > MAX_EXTENSION_BYTES:
                     raise ValueError('Extension contents exceed limits')
                 for member in members:
                     from pathlib import PurePosixPath
@@ -145,7 +165,8 @@ print(base64.b64encode(b.getvalue()).decode())
         on_probing()
         probe = Path(__file__).with_name('environment_probe.py').read_text(encoding='utf-8')
         checks = '\n'.join(EXTENSIONS[cap]['probe'] for cap in spec['capabilities'] if cap in EXTENSIONS)
-        probe_container = run_container(client, image=image_id, argv=['python3', '-I', '-c', checks+'\n'+probe], attempt=attempt)
+        import_checks = 'import importlib\n' + '\n'.join('importlib.import_module('+repr(n)+')' for n in spec.get('python_imports',[]))
+        probe_container = run_container(client, image=image_id, argv=['python3', '-I', '-c', checks+'\n'+import_checks+'\n'+probe], attempt=attempt)
         containers.append(probe_container)
         probe_container.start()
         wait_container(probe_container, deadline)
@@ -157,6 +178,11 @@ print(base64.b64encode(b.getvalue()).decode())
             raise ValueError('Capability probes failed: ' + ', '.join(sorted(missing)))
         inventory['capabilities'] = sorted(supported)
         inventory['image_id'] = image_id
+        if generic:
+            inventory['python_lock'] = wheels
+            inventory['python_requirements'] = spec.get('python_requirements',[])
+            inventory['python_imports'] = spec.get('python_imports',[])
+            inventory['python_imports_verified'] = True
         return image_id, inventory
     except BaseException:
         if candidate is not None:

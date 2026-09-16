@@ -13,24 +13,36 @@ from .sandbox_checkpoint import replace_sandbox
 from .sandbox_runtime import SandboxRuntimeError
 
 
-async def request_capability(db, job, sandbox, capability, cancelled):
+async def request_capability(db, job, sandbox, capability, cancelled, *, requirements=None, imports=None):
     def failure(code, message):
         return {'ok': False, 'error_code': code, 'message': message}
     memory = job.memory.data or {}
     current = memory.get('environment') or {}
-    if capability in current.get('capabilities', []):
+    if capability and capability in current.get('capabilities', []):
         return {'ok': True, 'already_available': True, 'capability': capability}
     if not settings.environment_preparation_enabled:
         return failure('ENVIRONMENT_UPGRADE_DISABLED', 'Platform environment preparation is disabled')
+    from .python_dependencies import normalize_requirements, normalize_imports, requirements_satisfied
+    try:
+        requirements = normalize_requirements(requirements or [])
+        imports = normalize_imports(imports or [])
+        if not capability and not requirements:
+            raise ValueError('At least one Python package requirement is required')
+    except ValueError as exc:
+        return failure('ENVIRONMENT_DEPENDENCY_INVALID', str(exc))
+    if requirements and not imports and requirements_satisfied(requirements, current):
+        return {'ok': True, 'already_available': True, 'python_requirements': requirements}
     previous = db.get(PreparedEnvironment, memory.get('prepared_environment_digest')) if memory.get('prepared_environment_digest') else None
     try:
         caps = set(previous.spec.get('capabilities', [])) if previous else set()
-        caps.add(capability)
-        spec = environment_spec(caps, previous.spec['base_image'] if previous else None)
+        if capability: caps.add(capability)
+        generic = bool(requirements or (previous and previous.spec.get('python_requirements')))
+        spec = environment_spec(caps, current.get('image_id') if generic else (previous.spec['base_image'] if previous else None),
+                                python_requirements=requirements, python_imports=imports)
         if previous:
             if previous.status != 'ready':
                 raise ValueError('Current environment is no longer ready')
-            expected = environment_spec(previous.spec['capabilities'], previous.spec['base_image'])
+            expected = environment_spec(previous.spec['capabilities'], previous.spec['base_image'], python_requirements=previous.spec.get('python_requirements'), python_imports=previous.spec.get('python_imports'))
             # Catalog/probe additions are compatible if the pinned dependencies,
             # base, platform and policy are unchanged. Candidate probes still
             # verify every capability before adopting the new environment.
@@ -66,9 +78,14 @@ async def request_capability(db, job, sandbox, capability, cancelled):
     async def validate(candidate):
         nonlocal inventory
         inventory = await preflight_environment(candidate, [])
-        needed = set(current.get('capabilities', [])) | {capability}
+        needed = set(current.get('capabilities', [])) | ({capability} if capability else set())
         if not needed.issubset(inventory['capabilities']) or inventory['image_id'] != image:
             raise ValueError('Candidate environment failed capability or image verification')
+        if requirements and not env.inventory.get('python_imports_verified'):
+            raise ValueError('Candidate Python dependency verification missing')
+        inventory['python_requirements'] = env.inventory.get('python_requirements',[])
+        inventory['python_lock'] = env.inventory.get('python_lock',[])
+        inventory['python_imports'] = env.inventory.get('python_imports',[])
         db.refresh(env)
         if env.status != 'ready' or env.image_id != image:
             raise ValueError('Candidate environment revoked or changed before adoption')
@@ -84,5 +101,5 @@ async def request_capability(db, job, sandbox, capability, cancelled):
     job.memory.data = {**job.memory.data, 'environment': inventory, 'prepared_environment_digest': env.digest}
     db.commit()
     return {'ok': True, 'upgraded': True, 'capability': capability, 'environment_digest': env.digest,
-            'capabilities': inventory['capabilities'], 'snapshot': evidence,
+            'capabilities': inventory['capabilities'], 'python_requirements': requirements, 'snapshot': evidence,
             'message': 'Workspace restored in the upgraded sandbox. Continue; do not replay completed work. Processes and /tmp were not restored.'}

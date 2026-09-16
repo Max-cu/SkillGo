@@ -26,6 +26,7 @@ TOOL_NAMES = frozenset(
     {
         "read_skill",
         "request_capability",
+        "request_python_dependencies",
         "complete_skill",
         "update_plan",
         "record_validation",
@@ -55,6 +56,17 @@ def validate_agent_action(action: dict[str, Any]) -> str | None:
         return f"Unknown sandbox tool: {action_name}"
     if "reason" in action and not isinstance(action.get("reason"), str):
         return "reason must be text"
+    if action_name == 'request_python_dependencies':
+        from .python_dependencies import normalize_requirements, normalize_imports
+        try:
+            if not normalize_requirements(action.get('requirements')):
+                return 'At least one Python package requirement is required'
+            normalize_imports(action.get('imports', []))
+        except ValueError as exc:
+            return str(exc)
+        if not isinstance(action.get('reason'), str) or not 1 <= len(action['reason'].strip()) <= 500:
+            return 'reason must contain 1-500 characters'
+        return None
     if action_name == 'request_capability':
         if not isinstance(action.get('capability'), str) or not 1 <= len(action['capability']) <= 80:
             return 'capability must be a platform capability name of 1-80 characters'
