@@ -1,9 +1,45 @@
 from __future__ import annotations
 
+import asyncio
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import PurePosixPath
 
+from .config import settings
 from .model_gateway import ModelGatewayError, OpenAICompatibleGateway
+
+
+class AttachmentAnalysisTimeout(ModelGatewayError):
+    pass
+
+
+async def run_attachment_analyses(
+    jobs: list[Callable[[], Awaitable]],
+) -> list:
+    """Run per-file OCR/vision analyses concurrently instead of serially.
+
+    Multiple PDFs in one request otherwise pay the sum of every OCR latency,
+    easily exceeding the proxy idle timeout. Results preserve input order; the
+    first failure is propagated exactly as in the former serial loop.
+    """
+    if not jobs:
+        return []
+    semaphore = asyncio.Semaphore(max(1, settings.attachment_analysis_concurrency))
+
+    async def guarded(job: Callable[[], Awaitable]):
+        async with semaphore:
+            return await job()
+
+    try:
+        return await asyncio.wait_for(
+            asyncio.gather(*(guarded(job) for job in jobs)),
+            timeout=settings.attachment_analysis_total_timeout_seconds,
+        )
+    except TimeoutError as exc:
+        raise AttachmentAnalysisTimeout(
+            "ATTACHMENT_ANALYSIS_TIMEOUT",
+            "附件识别总耗时超过限制，请减少单次附件数量或稍后重试",
+        ) from exc
 
 
 IMAGE_SUFFIXES = frozenset({".png", ".jpg", ".jpeg", ".webp"})

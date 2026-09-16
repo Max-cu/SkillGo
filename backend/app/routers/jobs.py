@@ -13,7 +13,13 @@ from sqlalchemy import delete, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from ..attachment_analysis import AttachmentAnalysis, analyze_attachment, attachment_media_type
+from ..attachment_analysis import (
+    AttachmentAnalysis,
+    AttachmentAnalysisTimeout,
+    analyze_attachment,
+    attachment_media_type,
+    run_attachment_analyses,
+)
 from ..config import settings
 from ..conversation_service import can_run_version
 from ..database import get_db
@@ -800,16 +806,26 @@ async def create_workflow_job(
         trigger = "chat_message"
     else:
         trigger = "file_upload"
-    analyses = [
-        await _analyze_job_attachment(
-            gateway=gateway,
-            data=input_data,
-            filename=input_name,
-            instruction=resolved_instruction,
-            ocr_enabled=ocr_enabled,
-        )
-        for input_data, input_name, _ in resolved_inputs
-    ]
+    # Analyze all attachments concurrently: several PDFs must not pay the sum
+    # of every OCR latency (the upload request would idle past proxy timeouts).
+    try:
+        analyses = await run_attachment_analyses([
+            lambda input_data=input_data, input_name=input_name: _analyze_job_attachment(
+                gateway=gateway,
+                data=input_data,
+                filename=input_name,
+                instruction=resolved_instruction,
+                ocr_enabled=ocr_enabled,
+            )
+            for input_data, input_name, _ in resolved_inputs
+        ])
+    except AttachmentAnalysisTimeout as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except ModelGatewayError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail={"code": exc.code, "message": str(exc)},
+        ) from exc
     analysis_modes = {item.mode for item in analyses if item is not None}
     job_analysis_mode = (
         next(iter(analysis_modes))

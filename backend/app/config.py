@@ -57,6 +57,12 @@ class Settings:
     workspace_context_max_chars: int = int(
         os.getenv("SKILLGO_WORKSPACE_CONTEXT_MAX_CHARS", "40000")
     )
+    attachment_analysis_concurrency: int = int(
+        os.getenv("SKILLGO_ATTACHMENT_ANALYSIS_CONCURRENCY", "3")
+    )
+    attachment_analysis_total_timeout_seconds: int = int(
+        os.getenv("SKILLGO_ATTACHMENT_ANALYSIS_TOTAL_TIMEOUT_SECONDS", "900")
+    )
     model_base_url: str | None = os.getenv("SKILLGO_MODEL_BASE_URL")
     model_api_key: str | None = os.getenv("SKILLGO_MODEL_API_KEY")
     model_name: str | None = os.getenv("SKILLGO_MODEL_NAME")

@@ -9,7 +9,12 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from ..attachment_analysis import analyze_attachment, attachment_media_type
+from ..attachment_analysis import (
+    AttachmentAnalysisTimeout,
+    analyze_attachment,
+    attachment_media_type,
+    run_attachment_analyses,
+)
 from ..config import settings
 from ..database import get_db
 from ..deps import current_user
@@ -95,7 +100,11 @@ async def _resolve_message_files(
     if len(incoming) + len(existing_ids) > MAX_MESSAGE_FILES:
         raise HTTPException(status_code=422, detail=f"每条消息最多添加 {MAX_MESSAGE_FILES} 个附件")
 
-    resolved: list[ResolvedMessageFile] = []
+    # Phase 1: read every upload and decide whether it needs model analysis.
+    # Model calls are deferred so all OCR/vision requests can run concurrently
+    # (several PDFs must not pay the sum of every OCR latency).
+    specs: list[dict] = []
+    analysis_jobs = []
     for upload in incoming:
         data = await upload.read(settings.workspace_max_file_bytes + 1)
         if not data or len(data) > settings.workspace_max_file_bytes:
@@ -103,51 +112,34 @@ async def _resolve_message_files(
         try:
             filename = safe_workspace_filename(upload.filename)
             extracted_text = extract_workspace_text(filename, data)
-        except WorkspaceFileError as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
-        analysis = None
-        try:
             analyzable_type = attachment_media_type(filename, data)
-            should_analyze = bool(
-                analyzable_type
-                and (analyzable_type.startswith("image/") or ocr_enabled)
-            )
-            if should_analyze:
-                analysis = await analyze_attachment(
-                    gateway=gateway,
-                    filename=filename,
-                    data=data,
-                    user_instruction=user_instruction,
-                    ocr_enabled=ocr_enabled,
-                )
-                extracted_text = analysis.text
-        except ValueError as exc:
+        except (WorkspaceFileError, ValueError) as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
-        except ModelGatewayError as exc:
-            raise HTTPException(
-                status_code=502,
-                detail={"code": exc.code, "message": str(exc)},
-            ) from exc
-        if extracted_text is None:
-            detail = (
-                f"《{filename}》无法直接提取文字，请开启 OCR 识别后重试"
-                if analyzable_type == "application/pdf"
-                else f"普通对话暂时无法理解《{filename}》的文件格式"
-            )
-            raise HTTPException(status_code=422, detail=detail)
-        resolved.append(
-            ResolvedMessageFile(
-                filename=filename,
-                content_type=safe_content_type(upload.content_type),
-                data=data,
-                extracted_text=extracted_text,
-                analysis_mode=analysis.mode if analysis else None,
-                analysis_status=analysis.status if analysis else None,
-                analysis_model=analysis.vision_model if analysis else None,
-                ocr_model=analysis.ocr_model if analysis else None,
-                analysis_error=analysis.error if analysis else None,
-            )
+        should_analyze = bool(
+            analyzable_type and (analyzable_type.startswith("image/") or ocr_enabled)
         )
+        analysis_slot = None
+        if should_analyze:
+            def _factory(filename=filename, data=data):
+                return analyze_attachment(
+                    gateway=gateway, filename=filename, data=data,
+                    user_instruction=user_instruction, ocr_enabled=ocr_enabled,
+                )
+            analysis_slot = len(analysis_jobs)
+            analysis_jobs.append(_factory)
+        specs.append({
+            "filename": filename,
+            "content_type": safe_content_type(upload.content_type),
+            "data": data,
+            "extracted_text": extracted_text,
+            "analyzable_type": analyzable_type,
+            "analysis_slot": analysis_slot,
+            "fallback_mode": None,
+            "fallback_status": None,
+            "fallback_model": None,
+            "fallback_ocr_model": None,
+            "fallback_error": None,
+        })
 
     if existing_ids:
         stored_files = db.scalars(
@@ -164,50 +156,74 @@ async def _resolve_message_files(
         for file_id in existing_ids:
             item = by_id[file_id]
             data = storage.read(item.storage_path)
-            extracted_text = item.extracted_text
-            analysis = None
             try:
                 analyzable_type = attachment_media_type(item.filename, data)
-                should_analyze = bool(
-                    analyzable_type
-                    and (analyzable_type.startswith("image/") or ocr_enabled)
-                )
-                if should_analyze:
-                    analysis = await analyze_attachment(
-                        gateway=gateway,
-                        filename=item.filename,
-                        data=data,
-                        user_instruction=user_instruction,
-                        ocr_enabled=ocr_enabled,
-                    )
-                    extracted_text = analysis.text
             except ValueError as exc:
                 raise HTTPException(status_code=422, detail=str(exc)) from exc
-            except ModelGatewayError as exc:
-                raise HTTPException(
-                    status_code=502,
-                    detail={"code": exc.code, "message": str(exc)},
-                ) from exc
-            if extracted_text is None:
-                detail = (
-                    f"《{item.filename}》无法直接提取文字，请开启 OCR 识别后重试"
-                    if analyzable_type == "application/pdf"
-                    else f"普通对话暂时无法理解《{item.filename}》的文件格式"
-                )
-                raise HTTPException(status_code=422, detail=detail)
-            resolved.append(
-                ResolvedMessageFile(
-                    filename=item.filename,
-                    content_type=item.content_type,
-                    data=data,
-                    extracted_text=extracted_text,
-                    analysis_mode=analysis.mode if analysis else item.analysis_mode,
-                    analysis_status=analysis.status if analysis else item.analysis_status,
-                    analysis_model=analysis.vision_model if analysis else item.analysis_model,
-                    ocr_model=analysis.ocr_model if analysis else item.ocr_model,
-                    analysis_error=analysis.error if analysis else item.analysis_error,
-                )
+            should_analyze = bool(
+                analyzable_type and (analyzable_type.startswith("image/") or ocr_enabled)
             )
+            analysis_slot = None
+            if should_analyze:
+                def _factory(filename=item.filename, data=data):
+                    return analyze_attachment(
+                        gateway=gateway, filename=filename, data=data,
+                        user_instruction=user_instruction, ocr_enabled=ocr_enabled,
+                    )
+                analysis_slot = len(analysis_jobs)
+                analysis_jobs.append(_factory)
+            specs.append({
+                "filename": item.filename,
+                "content_type": item.content_type,
+                "data": data,
+                "extracted_text": item.extracted_text,
+                "analyzable_type": analyzable_type,
+                "analysis_slot": analysis_slot,
+                "fallback_mode": item.analysis_mode,
+                "fallback_status": item.analysis_status,
+                "fallback_model": item.analysis_model,
+                "fallback_ocr_model": item.ocr_model,
+                "fallback_error": item.analysis_error,
+            })
+
+    # Phase 2: all OCR/vision analyses concurrently, with a shared total budget.
+    try:
+        analyses = await run_attachment_analyses(analysis_jobs)
+    except AttachmentAnalysisTimeout as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except ModelGatewayError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail={"code": exc.code, "message": str(exc)},
+        ) from exc
+
+    # Phase 3: assemble results (and disambiguate names below).
+    resolved: list[ResolvedMessageFile] = []
+    for spec in specs:
+        analysis = analyses[spec["analysis_slot"]] if spec["analysis_slot"] is not None else None
+        extracted_text = analysis.text if analysis is not None else spec["extracted_text"]
+        if extracted_text is None:
+            detail = (
+                f"《{spec['filename']}》无法直接提取文字，请开启 OCR 识别后重试"
+                if spec["analyzable_type"] == "application/pdf"
+                else f"普通对话暂时无法理解《{spec['filename']}》的文件格式"
+            )
+            raise HTTPException(status_code=422, detail=detail)
+        resolved.append(
+            ResolvedMessageFile(
+                filename=spec["filename"],
+                content_type=spec["content_type"],
+                data=spec["data"],
+                extracted_text=extracted_text,
+                analysis_mode=analysis.mode if analysis else spec["fallback_mode"],
+                analysis_status=analysis.status if analysis else spec["fallback_status"],
+                analysis_model=analysis.vision_model if analysis else spec["fallback_model"],
+                ocr_model=analysis.ocr_model if analysis else spec["fallback_ocr_model"],
+                analysis_error=analysis.error if analysis else spec["fallback_error"],
+            )
+        )
     # Files share a flat workspace namespace: auto-rename collisions instead
     # of rejecting the whole message (users often pick same-named files from
     # different folders).
