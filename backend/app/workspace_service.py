@@ -61,6 +61,35 @@ def safe_workspace_filename(raw_name: str | None) -> str:
     return filename
 
 
+def deduplicate_filenames(names: list[str]) -> list[str]:
+    """Resolve flat-namespace filename collisions by appending " (2)" before the suffix.
+
+    Files from one message/task share a flat input directory and a storage
+    namespace, so identical names must be disambiguated instead of rejected.
+    Matching is case-insensitive to keep behaviour stable across platforms.
+    """
+    used: set[str] = set()
+    result: list[str] = []
+    for name in names:
+        key = name.casefold()
+        if key not in used:
+            used.add(key)
+            result.append(name)
+            continue
+        path = PurePosixPath(name)
+        stem, suffix = path.stem, path.suffix
+        counter = 2
+        while True:
+            suffix_text = f" ({counter}){suffix}"
+            candidate = stem[: max(1, 180 - len(suffix_text))] + suffix_text
+            if candidate.casefold() not in used:
+                used.add(candidate.casefold())
+                result.append(candidate)
+                break
+            counter += 1
+    return result
+
+
 def safe_content_type(raw: str | None) -> str:
     value = (raw or "application/octet-stream").strip()
     if not value or len(value) > 160 or "\r" in value or "\n" in value:

@@ -219,6 +219,31 @@ def test_workspace_message_accepts_multiple_files_and_reuses_them(
     assert reused.json()["messages"][-2]["files"][0]["sha256"] == stored_files[0]["sha256"]
 
 
+def test_workspace_message_disambiguates_same_named_attachments(
+    client, user_headers, fake_model_gateway
+):
+    conversation = client.post(
+        "/api/v1/agent/conversations", headers=user_headers, json={}
+    ).json()
+    response = client.post(
+        f"/api/v1/agent/conversations/{conversation['id']}/messages",
+        headers=user_headers,
+        data={"message": "合并这三份材料", "model_name": "test-fast-model"},
+        files=[
+            ("files", ("same.txt", b"first content", "text/plain")),
+            ("files", ("same.txt", b"second content", "text/plain")),
+            ("files", ("same.txt", b"third content", "text/plain")),
+        ],
+    )
+    assert response.status_code == 200, response.text
+    stored_files = response.json()["messages"][0]["files"]
+    assert [item["filename"] for item in stored_files] == [
+        "same.txt",
+        "same (2).txt",
+        "same (3).txt",
+    ]
+
+
 def test_workspace_image_uses_ocr_then_vision_when_enabled(
     client, user_headers, fake_model_gateway
 ):

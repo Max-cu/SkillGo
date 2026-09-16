@@ -130,6 +130,31 @@ def test_instruction_job_auto_runs_and_creates_verified_artifact(
     ).status_code == 404
 
 
+def test_job_accepts_same_named_attachments_and_renames_them(
+    client, user_headers, fake_model_gateway
+):
+    _, version = create_version(
+        client, user_headers, slug="job-dedupe", package=skill_zip()
+    )
+    response = client.post(
+        "/api/v1/jobs",
+        headers=user_headers,
+        data={"version_id": version["id"], "instruction": "合并三份同名材料", "model_name": "test-fast-model"},
+        files=[
+            ("files", ("材料.txt", "第一份".encode(), "text/plain")),
+            ("files", ("材料.txt", "第二份".encode(), "text/plain")),
+            ("files", ("材料.txt", "第三份".encode(), "text/plain")),
+        ],
+    )
+    assert response.status_code == 201, response.text
+    job = client.get(f"/api/v1/jobs/{response.json()['id']}", headers=user_headers).json()
+    assert [item["filename"] for item in job["input_files"]] == [
+        "材料.txt",
+        "材料 (2).txt",
+        "材料 (3).txt",
+    ]
+
+
 def test_agent_job_accepts_natural_language_without_attachment(
     client, user_headers, fake_model_gateway
 ):

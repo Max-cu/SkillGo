@@ -163,6 +163,19 @@ def test_bootstrap_repairs_legacy_duplicate_super_admins(client):
         assert legacy is not None and legacy.role == Role.ADMIN
 
 
+def test_admin_user_list_survives_legacy_synthetic_emails(client, owner_headers):
+    # Historical/synthetic rows (e.g. e2e accounts @test.invalid) must not 500
+    # the whole user list; email shape is enforced on input, not output.
+    with SessionLocal() as db:
+        db.add(User(email="synthetic-e2e@test.invalid", display_name="E2E",
+                    password_hash=hash_password("unused"), role=Role.USER, is_active=True))
+        db.commit()
+
+    response = client.get("/api/v1/admin/users", headers=owner_headers)
+    assert response.status_code == 200, response.text
+    assert any(item["email"] == "synthetic-e2e@test.invalid" for item in response.json())
+
+
 def test_user_cannot_promote_themselves(client, user_headers):
     me = client.get("/api/v1/auth/me", headers=user_headers).json()
     response = client.patch(

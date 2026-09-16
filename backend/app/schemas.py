@@ -24,7 +24,9 @@ class UserRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: str
-    email: EmailStr
+    # Output stays tolerant: email shape is enforced on registration/login, but
+    # historical rows (e.g. synthetic e2e accounts) must not 500 the user list.
+    email: str
     display_name: str
     role: Role
     is_active: bool

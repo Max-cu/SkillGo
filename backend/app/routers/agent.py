@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Response, UploadFile, status
@@ -26,6 +26,7 @@ from ..services import add_audit
 from ..storage import storage
 from ..workspace_service import (
     WorkspaceFileError,
+    deduplicate_filenames,
     extract_workspace_text,
     file_sha256,
     safe_content_type,
@@ -207,9 +208,12 @@ async def _resolve_message_files(
                     analysis_error=analysis.error if analysis else item.analysis_error,
                 )
             )
-    filenames = [item.filename.casefold() for item in resolved]
-    if len(filenames) != len(set(filenames)):
-        raise HTTPException(status_code=422, detail="同一条消息中的附件名称不能重复")
+    # Files share a flat workspace namespace: auto-rename collisions instead
+    # of rejecting the whole message (users often pick same-named files from
+    # different folders).
+    renamed = deduplicate_filenames([item.filename for item in resolved])
+    if renamed != [item.filename for item in resolved]:
+        resolved = [replace(item, filename=name) for item, name in zip(resolved, renamed)]
     return resolved
 
 

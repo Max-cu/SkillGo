@@ -31,6 +31,7 @@ from ..storage import storage
 from ..workflow_execution import add_job_event, execute_instruction_job_background, set_step
 from ..workspace_service import (
     WorkspaceFileError,
+    deduplicate_filenames,
     extract_workspace_text,
     file_sha256,
     safe_content_type,
@@ -382,8 +383,11 @@ def _add_job_input_file(
         extracted_text = extract_workspace_text(filename, data)
     except WorkspaceFileError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    if any(item.filename.casefold() == filename.casefold() for item in job.input_files):
-        raise HTTPException(status_code=422, detail=f"附件名称重复：{filename}")
+    # Flat input namespace: disambiguate against files already bound to this
+    # job rather than rejecting a same-named attachment.
+    filename = deduplicate_filenames(
+        [item.filename for item in job.input_files] + [filename]
+    )[-1]
 
     if analysis is not None:
         extracted_text = analysis.text
@@ -733,9 +737,13 @@ async def create_workflow_job(
             resolved_inputs.append(
                 (storage.read(item.storage_path), item.filename, item.content_type)
             )
-    input_names = [item[1].casefold() for item in resolved_inputs]
-    if len(input_names) != len(set(input_names)):
-        raise HTTPException(status_code=422, detail="同一任务中的附件名称不能重复")
+    # Flat sandbox input namespace: auto-rename same-named attachments
+    # instead of rejecting the whole task (common when picking files from
+    # different folders).
+    renamed_inputs = deduplicate_filenames([item[1] for item in resolved_inputs])
+    if renamed_inputs != [item[1] for item in resolved_inputs]:
+        resolved_inputs = [(data, name, content_type)
+                           for (data, _old, content_type), name in zip(resolved_inputs, renamed_inputs)]
 
     parts = _parse_message_content(message_content, instruction)
     if not parts and not resolved_inputs:
