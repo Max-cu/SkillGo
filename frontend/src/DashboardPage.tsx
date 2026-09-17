@@ -550,10 +550,19 @@ export function DashboardPage() {
     const submittedParts = messageParts.map((part) => ({ ...part })) as WorkflowMessagePart[];
     const submittedLocalFiles = [...attachments];
     const submittedHistoryFiles = [...selectedHistoryFiles];
-    const submittedOcrEnabled = ocrEnabled;
     const submittedFileCount = submittedLocalFiles.length + submittedHistoryFiles.length;
     const submittedHasPdf = [...submittedLocalFiles.map((file) => file.name), ...submittedHistoryFiles.map((file) => file.filename)]
       .some((name) => name.toLocaleLowerCase().endsWith(".pdf"));
+    // PDF 在平台侧只能经 OCR 提取文字：未配置 OCR 模型时当场拦截，
+    // 已配置则即使开关被手动关闭也随本次发送强制开启（React state 尚未刷新，
+    // 不能依赖 setOcrEnabled 后的重渲染）。
+    if (submittedHasPdf && !availableModels.ocr_configured) {
+      setLaunchError("PDF 需要 OCR 模型支持，请联系管理员在平台设置中配置 OCR 模型");
+      return;
+    }
+    const effectiveOcrEnabled = ocrEnabled || submittedHasPdf;
+    if (submittedHasPdf && !ocrEnabled) setOcrEnabled(true);
+    const submittedOcrEnabled = effectiveOcrEnabled;
     const processingLabel = submittedOcrEnabled
       ? (submittedHasPdf ? "正在进行 PDF OCR 识别…" : "正在进行 OCR 与视觉分析…")
       : "附件已上传，正在解析…";
@@ -599,7 +608,7 @@ export function DashboardPage() {
         const body = new FormData();
         body.set("message", promptText(messageParts));
         if (selectedModelName) body.set("model_name", selectedModelName);
-        if (ocrEnabled) body.set("ocr_enabled", "true");
+        if (effectiveOcrEnabled) body.set("ocr_enabled", "true");
         attachments.forEach((file) => body.append("files", file));
         if (selectedHistoryFiles.length) body.set("existing_file_ids", JSON.stringify(selectedHistoryFiles.map((file) => file.id)));
         setStreamingTurn({
@@ -659,7 +668,7 @@ export function DashboardPage() {
         else body.set("automatic", "true");
         body.set("version_ids", JSON.stringify(selectedDetails.map((item) => item.version.id)));
         if (selectedModelName) body.set("model_name", selectedModelName);
-        if (ocrEnabled) body.set("ocr_enabled", "true");
+        if (effectiveOcrEnabled) body.set("ocr_enabled", "true");
         attachments.forEach((file) => body.append("files", file));
         if (selectedHistoryFiles.length) body.set("existing_file_ids", JSON.stringify(selectedHistoryFiles.map((file) => file.id)));
         beginAttachmentProgress();
@@ -746,6 +755,10 @@ export function DashboardPage() {
       return;
     }
     setAttachments((current) => [...current, ...unique]);
+    // PDF 文字只能通过 OCR 模型提取：加入 PDF 时自动点亮开关，避免发送后被 422 退回。
+    if (unique.some((file) => file.name.toLocaleLowerCase().endsWith(".pdf")) && availableModels.ocr_configured) {
+      setOcrEnabled(true);
+    }
     setLaunchError(unique.length === files.length ? "" : "已忽略同名附件");
   }
 
@@ -763,6 +776,9 @@ export function DashboardPage() {
       return;
     }
     setSelectedHistoryFiles((current) => [...current, file]);
+    if (file.filename.toLocaleLowerCase().endsWith(".pdf") && availableModels.ocr_configured) {
+      setOcrEnabled(true);
+    }
     setLaunchError("");
   }
 

@@ -918,12 +918,20 @@ export function WorkflowPage() {
     event.preventDefault();
     const instruction = messageText.trim() || "请根据上传文件完整执行这个 Skill，并生成最终结果。";
     if ((!messageText.trim() && !attachment) || busy || jobActive || !selectedVersion.runtime_runnable) return;
+    // PDF 只能经 OCR 提取文字：未配置模型时当场拦截，已配置则强制随本次发送开启。
+    const attachmentIsPdf = Boolean(attachment?.name.toLocaleLowerCase().endsWith(".pdf"));
+    if (attachmentIsPdf && !availableModels.ocr_configured) {
+      setError("PDF 需要 OCR 模型支持，请联系管理员在平台设置中配置 OCR 模型");
+      return;
+    }
+    const effectiveOcrEnabled = ocrEnabled || attachmentIsPdf;
+    if (attachmentIsPdf && !ocrEnabled) setOcrEnabled(true);
     setBusy(true); setError("");
     const body = new FormData();
     body.set("version_id", selectedVersion.id);
     body.set("instruction", instruction);
     if (selectedModelName) body.set("model_name", selectedModelName);
-    if (ocrEnabled) body.set("ocr_enabled", "true");
+    if (effectiveOcrEnabled) body.set("ocr_enabled", "true");
     if (attachment) body.set("file", attachment);
     try {
       const job = await api<WorkflowJob>("/jobs", { method: "POST", body });
@@ -1056,7 +1064,7 @@ export function WorkflowPage() {
           <label className="agent-model-picker"><span>运行模型</span><select aria-label="选择运行模型" value={selectedModelName} disabled={busy || jobActive || !availableModels.configured} onChange={(event) => setSelectedModelName(event.target.value)}>{availableModels.models.map((modelName) => <option key={modelName} value={modelName}>{modelName}</option>)}</select></label>
           <label className={`agent-ocr-toggle workflow${ocrEnabled ? " active" : ""}`} title={availableModels.ocr_configured ? "同时使用 OCR 提取图片文字，再由视觉模型理解" : "请先在平台设置中配置 OCR 模型"}><input type="checkbox" checked={ocrEnabled} disabled={busy || jobActive || !availableModels.ocr_configured} onChange={(event) => setOcrEnabled(event.target.checked)} /><span className="agent-ocr-switch" aria-hidden="true"><i /></span><span className="agent-ocr-label">OCR 识别</span></label>
           <textarea ref={messageInputRef} aria-label="给 SkillGo Agent 发送消息" rows={3} maxLength={20000} value={messageText} disabled={busy || jobActive || !selectedVersion.runtime_runnable} onChange={(event) => { setMessageText(event.target.value); setError(""); }} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); event.currentTarget.form?.requestSubmit(); } }} placeholder={jobActive ? "当前任务正在独立沙箱中运行…" : `告诉 ${skill.name} 你想完成什么…`} />
-          <div><button className="agent-attach" type="button" title="添加附件" aria-label="添加附件" disabled={busy || jobActive || !selectedVersion.runtime_runnable} onClick={() => fileInputRef.current?.click()}><Paperclip /></button><input ref={fileInputRef} type="file" hidden accept=".txt,.md,.csv,.json,.yaml,.yml,.log,.html,.htm,.xml,.docx,.xlsx,.pdf,.png,.jpg,.jpeg,.webp" onChange={(event) => { const file = event.target.files?.[0] || null; if (file && file.size > 10 * 1024 * 1024) { event.target.value = ""; setAttachment(null); setError("附件不能超过 10 MB"); return; } setAttachment(file); setError(""); }} /><span className="agent-composer-hint">支持 TXT、DOCX、XLSX、PDF、图片等文件 · 最大 10 MB</span><button type="submit" aria-label="发送并开始任务" disabled={(!messageText.trim() && !attachment) || busy || jobActive || !selectedVersion.runtime_runnable}>{busy ? <RotateCw className="spin-icon" /> : <SendHorizontal />}</button></div>
+          <div><button className="agent-attach" type="button" title="添加附件" aria-label="添加附件" disabled={busy || jobActive || !selectedVersion.runtime_runnable} onClick={() => fileInputRef.current?.click()}><Paperclip /></button><input ref={fileInputRef} type="file" hidden accept=".txt,.md,.csv,.json,.yaml,.yml,.log,.html,.htm,.xml,.docx,.xlsx,.pdf,.png,.jpg,.jpeg,.webp" onChange={(event) => { const file = event.target.files?.[0] || null; if (file && file.size > 10 * 1024 * 1024) { event.target.value = ""; setAttachment(null); setError("附件不能超过 10 MB"); return; } setAttachment(file); if (file && file.name.toLocaleLowerCase().endsWith(".pdf") && availableModels.ocr_configured) setOcrEnabled(true); setError(""); }} /><span className="agent-composer-hint">支持 TXT、DOCX、XLSX、PDF、图片等文件 · 最大 10 MB</span><button type="submit" aria-label="发送并开始任务" disabled={(!messageText.trim() && !attachment) || busy || jobActive || !selectedVersion.runtime_runnable}>{busy ? <RotateCw className="spin-icon" /> : <SendHorizontal />}</button></div>
         </form>
       </section>
     </div>
