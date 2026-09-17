@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import re
 import zipfile
 from pathlib import PurePosixPath
 from typing import TYPE_CHECKING
@@ -14,6 +15,10 @@ if TYPE_CHECKING:
 
 
 OUTPUT_ROOT = PurePosixPath("/workspace/output")
+ARTIFACT_FILENAME_MAX = 180
+# Characters that are unsafe in storage keys, download filenames or common
+# filesystems; unicode letters/digits and CJK names are intentionally allowed.
+_UNSAFE_NAME_CHARS = re.compile(r"[\x00-\x1f<>:\"/\\|?*\u007f]+")
 
 
 def normalize_artifact_paths(paths: list[str]) -> list[str]:
@@ -31,6 +36,76 @@ def normalize_artifact_paths(paths: list[str]) -> list[str]:
             )
         normalized.append(str(path))
     return normalized
+
+
+def _sanitize_name_segment(segment: str) -> str:
+    """Make one path segment safe to use inside a flattened stored filename."""
+
+    cleaned = _UNSAFE_NAME_CHARS.sub("_", segment).strip(" ._")
+    return cleaned or "file"
+
+
+def _cap_filename_length(name: str, limit: int = ARTIFACT_FILENAME_MAX) -> str:
+    if len(name) <= limit:
+        return name
+    suffix = PurePosixPath(name).suffix
+    if suffix and len(suffix) < limit - 8:
+        return PurePosixPath(name).stem[: limit - len(suffix)] + suffix
+    return name[:limit]
+
+
+def unique_artifact_filenames(paths: list[str]) -> dict[str, str]:
+    """Map every declared artifact path to a unique, safe stored filename.
+
+    Output trees commonly contain same-named reports in different folders
+    (for example 目录校验报告/report.md and 综合报告/report.md). Flattening
+    with only the basename used to silently drop every duplicate; instead such
+    files are prefixed with their parent directory (recursively, until unique).
+    A numeric suffix is the final guarantee when flattened names still collide.
+    The same path declared more than once collapses to a single entry (it is
+    the same file); iteration order follows first occurrence.
+    """
+
+    chosen: dict[str, str] = {}
+    seen_paths: set[str] = set()
+
+    def relative_dirs(path: PurePosixPath) -> list[str]:
+        try:
+            return list(path.relative_to(OUTPUT_ROOT).parts[:-1])
+        except ValueError:
+            # Paths should already be normalized under OUTPUT_ROOT; keep a sane
+            # fallback so naming never fails artifact collection.
+            parts = [part for part in path.parent.parts if part not in ("/", "")]
+            return parts[1:] if parts and parts[0] == "workspace" else parts
+
+    for raw_path in paths:
+        if raw_path in seen_paths:
+            continue
+        seen_paths.add(raw_path)
+        path = PurePosixPath(raw_path)
+        base = _sanitize_name_segment(path.name)
+        dirs = [_sanitize_name_segment(part) for part in relative_dirs(path)]
+        candidate = base
+        if candidate in chosen:
+            for depth in range(1, len(dirs) + 1):
+                candidate = "_".join(dirs[-depth:] + [base])
+                if candidate not in chosen:
+                    break
+        candidate = _cap_filename_length(candidate)
+        if candidate in chosen:
+            stem = PurePosixPath(candidate).stem
+            suffix = PurePosixPath(candidate).suffix
+            counter = 2
+            while True:
+                suffix_text = f"_{counter}{suffix}"
+                candidate = _cap_filename_length(f"{stem}{suffix_text}")
+                if candidate not in chosen:
+                    break
+                counter += 1
+        chosen[candidate] = raw_path
+
+    # Invert so callers can look the stored name up by declared path.
+    return {raw_path: name for name, raw_path in chosen.items()}
 
 
 def validate_artifact_content(filename: str, data: bytes) -> None:

@@ -19,7 +19,9 @@ from sqlalchemy import or_, select, update
 from sqlalchemy.orm import Session
 
 from .artifact_validation import (
+    ARTIFACT_FILENAME_MAX,
     normalize_artifact_paths as _normalize_artifact_paths,
+    unique_artifact_filenames as _unique_artifact_filenames,
     validate_artifact_content as _validate_artifact_content,
 )
 from .config import settings
@@ -299,15 +301,24 @@ def _job_is_cancelled(
     return job.status == JobStatus.CANCELLED
 
 
-def _persist_artifact(db: Session, job: WorkflowJob, actor: User, path: str, data: bytes) -> Artifact:
-    filename = PurePosixPath(path).name
+def _persist_artifact(
+    db: Session,
+    job: WorkflowJob,
+    actor: User,
+    path: str,
+    data: bytes,
+    *,
+    stored_name: str | None = None,
+) -> Artifact:
+    filename = stored_name or PurePosixPath(path).name
     if not filename or filename in {".", ".."}:
         raise SandboxRuntimeError("SANDBOX_ARTIFACT_INVALID", "Artifact filename is invalid")
+    filename = filename[:ARTIFACT_FILENAME_MAX]
     content_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
     artifact = Artifact(
         job_id=job.id,
         user_id=actor.id,
-        filename=filename[:180],
+        filename=filename,
         content_type=content_type,
         size_bytes=len(data),
         sha256=file_sha256(data),
@@ -677,13 +688,15 @@ async def execute_sandbox_job(
                 add_job_event(db, job, "status", "正在收集任务产物", "将真实文件从一次性沙箱保存到你的工作区", status="running")
                 db.commit()
                 persisted: list[Artifact] = []
-                seen_names: set[str] = set()
-                for path in artifact_paths:
-                    name = PurePosixPath(path).name
-                    if name in seen_names:
-                        continue
+                # Output trees can legitimately contain same-named files in
+                # different report folders; flatten them with a directory prefix
+                # instead of silently dropping every duplicate. Identical paths
+                # declared twice collapse to one collected file.
+                for path, stored_name in _unique_artifact_filenames(artifact_paths).items():
                     data = sandbox.download_file(path)
-                    artifact = _persist_artifact(db, job, actor, path, data)
+                    artifact = _persist_artifact(
+                        db, job, actor, path, data, stored_name=stored_name
+                    )
                     persisted.append(artifact)
                     add_job_event(
                         db,
@@ -694,7 +707,6 @@ async def execute_sandbox_job(
                         status="succeeded",
                         data={"artifact_id": artifact.id, "filename": artifact.filename},
                     )
-                    seen_names.add(name)
                 if not persisted:
                     raise SandboxRuntimeError("SANDBOX_ARTIFACT_MISSING", "No artifact could be collected")
                 set_step(

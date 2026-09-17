@@ -365,8 +365,18 @@ SANDBOX_AGENT_TOOLS: list[dict[str, Any]] = [
                     "timeout_seconds": {
                         "type": "integer",
                         "minimum": 1,
-                        "maximum": 300,
-                        "description": "Bounded command timeout.",
+                        "maximum": 900,
+                        "description": (
+                            "Wall-clock limit for this single command, 1-900 seconds "
+                            "(platform default when omitted is given in the system rules). "
+                            "When the command runs a Skill script that declares its own "
+                            "budget (for example --budget 240), set this value ABOVE that "
+                            "budget (budget + 30); otherwise the platform kills the command "
+                            "mid-step and destroys the sandbox. For long per-file batch steps, "
+                            "use the script's own concurrency flag (for example --workers) and "
+                            "size timeout to the script's per-step estimate. A step needing "
+                            "more than 900 seconds must be split into smaller resumable calls."
+                        ),
                     },
                     "reason": {"type": "string", "description": "Short progress description."},
                 },
@@ -407,6 +417,13 @@ SANDBOX_AGENT_TOOLS: list[dict[str, Any]] = [
                         "type": "integer",
                         "minimum": 1,
                         "maximum": 600,
+                        "description": (
+                            "Wall-clock limit for this single execution, 1-600 seconds "
+                            "(platform default when omitted is given in the system rules). "
+                            "Raise it for long batch processing (rendering, OCR, large-file "
+                            "transforms); a timeout kills the process mid-step and destroys "
+                            "the sandbox."
+                        ),
                     },
                     "reason": {"type": "string", "description": "Short progress description."},
                 },
@@ -450,7 +467,14 @@ SANDBOX_AGENT_TOOLS: list[dict[str, Any]] = [
                     "artifacts": {
                         "type": "array",
                         "items": {"type": "string"},
-                        "description": "Absolute paths of final files under /workspace/output.",
+                        "minItems": 1,
+                        "maxItems": 50,
+                        "description": (
+                            "Absolute paths of EVERY final regular file under "
+                            "/workspace/output (1-50, including .md/.xlsx/.json and "
+                            "nested report files). The platform rejects finish if any "
+                            "output file is undeclared; enumerate all of them."
+                        ),
                     },
                 },
                 "required": ["summary", "artifacts"],

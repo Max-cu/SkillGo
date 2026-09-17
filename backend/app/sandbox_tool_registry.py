@@ -204,8 +204,8 @@ def validate_agent_action(action: dict[str, Any]) -> str | None:
             not isinstance(timeout, int) or isinstance(timeout, bool)
         ):
             return "command timeout_seconds must be an integer"
-        if isinstance(timeout, int) and not 1 <= timeout <= 300:
-            return "command timeout_seconds must be between 1 and 300"
+        if isinstance(timeout, int) and not 1 <= timeout <= 900:
+            return "command timeout_seconds must be between 1 and 900"
     elif action_name == "run_python":
         code = action.get("code")
         if not isinstance(code, str) or not code.strip():

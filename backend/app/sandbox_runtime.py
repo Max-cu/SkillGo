@@ -313,14 +313,22 @@ for item in sorted(path.rglob("*"))[:500]:
     })
 print(json.dumps(items, ensure_ascii=False))
 """
-        result = await self.command(["python3", "-c", source, target], timeout_seconds=30)
-        if result.exit_code != 0:
-            raise SandboxRuntimeError("SANDBOX_LIST_FAILED", result.stderr or "Could not list files")
-        try:
-            value = json.loads(result.stdout)
-        except json.JSONDecodeError as exc:
-            raise SandboxRuntimeError("SANDBOX_LIST_FAILED", "Sandbox returned an invalid file list") from exc
-        return value if isinstance(value, list) else []
+        # A read-only directory listing must not kill a whole (possibly resumed)
+        # task on one transient gofer/exec glitch: retry briefly before raising.
+        last_error = ""
+        for attempt in range(3):
+            result = await self.command(["python3", "-c", source, target], timeout_seconds=30)
+            if result.exit_code == 0:
+                try:
+                    value = json.loads(result.stdout)
+                    return value if isinstance(value, list) else []
+                except json.JSONDecodeError:
+                    last_error = f"invalid JSON (attempt {attempt + 1}); head={result.stdout[:200]!r}"
+            else:
+                last_error = f"exit={result.exit_code} (attempt {attempt + 1}): {(result.stderr or '')[:300]}"
+            if attempt < 2:
+                await asyncio.sleep(1.5 * (attempt + 1))
+        raise SandboxRuntimeError("SANDBOX_LIST_FAILED", f"Sandbox returned an invalid file list: {last_error}")
 
     async def read_text(self, path: str, *, offset: int = 0, limit: int = 30_000) -> str:
         target = _workspace_path(path, allow_root=False)
