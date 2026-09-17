@@ -29,6 +29,7 @@ frontend/.vite/
 
 # Runtime state and private operational material
 /.deploy/
+/.deploy-local/
 /.tmp/
 /backups/
 /data/
