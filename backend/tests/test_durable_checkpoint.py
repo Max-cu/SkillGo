@@ -34,6 +34,20 @@ def test_roundtrip_and_fresh_reader(job):
     assert (cp.storage.root / ref['key']).exists()
 
 
+def test_write_bundle_fsyncs_directory_on_posix(job, monkeypatch):
+    # Guards the os.open/os.fsync directory branch (previously a typo
+    # os.path.open that Windows tests skipped but Linux containers hit).
+    monkeypatch.setattr(cp.os, "name", "posix")
+    monkeypatch.setattr(cp.os, "O_DIRECTORY", 0, raising=False)
+    calls = []
+    monkeypatch.setattr(cp.os, "open", lambda path, flags: calls.append("open") or 7)
+    monkeypatch.setattr(cp.os, "fsync", lambda fd: calls.append("fsync"))
+    monkeypatch.setattr(cp.os, "close", lambda fd: calls.append("close"))
+    publish(job)
+    # File fsync, then directory open/fsync/close after the rename.
+    assert calls == ["fsync", "open", "fsync", "close"]
+
+
 def test_state_roundtrip():
     state = AgentExecutionState(skill_count=2, loaded_skills={0,1}, skill_evidence={0:'proof'}, mutation_epoch=8)
     state._observation_cache[(8, 'x')] = object()

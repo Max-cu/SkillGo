@@ -88,7 +88,7 @@ def write_bundle(job, files, modes, directories, state, image):
         digest = _file_signature(temporary, job.user_id, job.id)
         os.replace(temporary, target)
         if os.name != 'nt':
-            fd = os.path.open(target.parent, os.O_DIRECTORY)
+            fd = os.open(target.parent, os.O_DIRECTORY)
             try: os.fsync(fd)
             finally: os.close(fd)
     finally:
