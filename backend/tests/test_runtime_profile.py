@@ -122,6 +122,60 @@ curl -s https://status.example.com/current
     assert requirements["network_targets"] == ["status.example.com"]
 
 
+def test_stored_documentation_example_binaries_never_become_required():
+    # Regression (jobs e1a77dee/1cbf1402): brew appeared only in reference-doc
+    # examples, so upload profiling stored it under requirements.binaries with
+    # required=false. Re-detection on each job fed that platform-derived
+    # manifest back into the scanner, mistaking its own inference for author
+    # declaration and blocking runs with SANDBOX_DEPENDENCY_MISSING (brew).
+    version = SimpleNamespace(
+        skill_md="---\nname: ppt-generator\ndescription: Generate PPT files.\n---\n# PPT\nGenerate /workspace/output/deck.pptx.\n",
+        manifest={
+            "apiVersion": "skillgo.io/v1alpha1",
+            "kind": "Skill",
+            "metadata": {"name": "ppt-generator", "version": "0.1.0"},
+            "spec": {"type": "instruction", "permissions": {}},
+            "x-skillgo": {
+                "sourceFormat": "agent-skill",
+                "runtime": {
+                    "execution_mode": "sandbox_required",
+                    "requirements": {
+                        "binaries": ["brew", "node", "npm", "pip"],
+                        "required_binaries": [],
+                        "runtimes": ["node", "python", "shell"],
+                        "scripts": ["scripts/generate.js"],
+                        "dependency_evidence": [
+                            {"binary": "brew", "required": False,
+                             "source": "documentation_example"},
+                        ],
+                    },
+                },
+            },
+        },
+    )
+
+    requirements = version_runtime_profile(version)["requirements"]
+    assert "brew" not in requirements["required_binaries"]
+    assert "brew" in requirements["binaries"]  # stored inference still surfaced
+    assert requirements["scripts"] == ["scripts/generate.js"]
+
+
+def test_author_declared_binaries_in_spec_remain_required():
+    # Sanity: stripping x-skillgo must not hide real author declarations.
+    version = SimpleNamespace(
+        skill_md="---\nname: x\ndescription: x\n---\nrun it\n",
+        manifest={
+            "spec": {"type": "instruction",
+                     "permissions": {"binaries": ["ffmpeg"]}},
+            "x-skillgo": {"runtime": {"requirements": {"binaries": ["brew"]}}},
+        },
+    )
+
+    requirements = version_runtime_profile(version)["requirements"]
+    assert "ffmpeg" in requirements["required_binaries"]
+    assert "brew" not in requirements["required_binaries"]
+
+
 def test_instruction_only_word_skill_is_routed_to_document_capable_sandbox():
     profile = detect_runtime_profile(
         skill_md="""---

@@ -433,9 +433,19 @@ def version_runtime_profile(version: object) -> dict:
     ]
     # Re-detect on read so Skills imported before a compatibility adapter was
     # added gain the new behavior without requiring a re-upload or migration.
+    # x-skillgo is platform-derived inference, never author declaration: feeding
+    # it back into detection turns documentation-example binaries (e.g. brew in
+    # a README snippet, stored under requirements.binaries) into *required*
+    # binaries and blocks every run with SANDBOX_DEPENDENCY_MISSING. Stored
+    # inference is re-merged below, so dropping it here loses no information.
+    detection_manifest = (
+        {key: value for key, value in manifest.items() if key != "x-skillgo"}
+        if isinstance(manifest, dict)
+        else manifest
+    )
     profile = detect_runtime_profile(
         skill_md=str(getattr(version, "skill_md", "")),
-        manifest=manifest,
+        manifest=detection_manifest,
         file_names=known_files,
     )
     requirements = dict(profile.get("requirements") or {})
