@@ -5,7 +5,6 @@ No pickle and no process memory. An in-flight tool is never automatically replay
 import asyncio
 import hashlib
 import hmac
-import io
 import json
 import os
 import re
@@ -39,44 +38,63 @@ def state_from_json(data):
     return AgentExecutionState(**values)
 
 
+def _snapshot_key():
+    return hashlib.sha256(('skillgo-task-snapshot-v1:' + settings.jwt_secret).encode()).digest()
+
+
 def signature(blob, user_id, job_id):
-    key = hashlib.sha256(('skillgo-task-snapshot-v1:' + settings.jwt_secret).encode()).digest()
-    return hmac.new(key, (user_id + ':' + job_id + ':').encode() + blob, hashlib.sha256).hexdigest()
+    return hmac.new(_snapshot_key(), (user_id + ':' + job_id + ':').encode() + blob,
+                    hashlib.sha256).hexdigest()
+
+
+def _file_signature(path, user_id, job_id):
+    mac = hmac.new(_snapshot_key(), (user_id + ':' + job_id + ':').encode(), hashlib.sha256)
+    with open(path, 'rb') as blob:
+        for chunk in iter(lambda: blob.read(1024 * 1024), b''):
+            mac.update(chunk)
+    return mac.hexdigest()
 
 
 def write_bundle(job, files, modes, directories, state, image):
+    if sum(len(data) for data in files.values()) > MAX_BYTES:
+        raise ValueError('Task snapshot workspace exceeds limits')
     encoded = json.dumps({'schema': 1, 'user_id': job.user_id, 'job_id': job.id,
         'image': image, 'network': bool(job.network_enabled), 'state': state,
         'modes': modes, 'directories': directories,
         'manifest': {p: hashlib.sha256(b).hexdigest() for p, b in files.items()}}, ensure_ascii=False).encode()
     if len(encoded) > MAX_STATE:
         raise ValueError('Agent snapshot state exceeds 16 MiB')
-    buf = io.BytesIO()
-    with zipfile.ZipFile(buf, 'w', compression=zipfile.ZIP_STORED) as archive:
-        archive.writestr('state.json', encoded)
-        for path, data in files.items():
-            archive.writestr('files/' + path.removeprefix('/workspace/'), data)
-    blob = buf.getvalue()
-    if len(blob) > MAX_ARCHIVE:
-        raise ValueError('Task snapshot exceeds size limit')
     key = f'checkpoints/{job.user_id}/{job.id}/{uuid4().hex}.zip'
     target = storage.root / key
     target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     # Unique immutable object; DB pointer is published only after fsync/rename.
+    # Stream straight to disk: an in-memory zip held up to ~4x workspace bytes
+    # and OOM-killed 512m workers during checkpoint turns.
     temporary = target.with_suffix('.partial')
     try:
         with temporary.open('xb') as output:
             os.chmod(temporary, 0o600)
-            output.write(blob); output.flush(); os.fsync(output.fileno())
+            with zipfile.ZipFile(output, 'w', compression=zipfile.ZIP_STORED,
+                                 allowZip64=True) as archive:
+                for path, data in files.items():
+                    archive.writestr('files/' + path.removeprefix('/workspace/'), data)
+                # state.json last: its manifest only becomes known after the
+                # file entries are written; readers fetch it by name, not order.
+                archive.writestr('state.json', encoded)
+                if output.tell() > MAX_ARCHIVE:
+                    raise ValueError('Task snapshot exceeds size limit')
+            output.flush(); os.fsync(output.fileno())
+            size = output.tell()
+        digest = _file_signature(temporary, job.user_id, job.id)
         os.replace(temporary, target)
         if os.name != 'nt':
-            fd = os.open(target.parent, os.O_DIRECTORY)
+            fd = os.path.open(target.parent, os.O_DIRECTORY)
             try: os.fsync(fd)
             finally: os.close(fd)
     finally:
         temporary.unlink(missing_ok=True)
-    return {'key': key, 'signature': signature(blob, job.user_id, job.id),
-            'size': len(blob), 'status': 'ready', 'next_turn': state['next_turn']}
+    return {'key': key, 'signature': digest,
+            'size': size, 'status': 'ready', 'next_turn': state['next_turn']}
 
 
 def load_bundle(job):
@@ -91,10 +109,10 @@ def load_bundle(job):
     path = storage.root / ref['key']
     if path.stat().st_size > MAX_ARCHIVE:
         raise ValueError('Snapshot too large')
-    blob = path.read_bytes()
-    if len(blob) != ref['size'] or not hmac.compare_digest(signature(blob, job.user_id, job.id), ref['signature']):
+    if path.stat().st_size != ref['size'] or not hmac.compare_digest(
+            _file_signature(path, job.user_id, job.id), ref['signature']):
         raise ValueError('Snapshot authentication failed')
-    with zipfile.ZipFile(io.BytesIO(blob)) as archive:
+    with zipfile.ZipFile(path) as archive:
         info = archive.getinfo('state.json')
         if info.file_size > MAX_STATE:
             raise ValueError('Snapshot state too large')

@@ -125,7 +125,7 @@ services:
       SKILLGO_SANDBOX_COMMAND_TIMEOUT_SECONDS: ${SKILLGO_SANDBOX_COMMAND_TIMEOUT_SECONDS:-120}
       SKILLGO_SANDBOX_MAX_AGENT_TURNS: ${SKILLGO_SANDBOX_MAX_AGENT_TURNS:-300}
       SKILLGO_SANDBOX_MAX_AGENT_TOOL_CALLS: ${SKILLGO_SANDBOX_MAX_AGENT_TOOL_CALLS:-480}
-      SKILLGO_SANDBOX_MEMORY: ${SKILLGO_SANDBOX_MEMORY:-768m}
+      SKILLGO_SANDBOX_MEMORY: ${SKILLGO_SANDBOX_MEMORY:-2g}
       SKILLGO_SANDBOX_NANO_CPUS: ${SKILLGO_SANDBOX_NANO_CPUS:-1000000000}
       SKILLGO_SANDBOX_PIDS_LIMIT: ${SKILLGO_SANDBOX_PIDS_LIMIT:-128}
       SKILLGO_SANDBOX_MAX_ARTIFACT_BYTES: ${SKILLGO_SANDBOX_MAX_ARTIFACT_BYTES:-52428800}
@@ -144,7 +144,9 @@ services:
     tmpfs:
       - /tmp:rw,nosuid,nodev,noexec,size=64m
     pids_limit: 128
-    mem_limit: 512m
+    # Workers stream sandbox exec I/O and build durable checkpoint archives;
+    # 512m OOM-killed long-lived workers mid-tool (PPT/image jobs, RSS growth).
+    mem_limit: 2g
     cpus: 0.5
     restart: unless-stopped
     deploy:
@@ -174,7 +176,8 @@ services:
     security_opt: ["no-new-privileges:true"]
     read_only: true
     tmpfs: ["/tmp:rw,nosuid,nodev,noexec,size=64m"]
-    mem_limit: 512m
+    # Wheel resolution/build spiked above 512m when preparing environments.
+    mem_limit: 1g
     cpus: 0.5
     pids_limit: 128
     restart: unless-stopped

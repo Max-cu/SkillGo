@@ -39,6 +39,41 @@ def test_snapshot_has_size_bound(monkeypatch):
     with pytest.raises(ValueError): cp.unpack_snapshot(archive())
 
 
+def _stream_parse(raw, chunk_size=7):
+    """Feed tar bytes like docker get_archive: fragmented, single-pass."""
+    chunks = (raw[i:i + chunk_size] for i in range(0, len(raw), chunk_size))
+    with tarfile.open(fileobj=cp._ChunkReader(chunks), mode='r|') as stream:
+        return cp._collect_entries(stream)
+
+
+def test_streaming_parse_matches_random_access():
+    raw = io.BytesIO()
+    with tarfile.open(fileobj=raw, mode='w') as t:
+        for i in range(5):
+            info = tarfile.TarInfo(f'workspace/d/sub{i}.txt')
+            payload = (f'f{i}-' * 100).encode()
+            info.size = len(payload)
+            t.addfile(info, io.BytesIO(payload))
+        d = tarfile.TarInfo('workspace/d'); d.type = tarfile.DIRTYPE; d.mode = 0o750
+        t.addfile(d)
+    blob = raw.getvalue()
+    files, modes, dirs = _stream_parse(blob)
+    assert len(files) == 5
+    assert files['/workspace/d/sub4.txt'] == (b'f4-' * 100)
+    assert dirs == ['/workspace/d'] and modes['/workspace/d'] == 0o750
+    # Same validation rules as the random-access parser.
+    with pytest.raises(ValueError): _stream_parse(archive('workspace/../x'))
+
+
+def test_streaming_reader_enforces_archive_limit():
+    blob = archive()
+    chunks = (blob[i:i + 4] for i in range(0, len(blob), 4))
+    reader = cp._ChunkReader(chunks, limit=10)
+    with pytest.raises(ValueError, match='size limit'):
+        with tarfile.open(fileobj=reader, mode='r|') as stream:
+            cp._collect_entries(stream)
+
+
 @pytest.mark.parametrize('failure', ['none', 'copy', 'verify', 'cancel'])
 def test_handover_adopts_only_verified_candidate(monkeypatch, failure):
     old = SimpleNamespace(container=Mock(attrs={'Image': 'sha256:fixed'}), volume=Mock(),

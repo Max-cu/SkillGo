@@ -15,33 +15,81 @@ from .sandbox_runtime import DockerSandbox, SandboxRuntimeError
 
 MAX_BYTES = 256 * 1024 * 1024
 MAX_ENTRIES = 10000
+# Tar block + per-header overhead allowance on top of plain file bytes.
+MAX_ARCHIVE_BYTES = MAX_BYTES + MAX_ENTRIES * 2048
 
 
-def unpack_snapshot(raw):
+class _ChunkReader:
+    """Adapt an iterator of byte chunks to the fileobj interface tarfile needs.
+
+    Streaming the docker get_archive generator straight into tarfile avoids
+    holding the whole tar (and a second parsed copy) in worker memory at once.
+    """
+
+    def __init__(self, chunks, *, limit=MAX_ARCHIVE_BYTES):
+        self._chunks = iter(chunks)
+        self._buffer = bytearray()
+        self._exhausted = False
+        self._limit = limit
+        self.consumed = 0
+
+    def read(self, size=-1):
+        if size is None or size < 0:
+            while not self._exhausted:
+                try:
+                    self._extend(next(self._chunks))
+                except StopIteration:
+                    self._exhausted = True
+            data = bytes(self._buffer)
+            self._buffer = bytearray()
+            return data
+        while len(self._buffer) < size and not self._exhausted:
+            try:
+                self._extend(next(self._chunks))
+            except StopIteration:
+                self._exhausted = True
+        data = bytes(self._buffer[:size])
+        del self._buffer[:size]
+        return data
+
+    def _extend(self, chunk):
+        self._buffer.extend(chunk)
+        self.consumed += len(chunk)
+        if self.consumed > self._limit:
+            raise ValueError('Snapshot archive exceeds size limit')
+
+
+def _collect_entries(archive):
+    """Validate and materialize one sequential tar stream as path -> bytes."""
+
     files, modes, directories = {}, {}, []
     total = 0
     seen = set()
-    with tarfile.open(fileobj=io.BytesIO(raw), mode='r:') as archive:
-        for entry in archive:
-            path = PurePosixPath(entry.name)
-            if (path.is_absolute() or '..' in path.parts or not path.parts
-                    or path.parts[0] != 'workspace' or '\\' in entry.name):
-                raise ValueError('Invalid snapshot path')
-            name = '/' + str(path)
-            if name in seen or len(seen) >= MAX_ENTRIES:
-                raise ValueError('Duplicate or oversized snapshot')
-            seen.add(name)
-            if not (entry.isdir() or entry.isfile()):
-                raise ValueError('Snapshot contains links or special files')
-            modes[name] = entry.mode & 0o777
-            if entry.isdir():
-                directories.append(name)
-            else:
-                total += entry.size
-                if total > MAX_BYTES:
-                    raise ValueError('Snapshot exceeds size limit')
-                files[name] = archive.extractfile(entry).read()
+    for entry in archive:
+        path = PurePosixPath(entry.name)
+        if (path.is_absolute() or '..' in path.parts or not path.parts
+                or path.parts[0] != 'workspace' or '\\' in entry.name):
+            raise ValueError('Invalid snapshot path')
+        name = '/' + str(path)
+        if name in seen or len(seen) >= MAX_ENTRIES:
+            raise ValueError('Duplicate or oversized snapshot')
+        seen.add(name)
+        if not (entry.isdir() or entry.isfile()):
+            raise ValueError('Snapshot contains links or special files')
+        modes[name] = entry.mode & 0o777
+        if entry.isdir():
+            directories.append(name)
+        else:
+            total += entry.size
+            if total > MAX_BYTES:
+                raise ValueError('Snapshot exceeds size limit')
+            files[name] = archive.extractfile(entry).read()
     return files, modes, directories
+
+
+def unpack_snapshot(raw):
+    with tarfile.open(fileobj=io.BytesIO(raw), mode='r:') as archive:
+        return _collect_entries(archive)
 
 
 def export_workspace(sandbox):
@@ -58,12 +106,8 @@ def export_workspace(sandbox):
                     'skillgo.execution_id': sandbox.execution_id})
         helper.start()
         chunks, _ = helper.get_archive('/workspace')
-        raw = bytearray()
-        for chunk in chunks:
-            raw.extend(chunk)
-            if len(raw) > MAX_BYTES + MAX_ENTRIES * 2048:
-                raise ValueError('Snapshot archive exceeds size limit')
-        return unpack_snapshot(raw)
+        with tarfile.open(fileobj=_ChunkReader(chunks), mode='r|') as archive:
+            return _collect_entries(archive)
     finally:
         if helper is not None:
             helper.remove(force=True)
