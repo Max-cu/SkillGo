@@ -157,8 +157,9 @@ class AgentExecutionState:
             evidence = str(raw_step.get("evidence") or "").strip()[:800]
             if not step_id or step_id in seen_ids or not title or status not in PLAN_STATUSES:
                 return {"ok": False, "error_code": "PLAN_INVALID", "message": f"step {position} has an invalid id, title, or status"}
-            if status in {"completed", "skipped"} and not evidence:
-                return {"ok": False, "error_code": "PLAN_EVIDENCE_REQUIRED", "message": f"step {step_id} requires evidence when {status}"}
+            # Evidence is encouraged but optional mid-run: the platform trusts
+            # progress between tool turns and only verifies final deliverables
+            # at finish, so a missing note must not block a legitimate step.
             if status == "in_progress":
                 in_progress += 1
             seen_ids.add(step_id)
@@ -209,21 +210,57 @@ class AgentExecutionState:
                 return {"ok": False, "error_code": "PLAN_VERIFICATION_REQUIRED", "message": "Keep final verification pending/in_progress until run_verifier and record_validation pass for the current requirements and outputs."}
             if by_id[validation_step_id]['status'] == 'skipped':
                 return {"ok": False, "error_code": "PLAN_VERIFICATION_REQUIRED", "message": "Final verification cannot be skipped; mark it completed after validation passes."}
+        missing_refs: dict[str, list[str]] = {}
         for step in steps:
             if step["status"] in {"in_progress", "completed"}:
                 if any(by_id[dep]["status"] not in {"completed", "skipped"} for dep in step["depends_on"]):
                     return {"ok": False, "error_code": "PLAN_DEPENDENCY_PENDING", "message": f"Complete dependencies before {step['id']}"}
-                required = step["input_refs"] + (step["output_refs"] if step["status"] == "completed" else [])
-                if files is not None and any(path not in files for path in required):
-                    return {"ok": False, "error_code": "PLAN_FILE_MISSING", "message": f"Input/output files for {step['id']} do not exist; inspect exact paths first."}
+                # Mid-run trust: a referenced path that is not present yet does
+                # not block the step (outputs are often produced right after the
+                # plan update, and directory outputs are bound as aggregates).
+                # We record it as a warning; final deliverables are still proven
+                # against /workspace/output at finish.
+                if files is not None:
+                    required = step["input_refs"] + (step["output_refs"] if step["status"] == "completed" else [])
+                    absent = [path for path in required if path not in files]
+                    if absent:
+                        missing_refs[step["id"]] = absent
         if criteria != self.requirements:
             self.validation = self.verification = None
         self.requirements = criteria
         self.plan = {"goal": goal, "steps": steps, "success_criteria": criteria}
         if files is not None:
-            self.step_artifacts = {step["id"]: {path: files[path] for path in [*step["input_refs"], *step["output_refs"]]} for step in steps if step["status"] == "completed"}
+            # Merge bindings instead of replacing: a relaxed replan may not see
+            # every previously bound path (transient read, output produced in a
+            # later turn), and dropping the old hash would blind change/deletion
+            # detection. Refresh present paths; retain still-relevant old ones.
+            merged: dict[str, dict[str, str]] = {}
+            for step in steps:
+                if step["status"] != "completed":
+                    continue
+                previous = self.step_artifacts.get(step["id"], {})
+                bound: dict[str, str] = {}
+                for path in [*step["input_refs"], *step["output_refs"]]:
+                    if path in files:
+                        bound[path] = files[path]
+                    elif path in previous:
+                        bound[path] = previous[path]
+                merged[step["id"]] = bound
+            self.step_artifacts = merged
         self.validation_step_id = validation_step_id
-        return {"ok": True, "plan": deepcopy(self.plan), "validation_step_id": validation_step_id}
+        payload: dict[str, Any] = {"ok": True, "plan": deepcopy(self.plan), "validation_step_id": validation_step_id}
+        if missing_refs:
+            detail = "; ".join(f"{step_id}: {', '.join(paths)}" for step_id, paths in missing_refs.items())
+            payload["warnings"] = [{
+                "code": "PLAN_FILE_PENDING",
+                "message": (
+                    "Referenced paths are not present yet and were not blocked: "
+                    f"{detail}. Generate them before finish; final deliverables under "
+                    "/workspace/output are verified when the task completes."
+                ),
+                "missing": missing_refs,
+            }]
+        return payload
 
     def complete_skill(self, index: int, evidence: str) -> dict[str, Any]:
         evidence = evidence.strip()

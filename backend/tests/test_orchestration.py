@@ -162,7 +162,7 @@ def test_oversized_original_context_is_reported_not_silently_cut():
         project_context([{'role': 'system', 'content': 'x' * 10000}, {'role': 'user', 'content': 'original'}], checkpoint='{}', skill_contexts=[], loaded=set(), completed=set(), max_tokens=1000)
 
 
-def test_plan_rejects_cycles_unready_dependencies_and_missing_files():
+def test_plan_rejects_cycles_and_unready_dependencies_but_warns_on_missing_files():
     state = AgentExecutionState(skill_count=2)
     action = plan()
     action['steps'][0]['depends_on'] = ['report']
@@ -170,7 +170,11 @@ def test_plan_rejects_cycles_unready_dependencies_and_missing_files():
     action = plan()
     action['steps'][0]['status'] = 'pending'
     assert state.update_plan(action)['error_code'] == 'PLAN_DEPENDENCY_PENDING'
-    assert state.update_plan(plan(), files={})['error_code'] == 'PLAN_FILE_MISSING'
+    # Mid-run trust: absent referenced files no longer block the plan update;
+    # they come back as a non-fatal warning and are verified at finish.
+    result = state.update_plan(plan(), files={})
+    assert result['ok'] is True
+    assert result['warnings'][0]['code'] == 'PLAN_FILE_PENDING'
 
 
 def test_input_change_invalidates_step_and_descendants_only():
@@ -193,7 +197,8 @@ def test_status_only_replan_preserves_dependency_and_file_contracts():
     assert state.update_plan(revised, files=files)['ok']
     assert state.plan['steps'][1]['depends_on'] == ['compute']
     assert state.plan['steps'][0]['skill_index'] == 1
-    assert state.update_plan(revised, files={})['error_code'] == 'PLAN_FILE_MISSING'
+    # Files absent on a status-only replan warn instead of blocking.
+    assert state.update_plan(revised, files={})['ok'] is True
     state.invalidate_changed_steps({**files, '/workspace/input/data.txt': 'changed'})
     assert all(step['status'] == 'pending' for step in state.plan['steps'])
 

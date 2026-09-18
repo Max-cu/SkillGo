@@ -97,12 +97,14 @@ def test_plan_is_concise_and_names_one_validation_step():
     assert result["validation_step_id"] == "verify"
 
 
-def test_plan_requires_evidence_for_completed_steps():
+def test_plan_allows_completed_step_without_evidence_mid_run():
+    # Mid-run trust: an evidence note is optional; final verification still
+    # requires its own passed record_validation evidence.
     state = AgentExecutionState(skill_count=1)
     action = _completed_plan()
     action["steps"][0]["evidence"] = ""
     result = state.update_plan(action)
-    assert result["error_code"] == "PLAN_EVIDENCE_REQUIRED"
+    assert result["ok"] is True
 
 
 def test_final_plan_step_requires_current_validation_and_cannot_be_skipped():

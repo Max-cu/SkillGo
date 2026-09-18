@@ -255,7 +255,7 @@ Mandatory rules:
 21. Do not repeat XML, style, or document inspections whose answer is already present in a tool result or saved work file. Once the required artifacts exist and validation passes, call finish immediately.
 22. {plan_rule}
 23. On multi-Skill tasks, load each selected Skill with read_skill only when its phase is reached. On every single- or multi-Skill task, call complete_skill with concrete evidence after that Skill's relevant instructions are fulfilled. Follow explicit skill_ref order and let later Skills consume earlier outputs.
-24. Before finish, every plan step must be completed or truthfully skipped with evidence. After generating all final artifacts, use run_verifier to execute one concentrated read-only verification program. Prefer the Skill's own checks, wrapping its results in the required JSON when needed; otherwise derive checks directly from the user request and SKILL.md. Inspect the promised content, presentation, and deliverables and report observed values, not only PASS.
+24. Before finish, every plan step must be marked completed or truthfully skipped; attach concrete evidence to a step whenever you have it. After generating all final artifacts, use run_verifier to execute one concentrated read-only verification program. Prefer the Skill's own checks, wrapping its results in the required JSON when needed; otherwise derive checks directly from the user request and SKILL.md. Inspect the promised content, presentation, and deliverables and report observed values, not only PASS.
 25. Call record_validation immediately after that real check. The platform binds the verifier operation to SHA-256 hashes of every current file under /workspace/output. If validation fails, make only the smallest targeted correction and rerun it. At most two correction cycles are allowed; after that, fail honestly instead of looping. Any later artifact mutation invalidates the previous validation, and finish must declare every file under /workspace/output.
 26. Reopen or re-inspect generated artifacts when their internal content, formatting, correctness, citations, or other promised properties matter. A file that merely exists or opens proves only existence or basic validity. Use a conditional fallback only when a tool result proves its condition.
 27. finish means the user's requested outcome was actually achieved. A failure explanation, diagnostic JSON, or placeholder file is not a successful substitute unless the user explicitly requested a diagnostic report. When real failed operations prove the core goal cannot be completed, call block with that evidence instead of complete_skill, passed validation, or finish.
@@ -840,7 +840,10 @@ async def _run_agent_loop(
                         "/workspace/work/skillgo-plan.json",
                         json.dumps(payload["plan"], ensure_ascii=False, indent=2),
                     )
-                    progress_detail = "执行计划已更新"
+                    progress_detail = (
+                        "执行计划已更新（部分引用产物尚未生成，将在完成时核验）"
+                        if payload.get("warnings") else "执行计划已更新"
+                    )
                     if job.memory is None:
                         job.memory = WorkflowJobMemory(data={})
                     job.memory.data = {**job.memory.data, 'plan': payload['plan']}

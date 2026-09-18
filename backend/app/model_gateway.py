@@ -199,8 +199,11 @@ SANDBOX_AGENT_TOOLS: list[dict[str, Any]] = [
             "name": "update_plan",
             "description": (
                 "Create or replace the trusted execution plan for a complex task. Keep it concise, "
-                "mark at most one step in_progress, and attach evidence to completed/skipped steps. "
-                "Declare dependencies and input/output files. Update after each stage. Final verification "
+                "mark at most one step in_progress, and attach short concrete evidence to "
+                "completed/skipped steps when available (evidence is optional mid-run). "
+                "Declare dependencies and input/output files; output_refs may name a produced "
+                "directory, which is tracked as an aggregate. Referenced paths need not exist at "
+                "update time but must exist before finish. Update after each stage. Final verification "
                 "can be completed only after run_verifier and record_validation pass; it cannot be skipped."
             ),
             "parameters": {
@@ -220,9 +223,17 @@ SANDBOX_AGENT_TOOLS: list[dict[str, Any]] = [
                                     "type": "string",
                                     "enum": ["pending", "in_progress", "completed", "skipped"],
                                 },
-                                "evidence": {"type": "string", "maxLength": 800},
+                                "evidence": {
+                                    "type": "string",
+                                    "maxLength": 800,
+                                    "description": (
+                                        "Optional short note with concrete observed paths, counts, "
+                                        "or findings proving the step result. Encouraged for "
+                                        "completed/skipped steps but not required mid-run."
+                                    ),
+                                },
                             },
-                            "required": ["id", "title", "status", "evidence"],
+                            "required": ["id", "title", "status"],
                             "additionalProperties": False,
                         },
                     },

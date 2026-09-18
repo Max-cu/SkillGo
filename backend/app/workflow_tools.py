@@ -16,20 +16,74 @@ def effective_instruction(job) -> str:
     return job.instruction + ('\n\nUser-confirmed clarifications:\n' + json.dumps(answers, ensure_ascii=False) if answers else '')
 
 
-async def snapshot_step_files(sandbox, paths: list[str]) -> dict[str, str]:
-    result = {}
-    for path in dict.fromkeys(paths):
-        parsed = PurePosixPath(path)
-        if not parsed.is_absolute() or not parsed.is_relative_to('/workspace') or '..' in parsed.parts:
-            raise SandboxRuntimeError('PLAN_PATH_INVALID', 'Step files must be absolute paths below /workspace')
-        try:
-            data = sandbox.read_workspace_file(path)
-        except SandboxRuntimeError as exc:
-            if exc.code in {'SANDBOX_ARTIFACT_MISSING', 'SANDBOX_ARTIFACT_INVALID', 'SANDBOX_ARTIFACT_SIZE'}:
-                continue
+# Bound how many files a single directory ref may bind. Mirrors the 500-entry
+# workspace listing cap; real batch steps (SVG sets, image assets) are far below.
+MAX_DIRECTORY_MEMBERS = 500
+
+
+def _validated_workspace_path(path: str) -> str:
+    parsed = PurePosixPath(path)
+    if not parsed.is_absolute() or not parsed.is_relative_to('/workspace') or '..' in parsed.parts:
+        raise SandboxRuntimeError('PLAN_PATH_INVALID', 'Step files must be absolute paths below /workspace')
+    return str(parsed)
+
+
+async def snapshot_plan_refs(sandbox, paths: list[str]) -> tuple[dict[str, str], list[str]]:
+    """Hash the concrete files (or non-empty directories) referenced by a plan.
+
+    Returns ``(ref -> sha256, missing_refs)``. A regular file binds to its
+    content hash; a directory binds to an aggregate hash of its regular files,
+    so a step that legitimately produces a folder (SVG set, image assets) is
+    tracked as one ref. Paths that do not exist are reported, not raised:
+    mid-run steps may reference outputs produced by a later operation, and the
+    hard existence gate is enforced only at finish against /workspace/output.
+    """
+
+    refs = [_validated_workspace_path(path) for path in dict.fromkeys(paths)]
+    if not refs:
+        return {}, []
+    try:
+        tree = await sandbox.list_files('/workspace')
+    except SandboxRuntimeError as exc:
+        if exc.code != 'SANDBOX_LIST_FAILED':
             raise
-        result[path] = hashlib.sha256(data).hexdigest()
-    return result
+        tree = []
+    files_present = {
+        str(item.get('path'))
+        for item in tree
+        if item.get('type') == 'file' and isinstance(item.get('path'), str)
+    }
+    dirs_present = {
+        str(item.get('path'))
+        for item in tree
+        if item.get('type') in {'directory', 'dir'} and isinstance(item.get('path'), str)
+    }
+
+    result: dict[str, str] = {}
+    missing: list[str] = []
+    for ref in refs:
+        if ref in files_present:
+            data = sandbox.read_workspace_file(ref)
+            result[ref] = hashlib.sha256(data).hexdigest()
+        elif ref in dirs_present:
+            members = sorted(p for p in files_present if p.startswith(ref.rstrip('/') + '/'))
+            members = members[:MAX_DIRECTORY_MEMBERS]
+            if not members:
+                missing.append(ref)
+                continue
+            aggregate = hashlib.sha256()
+            for member in members:
+                digest = hashlib.sha256(sandbox.read_workspace_file(member)).hexdigest()
+                aggregate.update(f'{PurePosixPath(member).relative_to(ref)}:{digest}\n'.encode())
+            result[ref] = aggregate.hexdigest()
+        else:
+            missing.append(ref)
+    return result, missing
+
+
+async def snapshot_step_files(sandbox, paths: list[str]) -> dict[str, str]:
+    files, _missing = await snapshot_plan_refs(sandbox, paths)
+    return files
 
 
 async def run_verifier(sandbox, action: dict[str, Any], *, requirements: list[str]) -> dict[str, Any]:
