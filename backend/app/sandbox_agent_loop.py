@@ -381,6 +381,36 @@ def _append_tool_result(
         messages.append({"role": "user", "content": content})
 
 
+# Tools whose recent results deserve the generous inline tier: their stdout
+# is operational evidence the agent keeps reasoning over (build logs, batch
+# progress, tracebacks). Mirrors QwenPaw's pruning_recent_msg_max_bytes.
+RECENT_TIER_TOOLS = frozenset({"command", "run_python", "run_verifier"})
+# Legacy flat tier for all other oversized tool payloads.
+LEGACY_INLINE_BYTES = 4_000
+# When a command-family result is persisted, keep head AND tail inline
+# (tracebacks and final status are at the end). 2 KiB each.
+HEAD_TAIL_BYTES = 2_000
+
+
+def _head_tail(text: str, *, full_result_path: str, total_bytes: int) -> str:
+    """Head + tail of a long text stream with an omission marker.
+
+    Character-safe on UTF-8 boundaries, so the model keeps both the command
+    context at the start and the final status/traceback at the end.
+    """
+
+    encoded = text.encode("utf-8", errors="ignore")
+    if len(encoded) <= HEAD_TAIL_BYTES * 2:
+        return text
+    head = encoded[:HEAD_TAIL_BYTES].decode("utf-8", errors="ignore")
+    tail = encoded[-HEAD_TAIL_BYTES:].decode("utf-8", errors="ignore")
+    omitted = total_bytes - len(head.encode("utf-8", errors="ignore")) - len(tail.encode("utf-8", errors="ignore"))
+    return (
+        f"{head}\n\n[... {omitted} bytes omitted; full output preserved at "
+        f"{full_result_path} ...]\n\n{tail}"
+    )
+
+
 async def _append_tool_result_with_offload(
     messages: list[dict[str, Any]],
     result: object,
@@ -393,43 +423,57 @@ async def _append_tool_result_with_offload(
     tool_call_id: str | None = None,
 ) -> object:
     """Preserve oversized observations in the sandbox before pruning context."""
-
     serialized = json.dumps(payload, ensure_ascii=False)
-    # Immutable references are pinned wholesale in the execution state
-    # (reference_shelf); truncating them here would re-introduce the
-    # read->truncate->re-read loop the shelf exists to prevent.
-    retain_inline = isinstance(payload, dict) and (
-        payload.get("retained") is True or payload.get("reference") is True
+    total_bytes = len(serialized.encode("utf-8"))
+
+    # Fully-inline cases: read_file windows and pinned reference payloads.
+    if action == "read_file" or (
+        isinstance(payload, dict)
+        and (payload.get("retained") is True or payload.get("reference") is True)
+    ):
+        _append_tool_result(messages, result, action, payload, tool_call_id=tool_call_id)
+        return payload
+
+    # Two-tier pruning: command-family results get the generous recent tier
+    # (52 KiB); everything else keeps the legacy 4 KiB flat tier.
+    inline_bytes = (
+        settings.sandbox_tool_inline_bytes
+        if action in RECENT_TIER_TOOLS
+        else LEGACY_INLINE_BYTES
     )
-    # read_file returns an explicit bounded window the model asked for
-    # (offset/limit, at most 30000 chars). Clipping that window to a 1.6KB
-    # excerpt breaks the pagination contract and drives the workaround loop
-    # (copy to a work file, split into chunks — each still clipped). The
-    # 4KB offload remains for command/run_python stdout, which can reach 8MB.
-    if action == "read_file":
-        retain_inline = True
-    if not retain_inline and len(serialized.encode("utf-8")) > 4_000:
-        full_result_path = (
-            f"/workspace/work/tool-results/turn-{turn_number}-op-{operation_number}.json"
-        )
-        try:
-            await sandbox.write_text(full_result_path, serialized)
-        except SandboxRuntimeError as exc:
-            raise SandboxRuntimeError("TOOL_RESULT_PERSIST_FAILED", "Could not preserve complete tool output; write large results to a workspace file.") from exc
-        else:
-            if isinstance(payload, dict):
-                # Keep the recovery path before potentially long stdout/content so
-                # it survives the transport cap and can be read on a later turn.
-                payload = {"full_result_path": full_result_path, **payload}
-            elif isinstance(payload, str):
-                payload = {"full_result_path": full_result_path, "content": payload}
-    if not retain_inline and len(serialized.encode("utf-8")) > 4_000:
+    if total_bytes <= inline_bytes:
+        _append_tool_result(messages, result, action, payload, tool_call_id=tool_call_id)
+        return payload
+
+    full_result_path = (
+        f"/workspace/work/tool-results/turn-{turn_number}-op-{operation_number}.json"
+    )
+    try:
+        await sandbox.write_text(full_result_path, serialized)
+    except SandboxRuntimeError as exc:
+        raise SandboxRuntimeError("TOOL_RESULT_PERSIST_FAILED", "Could not preserve complete tool output; write large results to a workspace file.") from exc
+
+    if action in RECENT_TIER_TOOLS and isinstance(payload, dict):
+        clipped: dict[str, Any] = {"full_result_path": full_result_path, "truncated": True}
+        for key, value in payload.items():
+            if key in {"stdout", "stderr"} and isinstance(value, str):
+                clipped[key] = _head_tail(
+                    value,
+                    full_result_path=full_result_path,
+                    total_bytes=len(value.encode("utf-8", errors="ignore")),
+                )
+            else:
+                clipped[key] = value
+        payload = clipped
+    elif isinstance(payload, dict):
         metadata = {key: payload[key] for key in ("ok", "exit_code", "error_code", "verification_id", "message")
-                    if isinstance(payload, dict) and key in payload}
+                    if key in payload}
         metadata = {key: value[:400] if isinstance(value, str) else value for key, value in metadata.items()}
         payload = {"full_result_path": full_result_path,
                    "excerpt": serialized.encode("utf-8")[:1600].decode("utf-8", errors="ignore"),
                    "truncated": True, **metadata}
+    else:
+        payload = {"full_result_path": full_result_path, "content": payload}
     _append_tool_result(
         messages,
         result,

@@ -69,20 +69,59 @@ def test_small_budget_preserves_multi_tool_exchange_and_legacy_json_results():
     assert project(legacy, {}, 1500)[-2:] == legacy[-2:]
 
 
-def test_large_command_stdout_is_offloaded_with_bounded_valid_json():
+def test_recent_command_output_below_52k_stays_fully_inline():
+    """Two-tier pruning: recent command results (4 KiB < size <= 52 KiB) are
+    delivered whole, so build logs under ~50 KB no longer collapse to a
+    1.6 KB head."""
+    from app.sandbox_agent_loop import _append_tool_result_with_offload
+    class Sandbox:
+        def __init__(self): self.writes = []
+        async def write_text(self, path, content): self.writes.append((path, content))
+    sandbox = Sandbox()
+    original = {'exit_code': 0, 'stdout': 'line\n' * 3000, 'stderr': ''}  # ~15 KiB
+    messages = []
+    result = asyncio.run(_append_tool_result_with_offload(messages, SimpleNamespace(), 'command', original,
+        sandbox=sandbox, turn_number=2, operation_number=3, tool_call_id='c'))
+    assert sandbox.writes == []
+    assert result == original
+    assert json.loads(messages[0]['content'])['payload']['stdout'] == original['stdout']
+
+
+def test_large_command_stdout_is_offloaded_with_head_and_tail():
+    """Output above the 52 KiB recent tier is persisted wholesale; the inline
+    payload keeps BOTH head and tail (tracebacks live at the end)."""
     from app.sandbox_agent_loop import _append_tool_result_with_offload
     class Sandbox:
         files = {}
         async def write_text(self, path, content): self.files[path] = content
     sandbox = Sandbox()
-    original = {'exit_code': 0, 'stdout': '仪表记录' * 10000, 'stderr': ''}
+    stdout = 'START-' + ('middle\n' * 20000) + '-FINAL_TRACEBACK_LINE'
+    assert len(stdout.encode()) > 52 * 1024
+    original = {'exit_code': 1, 'stdout': stdout, 'stderr': ''}
     messages = []
     result = asyncio.run(_append_tool_result_with_offload(messages, SimpleNamespace(), 'command', original,
         sandbox=sandbox, turn_number=1, operation_number=1, tool_call_id='a'))
     assert json.loads(sandbox.files[result['full_result_path']]) == original
-    assert len(result['excerpt'].encode('utf-8')) <= 1600
     assert result['truncated']
-    assert json.loads(messages[0]['content'])['payload']['full_result_path'] == result['full_result_path']
+    clipped = result['stdout']
+    assert 'START-' in clipped and 'FINAL_TRACEBACK_LINE' in clipped
+    assert 'bytes omitted' in clipped and result['full_result_path'] in clipped
+    assert len(clipped) < 12000
+    # Persisted file retains the untruncated stream.
+    assert json.loads(sandbox.files[result['full_result_path']])['stdout'] == stdout
+
+
+def test_non_command_tools_keep_legacy_4kb_tier():
+    from app.sandbox_agent_loop import _append_tool_result_with_offload
+    class Sandbox:
+        files = {}
+        async def write_text(self, path, content): self.files[path] = content
+    sandbox = Sandbox()
+    original = {'ok': True, 'content': 'x' * 8000}
+    messages = []
+    result = asyncio.run(_append_tool_result_with_offload(messages, SimpleNamespace(), 'read_skill', original,
+        sandbox=sandbox, turn_number=1, operation_number=1, tool_call_id='s'))
+    assert result['truncated'] and result['full_result_path'] in sandbox.files
 
 
 def test_read_file_window_is_never_offloaded_even_when_large():

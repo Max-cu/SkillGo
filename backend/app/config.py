@@ -111,6 +111,14 @@ class Settings:
         # agent tool hard limit; longer work must use resumable batch scripts.
         os.getenv("SKILLGO_SANDBOX_COMMAND_TIMEOUT_SECONDS", "900")
     )
+    sandbox_tool_inline_bytes: int = int(
+        # Recent command/run_python/verifier results up to this size stay
+        # fully inline (two-tier pruning, aligned with QwenPaw's 50KB recent
+        # tier); larger results are persisted to tool-results/ and replaced by
+        # a head+tail excerpt. Older exchanges are dropped wholesale by
+        # project_context. Default 52 KiB.
+        os.getenv("SKILLGO_SANDBOX_TOOL_INLINE_BYTES", str(52 * 1024))
+    )
     # A reasoning turn may now contain several native tool calls. Keep the
     # model-turn budget separate from the sandbox-operation budget so a useful
     # batch is not reported as several rounds of "thinking".
