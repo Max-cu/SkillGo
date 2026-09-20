@@ -2,6 +2,41 @@
 
 所有重要变更都记录在此文件中。版本号遵循 [Semantic Versioning](https://semver.org/)。
 
+## [0.4.0] - 2026-09-20
+
+本版本主线是**让长任务真正跑得完、断了能续**：新增 Skill 能力环境自动准备与任务持久化快照恢复，命令超时不再摧毁沙箱，并系统治理 Agent 上下文（重复读文件、工具输出被截断）；执行过程界面改为 Codex 风格的扁平行动流。
+
+### Added
+
+- Skill 能力环境体系：能力预检与经验证的 golden runtime；任务开始前自动准备并绑定隔离的能力环境，沙箱在安全的 Agent 轮次边界恢复；能力目录扩展并暴露依赖分析。
+- 通用 PyPI 依赖准备：支持从公共 PyPI 解析任意 wheel 依赖（仅预编译 wheel、自动锁定间接依赖版本与哈希）；任务执行中允许最多 2 次依赖升级请求，触发环境重建与沙箱切换而不必从头重跑。
+- 持久化任务快照与围栏恢复（durable snapshots / fenced recovery）：Worker 崩溃或重启后任务从快照继续；工作区快照/恢复改为流式处理，内存占用限定在约 1 倍工作区大小。
+- 不可变引用架（reference shelf）：Skill 静态资料与用户输入文件在首次从头读取后钉住，后续分页读取直接由内存服务，消除同一文件被重复读取数十次的问题（超过 20KB 的文件与可变工作文件仍走正常分页）。
+- 计划引用支持目录：以目录内常规文件的相对路径与逐文件哈希聚合绑定；重规划时合并既有产物绑定。
+- 执行过程界面：展示模型思考摘要并在行动流中保留工具调用理由；执行计划与可展开运行日志区分，Skill 执行扁平化为单一日志。
+- 多附件 OCR/视觉分析并行处理（并发上限 3）。
+
+### Changed
+
+- 命令/脚本超时改为容器内 GNU `timeout(1)` 包装：超时只终止子进程（先发 TERM，5 秒后 KILL），沙箱与 `/workspace` 完整保留，Agent 从脚本自身的断点状态续跑；仅 docker-exec 传输层彻底卡死才回收容器。默认命令预算 900 秒。
+- 工具输出两级内联阈值：`command`/`run_python`/`run_verifier` 最近结果 52 KiB 以内全量内联（`SKILLGO_SANDBOX_TOOL_INLINE_BYTES` 可调）；超限全文落盘并保留头 2KB + 尾 2KB 片段（traceback 与最终状态在末尾）。其他工具保持 4KB 阈值。
+- `read_file` 请求的窗口（offset/limit 改为可选，最大 30000 字符）始终完整返回，不再被通用 4KB 摘录截断。
+- 计划中途校验放宽（"中途信任、边界验证"）：更新计划不再因引用文件暂缺或步骤证据缺失而阻断，仅返回待处理警告；最终交付仍严格校验真实产物。
+- 平台默认模型单轮预算不限时；Worker 扩展到 5 副本，Worker/环境 Worker/任务沙箱内存分别上调到 2GB/1GB/2GB。
+- PDF 附件默认强制开启 OCR，未配置 OCR 能力时在发送前明确阻断；Nginx 附件上传超时放宽到 905 秒。
+
+### Fixed
+
+- `read_file`/`list_files`/`write_file` 访问 `/workspace` 外路径时返回可恢复的工具错误载荷，`SANDBOX_PATH_DENIED` 不再直接杀死整个任务。
+- 运行时画像检测剥离平台派生的 x-skillgo 命名空间，文档示例命令不再被误判为必需依赖。
+- Worker 恢复扫描不再锁定健康任务；产物校验错误可恢复，清理阶段失败也会保留证据。
+- 同名附件自动重命名，用户列表兼容历史邮箱格式。
+- 修复工作区快照目录 fsync 的调用错误并补齐 POSIX 分支测试。
+
+### 迁移
+
+- 新增 Alembic 迁移 `20260911_0008_prepared_environments`（能力/预备环境表），服务启动时自动执行。
+
 ## [0.3.1] - 2026-09-09
 
 本版本集中升级模型调用的传输韧性：只要响应持续流动即不掐断任务，卡死在空闲检测窗口内被发现。
@@ -185,7 +220,8 @@
 - 任务容器默认非 root、只读根文件系统、去除 Linux Capabilities 并限制 CPU、内存和 PID。
 - 本机密钥、运行数据、用户文件和备份默认被版本库忽略。
 
-[Unreleased]: https://github.com/Max-cu/SkillGo/compare/v0.3.1...HEAD
+[Unreleased]: https://github.com/Max-cu/SkillGo/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/Max-cu/SkillGo/compare/v0.3.1...v0.4.0
 [0.3.1]: https://github.com/Max-cu/SkillGo/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/Max-cu/SkillGo/compare/v0.2.6...v0.3.0
 [0.2.6]: https://github.com/Max-cu/SkillGo/compare/v0.2.5...v0.2.6
