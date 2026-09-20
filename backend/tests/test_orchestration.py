@@ -410,6 +410,82 @@ def test_no_matching_route_does_not_choose_arbitrary_skill():
     assert _fallback_route('unrelatedtask', None, [candidate]) == []
 
 
+def test_command_timeout_is_recoverable_and_agent_resumes_with_sandbox_intact(client, user_headers, fake_model_gateway):
+    from app.database import SessionLocal
+    from app.models import WorkflowJob
+    from app.sandbox_agent_loop import _run_agent_loop
+    from test_workflow_jobs import create_version, sandbox_skill_zip
+    _, version = create_version(client, user_headers, slug='timeout-resume', package=sandbox_skill_zip())
+    created = client.post('/api/v1/jobs', headers=user_headers, data={'version_id': version['id'], 'instruction': 'answer 42'}).json()
+
+    class ResumableTimeoutSandbox(MemorySandbox):
+        def __init__(self):
+            super().__init__()
+            self.batch_calls = 0
+            self.timeouts_seen = []
+        async def command(self, argv, **kwargs):
+            if 'run_task.py' in ' '.join(argv):
+                self.timeouts_seen.append(kwargs.get('timeout_seconds'))
+                self.batch_calls += 1
+                if self.batch_calls == 1:
+                    return SandboxCommandResult(124, 'batch progress: 3/11 files done', '', timed_out=True)
+                return SandboxCommandResult(0, json.dumps({'resumed': True, 'finished': 11}), '')
+            return await super().command(argv, **kwargs)
+
+    def last_payload(messages, tool):
+        return next(json.loads(item['content'])['payload'] for item in reversed(messages) if isinstance(item.get('content'), str) and item['content'].startswith('{"tool_result": "%s"' % tool))
+
+    class ScriptedGateway:
+        connection = SimpleNamespace(context_tokens=48000)
+        def __init__(self):
+            self.turn = 0
+        async def agent_step(self, *, messages):
+            self.turn += 1
+            steps = [{'id': 'make', 'title': 'Make', 'status': 'in_progress', 'evidence': '', 'output_refs': ['/workspace/output/result.txt']},
+                     {'id': 'verify', 'title': 'Verify', 'status': 'pending', 'evidence': '', 'depends_on': ['make']}]
+            base = {'action': 'update_plan', 'goal': 'answer 42', 'steps': steps, 'success_criteria': ['answer is 42'], 'validation_step_id': 'verify'}
+            batch = {'action': 'command', 'argv': ['python3', 'scripts/run_task.py', 'run'],
+                     'cwd': '/workspace/skill', 'timeout_seconds': 900, 'reason': 'resumable batch'}
+            if self.turn == 1:
+                action = base
+            elif self.turn == 2:
+                action = batch
+            elif self.turn == 3:
+                payload = last_payload(messages, 'command')
+                assert payload['ok'] is False and payload['error_code'] == 'SANDBOX_COMMAND_TIMEOUT'
+                assert '3/11 files' in payload['stdout'] and 'resume' in payload['hint'].lower()
+                action = dict(batch, reason='resume batch from saved state')
+            elif self.turn == 4:
+                assert last_payload(messages, 'command')['exit_code'] == 0
+                action = {'action': 'run_verifier', 'argv': ['verify']}
+            elif self.turn == 5:
+                proof = last_payload(messages, 'run_verifier')
+                self.proof_id = proof['verification_id']
+                assert proof['ok']
+                action = {'action': 'record_validation', 'verification_id': self.proof_id, 'status': 'passed', 'summary': 'verified', 'evidence': 'observed 42', 'checks': ['answer 42']}
+            elif self.turn == 6:
+                for step in steps:
+                    step.update(status='completed', evidence='verified output')
+                action = base
+            elif self.turn == 7:
+                action = {'action': 'complete_skill', 'skill_index': 1, 'evidence': 'verified output'}
+            else:
+                assert self.turn == 8
+                action = {'action': 'finish', 'summary': 'answer 42', 'artifacts': ['/workspace/output/result.txt']}
+            return ModelResult(action, 'scripted', {})
+
+    sandbox = ResumableTimeoutSandbox()
+    with SessionLocal() as db:
+        job = db.get(WorkflowJob, created['id'])
+        contexts = [{'name': 'Test', 'version': '1', 'root': '/workspace/skill', 'skill_md': '# Answer', 'runtime_requirements': {}}]
+        result = asyncio.run(_run_agent_loop(db, job, sandbox, skill_contexts=contexts, gateway=ScriptedGateway(), job_cancelled=lambda: False))
+        assert result[1] == ['/workspace/output/result.txt']
+    # The batch was attempted, timed out once, and resumed — sandbox never died.
+    assert sandbox.batch_calls == 2
+    assert sandbox.timeouts_seen == [900, 900]
+    assert sandbox.files['/workspace/output/result.txt'] == b'42'
+
+
 def test_automatic_selection_calls_router_even_for_one_skill_and_allows_no_match(client, user_headers, fake_model_gateway, monkeypatch):
     from dataclasses import replace
     from app import config

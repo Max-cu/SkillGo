@@ -5,6 +5,7 @@ import io
 import json
 import logging
 import tarfile
+import time
 from dataclasses import dataclass
 from pathlib import PurePosixPath
 from typing import Iterable
@@ -19,6 +20,35 @@ from .config import settings
 WORKSPACE_ROOT = PurePosixPath("/workspace")
 logger = logging.getLogger(__name__)
 
+# GNU coreutils timeout(1) exit codes when it had to terminate the child.
+TIMEOUT_TERM_EXIT_CODE = 124
+TIMEOUT_KILL_EXIT_CODE = 137
+TIMEOUT_KILL_GRACE_SECONDS = 5
+# Outer wall-clock guard beyond the in-container deadline: docker exec
+# transport itself must answer within this grace period or the sandbox is
+# considered wedged and destroyed (distinct from a normal command timeout).
+COMMAND_TRANSPORT_GRACE_SECONDS = 30
+
+
+def wrap_argv_with_timeout(argv: list[str], timeout: int) -> list[str]:
+    """Bound argv with in-container coreutils timeout(1).
+
+    The child is killed at the deadline while the sandbox container and
+    /workspace stay alive, turning a slow command into an ordinary exit
+    status the agent can recover from instead of losing the whole sandbox.
+    """
+
+    return ["timeout", f"--kill-after={TIMEOUT_KILL_GRACE_SECONDS}",
+            str(int(timeout)), *argv]
+
+
+def exit_means_timeout(exit_code: int, elapsed_seconds: float, timeout: int) -> bool:
+    if exit_code == TIMEOUT_TERM_EXIT_CODE:
+        return True
+    # 137 is ambiguous (KILL after grace vs. external OOM kill); only treat
+    # it as a timeout when the process actually ran up to the deadline.
+    return exit_code == TIMEOUT_KILL_EXIT_CODE and elapsed_seconds >= timeout - 1
+
 
 class SandboxRuntimeError(RuntimeError):
     def __init__(self, code: str, message: str) -> None:
@@ -31,6 +61,7 @@ class SandboxCommandResult:
     exit_code: int
     stdout: str
     stderr: str
+    timed_out: bool = False
 
 
 def _workspace_path(value: str, *, allow_root: bool = True) -> str:
@@ -259,32 +290,45 @@ class DockerSandbox:
             max(int(timeout_seconds or settings.sandbox_command_timeout_seconds), 1),
             settings.sandbox_command_timeout_seconds,
         )
+        bounded_argv = wrap_argv_with_timeout(argv, timeout)
 
         def execute() -> object:
             return self.container.exec_run(
-                argv,
+                bounded_argv,
                 workdir=workdir,
                 user="10001:10001",
                 demux=True,
                 environment={"HOME": "/tmp", "NODE_PATH": "/usr/local/lib/node_modules"},
             )
 
+        started = time.monotonic()
         try:
-            result = await asyncio.wait_for(asyncio.to_thread(execute), timeout=timeout)
+            result = await asyncio.wait_for(
+                asyncio.to_thread(execute),
+                timeout=timeout + COMMAND_TRANSPORT_GRACE_SECONDS,
+            )
         except TimeoutError as exc:
+            # Only a wedged docker exec transport reaches here; a normal
+            # command deadline is enforced inside the container without
+            # destroying it. A wedged transport leaves the exec state unknown,
+            # so the sandbox is still recycled for safety.
             self.close()
             raise SandboxRuntimeError(
-                "SANDBOX_COMMAND_TIMEOUT", f"Command exceeded {timeout} seconds; sandbox was destroyed"
+                "SANDBOX_COMMAND_TIMEOUT",
+                f"Command transport exceeded {timeout + COMMAND_TRANSPORT_GRACE_SECONDS} seconds; sandbox was destroyed",
             ) from exc
         except DockerException as exc:
             raise SandboxRuntimeError("SANDBOX_COMMAND_FAILED", f"Command transport failed: {exc}") from exc
+        elapsed = time.monotonic() - started
         stdout, stderr = result.output if isinstance(result.output, tuple) else (result.output, b"")
         if len(stdout or b'') + len(stderr or b'') > 8 * 1024 * 1024:
             raise SandboxRuntimeError('SANDBOX_OUTPUT_TOO_LARGE', 'Command output exceeds 8 MiB; write large observations to workspace files instead.')
+        timed_out = exit_means_timeout(int(result.exit_code), elapsed, timeout)
         return SandboxCommandResult(
             exit_code=int(result.exit_code),
             stdout=_decode(stdout),
             stderr=_decode(stderr),
+            timed_out=timed_out,
         )
 
     async def list_files(self, path: str = "/workspace") -> list[dict]:

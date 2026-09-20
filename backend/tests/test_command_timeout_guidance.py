@@ -26,7 +26,7 @@ def test_command_schema_documents_budget_alignment():
     text = desc["description"].lower()
     assert desc["minimum"] == 1 and desc["maximum"] == 900
     assert "--budget 240" in text
-    assert "900" in text and "destroys" in text
+    assert "900" in text and "preserved" in text
     assert "--workers" in text
 
 
@@ -34,7 +34,7 @@ def test_run_python_schema_documents_600_ceiling():
     desc = _tool("run_python")["parameters"]["properties"]["timeout_seconds"]
     text = desc["description"].lower()
     assert desc["minimum"] == 1 and desc["maximum"] == 600
-    assert "600" in text
+    assert "600" in text and "preserved" in text
 
 
 def test_system_prompt_contains_timeout_alignment_rule():
@@ -43,8 +43,9 @@ def test_system_prompt_contains_timeout_alignment_rule():
     source = inspect.getsource(sandbox_agent_loop)
     assert "--budget 240" in source
     assert "budget + 30" in source
-    assert "hard limit 900" in source and "hard limit 600" in source
+    assert "hard limit 900" in source and "up to 600" in source
     assert "--workers" in source
+    assert "without destroying the sandbox" in source.lower()
 
 
 def base_command(timeout):

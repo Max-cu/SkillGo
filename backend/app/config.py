@@ -107,7 +107,9 @@ class Settings:
         os.getenv("SKILLGO_SANDBOX_JOB_TIMEOUT_SECONDS", "0")
     )
     sandbox_command_timeout_seconds: int = int(
-        os.getenv("SKILLGO_SANDBOX_COMMAND_TIMEOUT_SECONDS", "120")
+        # Default and clamp ceiling for one sandbox command. 900 matches the
+        # agent tool hard limit; longer work must use resumable batch scripts.
+        os.getenv("SKILLGO_SANDBOX_COMMAND_TIMEOUT_SECONDS", "900")
     )
     # A reasoning turn may now contain several native tool calls. Keep the
     # model-turn budget separate from the sandbox-operation budget so a useful
