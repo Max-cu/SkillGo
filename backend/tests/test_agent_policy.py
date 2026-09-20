@@ -129,7 +129,99 @@ def test_new_requirements_cannot_reuse_completed_verification():
     assert _pass_validation(state)["ok"]
     updated = _completed_plan(verified=True)
     updated['success_criteria'].append('All records are covered')
-    assert state.update_plan(updated)['error_code'] == 'PLAN_VERIFICATION_REQUIRED'
+    assert state.update_plan(updated)["error_code"] == 'PLAN_VERIFICATION_REQUIRED'
+
+
+def _gate_plan(*, step_statuses: list[tuple[str, str]], deps: dict[str, list[str]] | None = None) -> dict:
+    deps = deps or {}
+    return {
+        "goal": "answer 42",
+        "steps": [
+            {
+                "id": step_id,
+                "title": f"Step {step_id}",
+                "status": status,
+                "evidence": "",
+                "depends_on": deps.get(step_id, []),
+            }
+            for step_id, status in step_statuses
+        ],
+        "success_criteria": ["answer is 42"],
+        "validation_step_id": "verify",
+    }
+
+
+def test_ensure_active_step_requires_a_plan_but_never_creates_one():
+    state = AgentExecutionState(skill_count=1)
+    result = state.ensure_active_step()
+    assert result["ok"] is False
+    assert result["error_code"] == "PLAN_REQUIRED"
+    assert state.plan is None
+
+
+def test_ensure_active_step_auto_activates_unique_ready_pending_step():
+    state = AgentExecutionState(skill_count=1)
+    plan = _gate_plan(
+        step_statuses=[("make", "pending"), ("verify", "pending")],
+        deps={"verify": ["make"]},
+    )
+    assert state.update_plan(plan)["ok"]
+
+    result = state.ensure_active_step()
+    assert result["ok"] is True
+    assert result["auto_activated"] is True
+    assert result["step"]["id"] == "make"
+    by_id = {step["id"]: step for step in state.plan["steps"]}
+    assert by_id["make"]["status"] == "in_progress"
+    assert by_id["verify"]["status"] == "pending"
+
+    # Idempotent: the next call keeps the activated step, does not move verify.
+    again = state.ensure_active_step()
+    assert again["ok"] is True
+    assert again["auto_activated"] is False
+    assert again["step"]["id"] == "make"
+
+
+def test_ensure_active_step_rejects_when_multiple_steps_are_ready():
+    state = AgentExecutionState(skill_count=1)
+    plan = _gate_plan(
+        step_statuses=[("a", "pending"), ("b", "pending"), ("verify", "pending")],
+        deps={"verify": ["a", "b"]},
+    )
+    assert state.update_plan(plan)["ok"]
+
+    result = state.ensure_active_step()
+    assert result["ok"] is False
+    assert result["error_code"] == "PLAN_STEP_AMBIGUOUS"
+    assert "2 dependency-ready" in result["message"]
+    # No state guessed behind the model's back.
+    assert all(step["status"] == "pending" for step in state.plan["steps"])
+
+
+def test_ensure_active_step_rejects_when_no_step_remains_open():
+    state = AgentExecutionState(skill_count=1)
+    # Direct assignment: update_plan would demand passed validation before it
+    # accepts a completed verification step; this branch is about the gate's
+    # own handling of an all-completed plan state.
+    state.plan = _gate_plan(step_statuses=[("make", "completed"), ("verify", "completed")])
+    result = state.ensure_active_step()
+    assert result["ok"] is False
+    assert result["error_code"] == "PLAN_STEP_NONE_OPEN"
+
+
+def test_ensure_active_step_rejects_pending_steps_blocked_by_unfinished_deps():
+    state = AgentExecutionState(skill_count=1)
+    # Defensive shape not reachable through update_plan (root steps are always
+    # ready); covers the guard if restored state ever carries it.
+    state.plan = {
+        "goal": "answer 42",
+        "steps": [
+            {"id": "blocked", "title": "Blocked", "status": "pending", "depends_on": ["missing"]},
+        ],
+    }
+    result = state.ensure_active_step()
+    assert result["ok"] is False
+    assert result["error_code"] == "PLAN_STEP_BLOCKED"
 
 
 def test_validation_requires_a_real_recent_tool_observation():

@@ -400,6 +400,77 @@ class AgentExecutionState:
             }]
         return payload
 
+    def ensure_active_step(self) -> dict[str, Any]:
+        """Make sure a plan step is in_progress before a mutating tool runs.
+
+        Mirrors the plan auto-synchronization in record_validation: when the
+        model starts work without explicitly activating a step, activate the
+        unique dependency-ready pending step instead of rejecting the call —
+        the rejection wasted a full reasoning round and surfaced as a red
+        failed event in nearly every job. Ambiguous topologies stay hard
+        errors so the model's intent is never guessed:
+        - no plan: the model must create one (first-turn planning is never
+          auto-created);
+        - several dependency-ready steps: a parallel branch, the model must
+          mark the one it means to work on;
+        - no ready pending step: prerequisites are unfinished (or the plan is
+          already complete and the task should finish).
+        """
+
+        if not self.plan:
+            return {
+                "ok": False,
+                "error_code": "PLAN_REQUIRED",
+                "message": "Create/update the plan with one in_progress step before executing work.",
+            }
+        steps = self.plan.get("steps", [])
+        active = next((step for step in steps if step["status"] == "in_progress"), None)
+        if active is not None:
+            return {"ok": True, "step": deepcopy(active), "auto_activated": False}
+        statuses = {step["id"]: step["status"] for step in steps}
+        ready = [
+            step
+            for step in steps
+            if step["status"] == "pending"
+            and all(
+                statuses.get(dep) in {"completed", "skipped"}
+                for dep in step.get("depends_on", [])
+            )
+        ]
+        if len(ready) == 1:
+            step = ready[0]
+            step["status"] = "in_progress"
+            return {"ok": True, "step": deepcopy(step), "auto_activated": True}
+        pending = [step for step in steps if step["status"] == "pending"]
+        if not pending:
+            return {
+                "ok": False,
+                "error_code": "PLAN_STEP_NONE_OPEN",
+                "message": (
+                    "Every plan step is already completed; finish the task or "
+                    "update the plan before executing more work."
+                ),
+            }
+        if not ready:
+            return {
+                "ok": False,
+                "error_code": "PLAN_STEP_BLOCKED",
+                "message": (
+                    "No pending plan step has all its dependencies completed; "
+                    "complete the prerequisite steps or update the plan with "
+                    "the current step marked in_progress before executing work."
+                ),
+            }
+        return {
+            "ok": False,
+            "error_code": "PLAN_STEP_AMBIGUOUS",
+            "message": (
+                f"{len(ready)} dependency-ready plan steps are pending; update "
+                "the plan marking the single step you are working on as "
+                "in_progress before executing work."
+            ),
+        }
+
     def complete_skill(self, index: int, evidence: str) -> dict[str, Any]:
         evidence = evidence.strip()
         if index not in self.loaded_skills:

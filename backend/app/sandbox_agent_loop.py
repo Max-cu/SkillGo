@@ -781,9 +781,29 @@ async def _run_agent_loop(
             if action_name in {'request_capability', 'request_python_dependencies'} and len(calls) != 1:
                 validation_error = 'Environment requests must be the only tool call in this turn'
             if not validation_error and action_name in {'command', 'run_python', 'write_file', 'run_fixed_skill'}:
-                active_step = next((step for step in (execution_state.plan or {}).get('steps', []) if step['status'] == 'in_progress'), None)
-                if active_step is None:
-                    validation_error = 'Create/update the plan with one in_progress step before executing work.'
+                # Auto-activate the unique dependency-ready pending step
+                # instead of rejecting: rejecting cost a full reasoning round
+                # and showed as a red failed event in nearly every job. Only
+                # genuinely ambiguous/blocked plans stay hard errors.
+                step_guard = execution_state.ensure_active_step()
+                if step_guard.get("ok"):
+                    if step_guard.get("auto_activated"):
+                        activated_step = step_guard["step"]
+                        add_job_event(
+                            db,
+                            job,
+                            "status",
+                            "自动激活计划步骤",
+                            f"唯一就绪步骤「{str(activated_step.get('title') or activated_step['id'])[:60]}」已标记为进行中",
+                            status="succeeded",
+                            data={
+                                "tool": action_name,
+                                "step_id": activated_step["id"],
+                                "auto_activated": True,
+                            },
+                        )
+                else:
+                    validation_error = step_guard["message"]
             agent_session.tool_call(context)
 
             fingerprint = action_fingerprint(action)
