@@ -316,11 +316,13 @@ SANDBOX_AGENT_TOOLS: list[dict[str, Any]] = [
             "description": (
                 "Read a UTF-8 text file. Never use this for DOCX, XLSX, PDF, images, "
                 "archives, or a directory; use command with an approved Skill parser instead. "
+                "The full requested window is always returned (never shortened to an excerpt): "
+                "for large files page once with increasing offset. "
                 "Skill package references/scripts and /workspace/input files are immutable: "
                 "read each ONCE from offset 0 (omit offset/limit); once the result carries "
                 "\"reference\":true its complete text is pinned for the whole task and later "
-                "reads are served from that pinned copy, so never re-read it. Use offset/limit "
-                "only to page once through large working files that did not return \"reference\":true."
+                "reads are served from that pinned copy, so never re-read it. Do NOT copy files "
+                "into /workspace/work or split them into chunks to work around truncation."
             ),
             "parameters": {
                 "type": "object",

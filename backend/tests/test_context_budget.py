@@ -69,20 +69,46 @@ def test_small_budget_preserves_multi_tool_exchange_and_legacy_json_results():
     assert project(legacy, {}, 1500)[-2:] == legacy[-2:]
 
 
-def test_large_unicode_result_is_offloaded_with_bounded_valid_json():
+def test_large_command_stdout_is_offloaded_with_bounded_valid_json():
     from app.sandbox_agent_loop import _append_tool_result_with_offload
     class Sandbox:
         files = {}
         async def write_text(self, path, content): self.files[path] = content
     sandbox = Sandbox()
-    original = {'ok': True, 'content': '仪表记录' * 10000}
+    original = {'exit_code': 0, 'stdout': '仪表记录' * 10000, 'stderr': ''}
     messages = []
-    result = asyncio.run(_append_tool_result_with_offload(messages, SimpleNamespace(), 'read_file', original,
+    result = asyncio.run(_append_tool_result_with_offload(messages, SimpleNamespace(), 'command', original,
         sandbox=sandbox, turn_number=1, operation_number=1, tool_call_id='a'))
     assert json.loads(sandbox.files[result['full_result_path']]) == original
     assert len(result['excerpt'].encode('utf-8')) <= 1600
     assert result['truncated']
     assert json.loads(messages[0]['content'])['payload']['full_result_path'] == result['full_result_path']
+
+
+def test_read_file_window_is_never_offloaded_even_when_large():
+    """The model's explicit bounded window must arrive whole; this contract
+    break caused the copy-to-work-file/smaller-chunk loop."""
+    from app.sandbox_agent_loop import _append_tool_result_with_offload
+    class Sandbox:
+        def __init__(self): self.writes = []
+        async def write_text(self, path, content): self.writes.append((path, content))
+    sandbox = Sandbox()
+    # 26 KiB mutable extracted text read as a raw-string payload.
+    text = '条目' * 6500
+    assert len(text.encode('utf-8')) > 4000
+    messages = []
+    result = asyncio.run(_append_tool_result_with_offload(messages, SimpleNamespace(), 'read_file', text,
+        sandbox=sandbox, turn_number=9, operation_number=12, tool_call_id='r'))
+    assert sandbox.writes == []
+    assert isinstance(result, str) and result == text
+    inline = json.loads(messages[0]['content'])['payload']
+    assert inline == text
+    # Dict-shaped read payloads (e.g. small error) are unaffected too.
+    err = {'ok': False, 'error_code': 'SANDBOX_READ_FAILED', 'message': 'x' * 6000}
+    messages2 = []
+    result2 = asyncio.run(_append_tool_result_with_offload(messages2, SimpleNamespace(), 'read_file', err,
+        sandbox=sandbox, turn_number=1, operation_number=2, tool_call_id='e'))
+    assert result2 == err and sandbox.writes == []
 
 
 def _shelf_entry(path, text):
