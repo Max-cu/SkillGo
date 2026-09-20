@@ -26,14 +26,16 @@ def project_context(messages: list[dict[str, Any]], *, checkpoint: str,
               if i in loaded and i not in completed and item['skill_md'] not in pinned_system]
     state = json.loads(checkpoint)
     observations = state.pop('recent_observations', [])
+    shelf_entries = state.pop('reference_shelf', []) or []
     # Only observation excerpts are expendable. Requirements, plan, validation
     # evidence and active guides remain intact or the request fails explicitly.
-    def memory_message(recent: list[dict]) -> dict[str, Any]:
+    def memory_message(recent: list[dict], shelf: list[dict]) -> dict[str, Any]:
         return {"role": "user", "content": "Execution state and active Skill instructions (user requirements take precedence):\n" +
-                json.dumps({"checkpoint": {**state, 'recent_observations': recent},
+                json.dumps({"checkpoint": {**state, 'recent_observations': recent,
+                                           'reference_shelf': shelf},
                             "active_skills": active}, ensure_ascii=False)}
 
-    memory = memory_message([])
+    memory = memory_message([], [])
     # Drop complete exchanges, never edit native assistant reasoning/tool fields.
     groups: list[list[dict[str, Any]]] = []
     for message in messages[2:]:
@@ -63,6 +65,19 @@ def project_context(messages: list[dict[str, Any]], *, checkpoint: str,
             '已停止请求，避免丢失最近工具结果；请配置模型实际支持的预算或减少本次 Skill 范围。'
         )
 
+    # Pin retained immutable references (Skill specs, user inputs) so they
+    # remain usable after old exchanges leave the window. Newest entries win;
+    # an entry that does not fit the remaining budget is skipped, never fatal.
+    shelf: list[dict[str, Any]] = []
+    for entry in reversed(shelf_entries):
+        if not isinstance(entry, dict):
+            continue
+        trial = memory_message([], [entry, *shelf])
+        if estimate_tokens([*pinned, trial, *latest]) + tool_tokens + reserve > max_tokens:
+            continue
+        shelf = [entry, *shelf]
+    memory = memory_message([], shelf)
+
     # Keep at most 1024 estimated tokens of observation metadata. Raw stdout and
     # file content stay in the history/files, never in the pinned checkpoint.
     recent: list[dict] = []
@@ -75,7 +90,7 @@ def project_context(messages: list[dict[str, Any]], *, checkpoint: str,
         candidate = [compact, *recent]
         if estimate_tokens(candidate) > 1024:
             break
-        trial = memory_message(candidate)
+        trial = memory_message(candidate, shelf)
         if estimate_tokens([*pinned, trial, *latest]) + tool_tokens + reserve > max_tokens:
             break
         recent = candidate

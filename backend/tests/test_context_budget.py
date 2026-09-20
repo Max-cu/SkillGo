@@ -85,6 +85,62 @@ def test_large_unicode_result_is_offloaded_with_bounded_valid_json():
     assert json.loads(messages[0]['content'])['payload']['full_result_path'] == result['full_result_path']
 
 
+def _shelf_entry(path, text):
+    import hashlib
+    digest = hashlib.sha256(text.encode('utf-8')).hexdigest()
+    return {'path': path, 'sha256': digest, 'bytes': len(text.encode('utf-8')),
+            'chars': len(text), 'content': text}
+
+
+def test_reference_shelf_is_pinned_after_old_exchanges_drop():
+    messages = [{'role': 'system', 'content': 'rules ' * 400}, {'role': 'user', 'content': 'request'}]
+    for i in range(20):
+        messages.extend(exchange(i))
+    spec = 'PHASE_ONE_SPEC_' + '必须遵守的规范 ' * 300
+    checkpoint = {'requirements': ['Follow the spec'], 'plan': {'goal': 'report'},
+                  'reference_shelf': [_shelf_entry('/workspace/skills/01-demo/demo/references/spec.md', spec)]}
+    result = project(messages, checkpoint, 6000)
+    memory = result[2]['content']
+    # Pinned even though the original read exchange was projected out.
+    assert 'PHASE_ONE_SPEC_' in memory
+    assert spec in memory
+    assert 'reference_shelf' in memory
+
+
+def test_reference_shelf_drops_oldest_when_budget_is_tight_keeps_newest():
+    messages = [{'role': 'system', 'content': 'rules'}, {'role': 'user', 'content': 'request'}]
+    old_spec = 'OLD_SPEC_MARKER ' + '甲' * 200
+    new_spec = 'NEW_SPEC_MARKER ' + '乙' * 200
+    checkpoint = {'requirements': ['r'], 'plan': {'goal': 'g'},
+                  'reference_shelf': [
+                      _shelf_entry('/workspace/skills/01-demo/demo/references/old.md', old_spec),
+                      _shelf_entry('/workspace/skills/01-demo/demo/references/new.md', new_spec)]}
+    result = project(messages, checkpoint, 1800)
+    memory = result[2]['content']
+    assert 'NEW_SPEC_MARKER' in memory
+    assert 'OLD_SPEC_MARKER' not in memory
+
+
+def test_retained_reference_payload_stays_full_inline_and_is_never_offloaded():
+    from app.sandbox_agent_loop import _append_tool_result_with_offload
+    class Sandbox:
+        def __init__(self):
+            self.writes = []
+        async def write_text(self, path, content):
+            self.writes.append((path, content))
+    sandbox = Sandbox()
+    payload = {'ok': True, 'path': '/workspace/skills/01-demo/demo/spec.md', 'reference': True,
+               'retained': True, 'content': '规范' * 3000, 'sha256': 'abc', 'bytes': 18000}
+    messages = []
+    result = asyncio.run(_append_tool_result_with_offload(messages, SimpleNamespace(), 'read_file', payload,
+        sandbox=sandbox, turn_number=3, operation_number=2, tool_call_id='q'))
+    assert sandbox.writes == []  # no offload file written
+    assert result == payload
+    inline = json.loads(messages[0]['content'])['payload']
+    assert inline['retained'] and inline['content'] == payload['content']
+    assert 'full_result_path' not in inline and 'truncated' not in inline
+
+
 def test_context_failure_persists_budget_snapshot_and_fails_before_model_call(client, user_headers, fake_model_gateway):
     from app.database import SessionLocal
     from app.models import WorkflowJob, JobEvent

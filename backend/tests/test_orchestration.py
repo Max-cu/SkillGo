@@ -352,7 +352,9 @@ def test_agent_loop_recovers_when_file_tools_leave_workspace(client, user_header
                 assert payload['ok'] is False and payload['error_code'] == 'SANDBOX_PATH_DENIED' and payload['hint']
                 action = {'action': 'read_file', 'path': '/workspace/input/data.txt'}
             elif self.turn == 6:
-                assert last_payload(messages, 'read_file') == '21'
+                payload = last_payload(messages, 'read_file')
+                # Immutable input reads are pinned via the reference shelf.
+                assert payload['ok'] and payload['retained'] and payload['content'] == '21'
                 action = {'action': 'run_verifier', 'argv': ['verify']}
             elif self.turn == 7:
                 proof = last_payload(messages, 'run_verifier')

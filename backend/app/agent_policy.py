@@ -4,12 +4,40 @@ import hashlib
 import json
 from copy import deepcopy
 from dataclasses import dataclass, field
-from typing import Any
+from pathlib import PurePosixPath
+from typing import Any, Iterable
 
 
 PLAN_STATUSES = frozenset({"pending", "in_progress", "completed", "skipped"})
 OBSERVATION_TOOLS = frozenset({"list_files", "read_file"})
 WORKSPACE_MUTATING_TOOLS = frozenset({"write_file", "command", "run_python"})
+
+# Immutable instruction material (Skill package files, user inputs) is read
+# once and pinned in the execution-state memory message, so the model never
+# has to re-read a spec after old exchanges leave the context window.
+# 20 KiB per file covers every observed Skill reference doc (largest 18.6 KiB);
+# the shelf total (60 KiB) is projected into the model context greedily and
+# oldest entries are dropped first when the input budget is tight.
+REFERENCE_ENTRY_CAP = 20 * 1024
+REFERENCE_SHELF_CAP = 60 * 1024
+REFERENCE_SHELF_MAX_ENTRIES = 15
+
+
+def is_reference_path(path: str, roots: Iterable[str]) -> bool:
+    """True for task-immutable instruction/input locations."""
+
+    parsed = PurePosixPath(path)
+    if not parsed.is_absolute() or ".." in parsed.parts:
+        return False
+    if path == "/workspace/input" or path.startswith("/workspace/input/"):
+        return True
+    for root in roots:
+        if not root:
+            continue
+        base = root.rstrip("/")
+        if path == base or path.startswith(base + "/"):
+            return True
+    return False
 
 
 def action_fingerprint(action: dict[str, Any]) -> str:
@@ -102,6 +130,9 @@ class AgentExecutionState:
     skill_evidence: dict[int, str] = field(default_factory=dict)
     step_artifacts: dict[str, dict[str, str]] = field(default_factory=dict)
     _observation_cache: dict[tuple[int, str], object] = field(default_factory=dict)
+    # path -> {"sha256", "bytes", "chars", "text"}; plain JSON dict so it is
+    # carried by durable snapshots and pinned through context projection.
+    reference_shelf: dict[str, dict[str, Any]] = field(default_factory=dict)
 
     def read_skill(self, index: int, contexts: list[dict[str, Any]]) -> dict[str, Any]:
         if index < 1 or index > len(contexts):
@@ -130,6 +161,70 @@ class AgentExecutionState:
             "execution_mode": "fixed" if context.get("fixed_execution") else "agent",
             "entrypoint": list(context['fixed_execution'].entrypoint) if context.get('fixed_execution') else None,
             "skill_md": context["skill_md"],
+        }
+
+    def reference_read(self, path: str, text: str, roots: Iterable[str]) -> dict[str, Any] | None:
+        """Build the read_file payload for an immutable Skill/input reference.
+
+        Returns ``None`` when the path is mutable workspace data or the file
+        exceeds the per-file retention cap; the caller then keeps the ordinary
+        (possibly offloaded/paginated) read path.
+        """
+
+        if not is_reference_path(path, roots):
+            return None
+        encoded = text.encode("utf-8", errors="replace")
+        size = len(encoded)
+        if size > REFERENCE_ENTRY_CAP:
+            return None
+        digest = hashlib.sha256(encoded).hexdigest()
+        previous = self.reference_shelf.get(path)
+        if previous is not None and previous.get("sha256") == digest:
+            # Refresh LRU position without duplicating the retained text.
+            self.reference_shelf.pop(path, None)
+            self.reference_shelf[path] = previous
+            return {
+                "ok": True,
+                "path": path,
+                "reference": True,
+                "cached": True,
+                "unchanged": True,
+                "sha256": digest,
+                "bytes": size,
+                "chars": len(text),
+                "hint": (
+                    "The complete text of this immutable Skill/input reference "
+                    "is already pinned in the execution state under "
+                    f"reference_shelf['{path}'] (same sha256). Do not read it "
+                    "again; use that retained text directly."
+                ),
+            }
+        entry = {"sha256": digest, "bytes": size, "chars": len(text), "text": text}
+        # Re-insert so a content change also refreshes the LRU position.
+        self.reference_shelf.pop(path, None)
+        self.reference_shelf[path] = entry
+        while (len(self.reference_shelf) > REFERENCE_SHELF_MAX_ENTRIES
+               or sum(item["bytes"] for item in self.reference_shelf.values()) > REFERENCE_SHELF_CAP):
+            oldest = next(iter(self.reference_shelf))
+            if oldest == path:
+                # A single fresh entry never evicts itself (cap >> entry cap).
+                break
+            self.reference_shelf.pop(oldest, None)
+        return {
+            "ok": True,
+            "path": path,
+            "reference": True,
+            "retained": True,
+            "sha256": digest,
+            "bytes": size,
+            "chars": len(text),
+            "content": text,
+            "hint": (
+                "Full reference text is now pinned in the execution state "
+                f"reference_shelf['{path}'] for the rest of the task. Do not "
+                "re-read this same path; read another offset slice only if you "
+                "need a bounded part of a different file."
+            ),
         }
 
     def update_plan(self, action: dict[str, Any], *, files: dict[str, str] | None = None) -> dict[str, Any]:
@@ -470,6 +565,11 @@ class AgentExecutionState:
             "skill_evidence": self.skill_evidence,
             "requirements": self.requirements,
             "recent_observations": self.observations[-10:],
+            "reference_shelf": [
+                {"path": path, "sha256": item["sha256"], "bytes": item["bytes"],
+                 "chars": item["chars"], "content": item["text"]}
+                for path, item in self.reference_shelf.items()
+            ],
         }
         return json.dumps(snapshot, ensure_ascii=False, separators=(",", ":"))
 

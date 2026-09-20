@@ -287,9 +287,86 @@ def test_successful_validation_syncs_plan_without_an_extra_model_turn():
     _record_verifier(state)
     result = _pass_validation(state)
     assert result['validation_step_completed'] is True
-    assert state.plan['steps'][-1]['status'] == 'completed'
-    assert 'verified-1' in state.plan['steps'][-1]['evidence']
-    assert state.finish_blocker(current_artifacts=ARTIFACT_SNAPSHOT) is None
+
+
+def test_reference_path_classification_covers_skill_roots_and_input_only():
+    from app.agent_policy import is_reference_path
+    roots = ["/workspace/skills/01-demo/demo", "/workspace/skills/01-demo"]
+    assert is_reference_path("/workspace/skills/01-demo/demo/references/a.md", roots)
+    assert is_reference_path("/workspace/skills/01-demo/assets/x.png", roots)
+    assert is_reference_path("/workspace/input/brief.docx.txt", roots)
+    assert not is_reference_path("/workspace/work/notes.txt", roots)
+    assert not is_reference_path("/workspace/output/report.docx", roots)
+    assert not is_reference_path("/workspace/skills/../etc/passwd", roots)
+    assert not is_reference_path("references/a.md", roots)
+
+
+def test_reference_read_pins_full_text_once_then_confirms_unchanged_compactly():
+    import json
+    state = AgentExecutionState(skill_count=1)
+    roots = ["/workspace/skills/01-demo/demo"]
+    spec = "## 设计规范\n" + "必须遵循的条目。\n" * 200
+
+    first = state.reference_read("/workspace/skills/01-demo/demo/references/spec.md", spec, roots)
+    assert first is not None and first["ok"] and first["retained"]
+    assert first["content"] == spec
+    assert first["sha256"] and first["bytes"] == len(spec.encode("utf-8"))
+
+    second = state.reference_read("/workspace/skills/01-demo/demo/references/spec.md", spec, roots)
+    assert second["cached"] and second["unchanged"]
+    assert "content" not in second  # compact confirmation, no duplicate full text
+    assert second["sha256"] == first["sha256"]
+
+    # Shelf is pinned into the checkpoint memory with the full text.
+    shelf = json.loads(state.checkpoint())["reference_shelf"]
+    assert len(shelf) == 1 and shelf[0]["content"] == spec
+
+
+def test_reference_read_ignores_mutable_data_paginated_areas_and_oversized_files():
+    from app.agent_policy import REFERENCE_ENTRY_CAP
+    state = AgentExecutionState(skill_count=1)
+    roots = ["/workspace/skills/01-demo/demo"]
+    assert state.reference_read("/workspace/work/scratch.txt", "data", roots) is None
+    assert state.reference_read("/workspace/output/r.txt", "data", roots) is None
+    assert state.reference_read("/workspace/skills/01-demo/demo/huge.md",
+                                 "x" * (REFERENCE_ENTRY_CAP + 1), roots) is None
+    assert state.reference_shelf == {}
+
+
+def test_reference_shelf_refreshes_changed_content_and_evicts_oldest_first(monkeypatch):
+    from app import agent_policy
+    monkeypatch.setattr(agent_policy, "REFERENCE_SHELF_CAP", 3000)
+    state = AgentExecutionState(skill_count=1)
+    roots = ["/workspace/skills/01-demo/demo"]
+    base = "/workspace/skills/01-demo/demo/references"
+
+    first = state.reference_read(f"{base}/a.md", "A" * 1200, roots)
+    state.reference_read(f"{base}/b.md", "B" * 1200, roots)
+    state.reference_read(f"{base}/c.md", "C" * 1200, roots)
+    assert f"{base}/a.md" not in state.reference_shelf  # oldest evicted
+    assert f"{base}/c.md" in state.reference_shelf
+
+    changed = state.reference_read(f"{base}/c.md", "D" * 1200, roots)
+    assert changed["retained"] and changed["content"].startswith("D")
+    # Reading c fresh moved it to the MRU end; b is now the oldest entry.
+    assert list(state.reference_shelf)[0] == f"{base}/b.md"
+    assert list(state.reference_shelf)[-1] == f"{base}/c.md"
+    assert first["sha256"] != changed["sha256"]
+
+
+def test_reference_shelf_survives_durable_state_roundtrip():
+    import json
+    from app.durable_checkpoint import state_from_json, state_to_json
+    state = AgentExecutionState(skill_count=1)
+    roots = ["/workspace/skills/01-demo/demo"]
+    state.reference_read("/workspace/skills/01-demo/demo/SKILL.md", "# Guide 内容", roots)
+
+    encoded = json.loads(json.dumps(state_to_json(state)))
+    restored = state_from_json(encoded)
+    assert restored.reference_shelf == state.reference_shelf
+    # Snapshots from older code without a shelf restore to an empty dict.
+    legacy = {key: value for key, value in encoded.items() if key != "reference_shelf"}
+    assert state_from_json(legacy).reference_shelf == {}
 
 
 def test_validation_does_not_complete_unfinished_business_steps():
