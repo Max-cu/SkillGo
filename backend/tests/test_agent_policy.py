@@ -293,28 +293,41 @@ def test_reference_path_classification_covers_skill_roots_and_input_only():
     from app.agent_policy import is_reference_path
     roots = ["/workspace/skills/01-demo/demo", "/workspace/skills/01-demo"]
     assert is_reference_path("/workspace/skills/01-demo/demo/references/a.md", roots)
-    assert is_reference_path("/workspace/skills/01-demo/assets/x.png", roots)
+    assert is_reference_path("/workspace/skills/01-demo/demo/scripts/build.py", roots)
+    assert is_reference_path("/workspace/skills/01-demo/demo/SKILL.md", roots)
     assert is_reference_path("/workspace/input/brief.docx.txt", roots)
+    # Generated working directories inside the package are mutable.
+    assert not is_reference_path("/workspace/skills/01-demo/demo/assets/sources/x.md", roots)
+    assert not is_reference_path("/workspace/skills/01-demo/demo/exports/p.pptx", roots)
     assert not is_reference_path("/workspace/work/notes.txt", roots)
     assert not is_reference_path("/workspace/output/report.docx", roots)
     assert not is_reference_path("/workspace/skills/../etc/passwd", roots)
     assert not is_reference_path("references/a.md", roots)
 
 
-def test_reference_read_pins_full_text_once_then_confirms_unchanged_compactly():
+def test_reference_pin_then_cached_slice_served_without_reread():
     import json
     state = AgentExecutionState(skill_count=1)
     roots = ["/workspace/skills/01-demo/demo"]
     spec = "## 设计规范\n" + "必须遵循的条目。\n" * 200
 
-    first = state.reference_read("/workspace/skills/01-demo/demo/references/spec.md", spec, roots)
+    # Complete first read from offset 0 pins the whole document.
+    first = state.reference_pin(
+        "/workspace/skills/01-demo/demo/references/spec.md", spec, roots,
+        offset=0, limit=30000,
+    )
     assert first is not None and first["ok"] and first["retained"]
     assert first["content"] == spec
     assert first["sha256"] and first["bytes"] == len(spec.encode("utf-8"))
 
-    second = state.reference_read("/workspace/skills/01-demo/demo/references/spec.md", spec, roots)
+    # Later reads — including explicit offset/limit slices the model prefers —
+    # are served from the pinned text without any sandbox read.
+    second = state.reference_cached(
+        "/workspace/skills/01-demo/demo/references/spec.md", 2000, 30000, roots
+    )
     assert second["cached"] and second["unchanged"]
-    assert "content" not in second  # compact confirmation, no duplicate full text
+    assert second["content"] == spec[2000:32000]
+    assert second["chars"] == len(spec)
     assert second["sha256"] == first["sha256"]
 
     # Shelf is pinned into the checkpoint memory with the full text.
@@ -322,15 +335,29 @@ def test_reference_read_pins_full_text_once_then_confirms_unchanged_compactly():
     assert len(shelf) == 1 and shelf[0]["content"] == spec
 
 
-def test_reference_read_ignores_mutable_data_paginated_areas_and_oversized_files():
+def test_reference_pin_ignores_mutable_data_partial_reads_and_oversized_files():
     from app.agent_policy import REFERENCE_ENTRY_CAP
     state = AgentExecutionState(skill_count=1)
     roots = ["/workspace/skills/01-demo/demo"]
-    assert state.reference_read("/workspace/work/scratch.txt", "data", roots) is None
-    assert state.reference_read("/workspace/output/r.txt", "data", roots) is None
-    assert state.reference_read("/workspace/skills/01-demo/demo/huge.md",
-                                 "x" * (REFERENCE_ENTRY_CAP + 1), roots) is None
+    # Mutable locations never pin.
+    assert state.reference_pin("/workspace/work/scratch.txt", "data", roots, offset=0, limit=30000) is None
+    assert state.reference_pin("/workspace/output/r.txt", "data", roots, offset=0, limit=30000) is None
+    assert state.reference_pin("/workspace/skills/01-demo/demo/assets/sources/x.md",
+                               "data", roots, offset=0, limit=30000) is None
+    # Non-zero offset slices cannot prove the whole file was seen.
+    assert state.reference_pin("/workspace/skills/01-demo/demo/references/a.md",
+                               "part", roots, offset=600, limit=6000) is None
+    # A read that hit the response limit is a truncated page, not a full file.
+    assert state.reference_pin("/workspace/skills/01-demo/demo/references/b.md",
+                               "x" * 100, roots, offset=0, limit=100) is None
+    # Oversized files keep the ordinary paged path.
+    assert state.reference_pin("/workspace/skills/01-demo/demo/huge.md",
+                               "x" * (REFERENCE_ENTRY_CAP + 1), roots,
+                               offset=0, limit=30000) is None
     assert state.reference_shelf == {}
+    # Cache misses return None even for a reference path.
+    assert state.reference_cached("/workspace/skills/01-demo/demo/references/c.md",
+                                  0, 30000, roots) is None
 
 
 def test_reference_shelf_refreshes_changed_content_and_evicts_oldest_first(monkeypatch):
@@ -340,13 +367,16 @@ def test_reference_shelf_refreshes_changed_content_and_evicts_oldest_first(monke
     roots = ["/workspace/skills/01-demo/demo"]
     base = "/workspace/skills/01-demo/demo/references"
 
-    first = state.reference_read(f"{base}/a.md", "A" * 1200, roots)
-    state.reference_read(f"{base}/b.md", "B" * 1200, roots)
-    state.reference_read(f"{base}/c.md", "C" * 1200, roots)
+    def pin(name, text):
+        return state.reference_pin(f"{base}/{name}", text, roots, offset=0, limit=30000)
+
+    first = pin("a.md", "A" * 1200)
+    pin("b.md", "B" * 1200)
+    pin("c.md", "C" * 1200)
     assert f"{base}/a.md" not in state.reference_shelf  # oldest evicted
     assert f"{base}/c.md" in state.reference_shelf
 
-    changed = state.reference_read(f"{base}/c.md", "D" * 1200, roots)
+    changed = pin("c.md", "D" * 1200)
     assert changed["retained"] and changed["content"].startswith("D")
     # Reading c fresh moved it to the MRU end; b is now the oldest entry.
     assert list(state.reference_shelf)[0] == f"{base}/b.md"
@@ -359,7 +389,8 @@ def test_reference_shelf_survives_durable_state_roundtrip():
     from app.durable_checkpoint import state_from_json, state_to_json
     state = AgentExecutionState(skill_count=1)
     roots = ["/workspace/skills/01-demo/demo"]
-    state.reference_read("/workspace/skills/01-demo/demo/SKILL.md", "# Guide 内容", roots)
+    state.reference_pin("/workspace/skills/01-demo/demo/SKILL.md", "# Guide 内容",
+                        roots, offset=0, limit=30000)
 
     encoded = json.loads(json.dumps(state_to_json(state)))
     restored = state_from_json(encoded)

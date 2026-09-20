@@ -12,19 +12,32 @@ PLAN_STATUSES = frozenset({"pending", "in_progress", "completed", "skipped"})
 OBSERVATION_TOOLS = frozenset({"list_files", "read_file"})
 WORKSPACE_MUTATING_TOOLS = frozenset({"write_file", "command", "run_python"})
 
-# Immutable instruction material (Skill package files, user inputs) is read
-# once and pinned in the execution-state memory message, so the model never
-# has to re-read a spec after old exchanges leave the context window.
-# 20 KiB per file covers every observed Skill reference doc (largest 18.6 KiB);
-# the shelf total (60 KiB) is projected into the model context greedily and
-# oldest entries are dropped first when the input budget is tight.
+# Immutable instruction material (Skill package reference/script files and
+# user inputs) is read once and pinned in the execution-state memory message,
+# so the model never has to re-read a spec after old exchanges leave the
+# context window. 20 KiB per file covers every observed Skill reference doc
+# (largest ~19 KiB); the shelf total (60 KiB) is projected into the model
+# context greedily and oldest entries are dropped first when the input budget
+# is tight.
 REFERENCE_ENTRY_CAP = 20 * 1024
 REFERENCE_SHELF_CAP = 60 * 1024
 REFERENCE_SHELF_MAX_ENTRIES = 15
 
+# Package subdirectories the agent itself writes into (generated sources,
+# SVG/image batches, exports). Such paths are mutable task data, even though
+# they physically live inside the extracted Skill package, and must never be
+# served from a stale pinned copy.
+MUTABLE_PACKAGE_DIRS = frozenset({"assets", "exports", "output", "work", "tmp"})
+
 
 def is_reference_path(path: str, roots: Iterable[str]) -> bool:
-    """True for task-immutable instruction/input locations."""
+    """True for task-immutable instruction/input locations.
+
+    Qualifies: anything under /workspace/input, and static package content
+    under a Skill root (references, scripts, SKILL.md, ...). Does not qualify:
+    /workspace/work, /workspace/output, or generated package subdirectories
+    such as assets/ or exports/ that the task writes into.
+    """
 
     parsed = PurePosixPath(path)
     if not parsed.is_absolute() or ".." in parsed.parts:
@@ -34,9 +47,16 @@ def is_reference_path(path: str, roots: Iterable[str]) -> bool:
     for root in roots:
         if not root:
             continue
-        base = root.rstrip("/")
-        if path == base or path.startswith(base + "/"):
+        base = PurePosixPath(root.rstrip("/"))
+        try:
+            relative = parsed.relative_to(base)
+        except ValueError:
+            continue
+        if str(relative) == ".":
             return True
+        if any(part in MUTABLE_PACKAGE_DIRS for part in relative.parts):
+            return False
+        return True
     return False
 
 
@@ -163,42 +183,20 @@ class AgentExecutionState:
             "skill_md": context["skill_md"],
         }
 
-    def reference_read(self, path: str, text: str, roots: Iterable[str]) -> dict[str, Any] | None:
-        """Build the read_file payload for an immutable Skill/input reference.
+    def _shelf_hint(self, path: str, *, cached: bool) -> str:
+        if cached:
+            return (
+                f"Served from the pinned reference shelf ({path}); no sandbox "
+                "read was needed. The complete immutable text is held under "
+                f"reference_shelf['{path}'] — do not read this path again."
+            )
+        return (
+            "Full reference text is now pinned in the execution state "
+            f"reference_shelf['{path}'] for the rest of the task. Do not "
+            "re-read or paginate this same path."
+        )
 
-        Returns ``None`` when the path is mutable workspace data or the file
-        exceeds the per-file retention cap; the caller then keeps the ordinary
-        (possibly offloaded/paginated) read path.
-        """
-
-        if not is_reference_path(path, roots):
-            return None
-        encoded = text.encode("utf-8", errors="replace")
-        size = len(encoded)
-        if size > REFERENCE_ENTRY_CAP:
-            return None
-        digest = hashlib.sha256(encoded).hexdigest()
-        previous = self.reference_shelf.get(path)
-        if previous is not None and previous.get("sha256") == digest:
-            # Refresh LRU position without duplicating the retained text.
-            self.reference_shelf.pop(path, None)
-            self.reference_shelf[path] = previous
-            return {
-                "ok": True,
-                "path": path,
-                "reference": True,
-                "cached": True,
-                "unchanged": True,
-                "sha256": digest,
-                "bytes": size,
-                "chars": len(text),
-                "hint": (
-                    "The complete text of this immutable Skill/input reference "
-                    "is already pinned in the execution state under "
-                    f"reference_shelf['{path}'] (same sha256). Do not read it "
-                    "again; use that retained text directly."
-                ),
-            }
+    def _put_shelf(self, path: str, digest: str, size: int, text: str) -> None:
         entry = {"sha256": digest, "bytes": size, "chars": len(text), "text": text}
         # Re-insert so a content change also refreshes the LRU position.
         self.reference_shelf.pop(path, None)
@@ -210,6 +208,56 @@ class AgentExecutionState:
                 # A single fresh entry never evicts itself (cap >> entry cap).
                 break
             self.reference_shelf.pop(oldest, None)
+
+    def reference_cached(self, path: str, offset: int, limit: int,
+                         roots: Iterable[str]) -> dict[str, Any] | None:
+        """Serve a pinned immutable reference slice without touching the sandbox.
+
+        Returns ``None`` for mutable/unknown paths or when the file has not
+        been pinned yet; the caller then performs the real read.
+        """
+
+        if not is_reference_path(path, roots):
+            return None
+        entry = self.reference_shelf.get(path)
+        if entry is None:
+            return None
+        # Refresh LRU position and serve the requested character slice.
+        self.reference_shelf.pop(path, None)
+        self.reference_shelf[path] = entry
+        text = entry["text"]
+        return {
+            "ok": True,
+            "path": path,
+            "reference": True,
+            "cached": True,
+            "unchanged": True,
+            "sha256": entry["sha256"],
+            "bytes": entry["bytes"],
+            "chars": entry["chars"],
+            "offset": offset,
+            "limit": limit,
+            "content": text[offset:offset + limit],
+            "hint": self._shelf_hint(path, cached=True),
+        }
+
+    def reference_pin(self, path: str, text: str, roots: Iterable[str], *,
+                      offset: int, limit: int) -> dict[str, Any] | None:
+        """Pin a freshly read immutable reference and return its first payload.
+
+        Only a read from offset 0 that reached EOF (so the whole file was
+        observed) and fits the per-file cap is pinned. Everything else keeps
+        the ordinary paginated/offloaded read path.
+        """
+
+        if not is_reference_path(path, roots) or offset != 0:
+            return None
+        encoded = text.encode("utf-8", errors="replace")
+        size = len(encoded)
+        if size > REFERENCE_ENTRY_CAP or len(text) >= limit:
+            return None
+        digest = hashlib.sha256(encoded).hexdigest()
+        self._put_shelf(path, digest, size, text)
         return {
             "ok": True,
             "path": path,
@@ -219,12 +267,7 @@ class AgentExecutionState:
             "bytes": size,
             "chars": len(text),
             "content": text,
-            "hint": (
-                "Full reference text is now pinned in the execution state "
-                f"reference_shelf['{path}'] for the rest of the task. Do not "
-                "re-read this same path; read another offset slice only if you "
-                "need a bounded part of a different file."
-            ),
+            "hint": self._shelf_hint(path, cached=False),
         }
 
     def update_plan(self, action: dict[str, Any], *, files: dict[str, str] | None = None) -> dict[str, Any]:

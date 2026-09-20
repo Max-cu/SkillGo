@@ -314,23 +314,28 @@ SANDBOX_AGENT_TOOLS: list[dict[str, Any]] = [
         "function": {
             "name": "read_file",
             "description": (
-                "Read a UTF-8 text file in chunks. Never use this for DOCX, XLSX, PDF, images, "
-                "archives, or a directory; use command with an approved Skill parser instead."
+                "Read a UTF-8 text file. Never use this for DOCX, XLSX, PDF, images, "
+                "archives, or a directory; use command with an approved Skill parser instead. "
+                "Skill package references/scripts and /workspace/input files are immutable: "
+                "read each ONCE from offset 0 (omit offset/limit); once the result carries "
+                "\"reference\":true its complete text is pinned for the whole task and later "
+                "reads are served from that pinned copy, so never re-read it. Use offset/limit "
+                "only to page once through large working files that did not return \"reference\":true."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "path": {"type": "string", "description": "Absolute text-file path under /workspace."},
-                    "offset": {"type": "integer", "minimum": 0, "description": "Character offset."},
+                    "offset": {"type": "integer", "minimum": 0, "description": "Character offset. Omit (start from 0) for immutable references."},
                     "limit": {
                         "type": "integer",
                         "minimum": 1,
                         "maximum": 30000,
-                        "description": "Maximum characters to return.",
+                        "description": "Maximum characters to return; default 30000. Omit for the single first read of an immutable reference.",
                     },
                     "reason": {"type": "string", "description": "Short progress description."},
                 },
-                "required": ["path", "offset", "limit", "reason"],
+                "required": ["path", "reason"],
                 "additionalProperties": False,
             },
         },

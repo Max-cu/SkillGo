@@ -410,6 +410,79 @@ def test_no_matching_route_does_not_choose_arbitrary_skill():
     assert _fallback_route('unrelatedtask', None, [candidate]) == []
 
 
+def test_pinned_reference_pagination_is_served_without_a_second_sandbox_read(client, user_headers, fake_model_gateway):
+    from app.database import SessionLocal
+    from app.models import WorkflowJob
+    from app.sandbox_agent_loop import _run_agent_loop
+    from test_workflow_jobs import create_version, sandbox_skill_zip
+    _, version = create_version(client, user_headers, slug='shelf-pagination', package=sandbox_skill_zip())
+    created = client.post('/api/v1/jobs', headers=user_headers, data={'version_id': version['id'], 'instruction': 'answer 42'}).json()
+
+    spec = '# Spec\n' + '规范条目 ' * 1500  # >4KB when serialized, <20KB file
+
+    class CountingSandbox(MemorySandbox):
+        def __init__(self):
+            super().__init__()
+            self.read_count = 0
+            self.files['/workspace/skill/references/spec.md'] = spec.encode()
+        async def read_text(self, path, offset=0, limit=30000):
+            self.read_count += 1
+            return await super().read_text(path, offset=offset, limit=limit)
+
+    def last_payload(messages, tool):
+        return next(json.loads(item['content'])['payload'] for item in reversed(messages) if isinstance(item.get('content'), str) and item['content'].startswith('{"tool_result": "%s"' % tool))
+
+    class Gateway:
+        connection = SimpleNamespace(context_tokens=48000)
+        def __init__(self):
+            self.turn = 0
+        async def agent_step(self, *, messages):
+            self.turn += 1
+            steps = [{'id': 'make', 'title': 'Make', 'status': 'in_progress', 'evidence': '', 'output_refs': ['/workspace/output/result.txt']},
+                     {'id': 'verify', 'title': 'Verify', 'status': 'pending', 'evidence': '', 'depends_on': ['make']}]
+            base = {'action': 'update_plan', 'goal': 'answer 42', 'steps': steps, 'success_criteria': ['answer is 42'], 'validation_step_id': 'verify'}
+            spec_path = '/workspace/skill/references/spec.md'
+            if self.turn == 1:
+                action = base
+            elif self.turn == 2:
+                # First read with explicit offset/limit (as models actually do).
+                action = {'action': 'read_file', 'path': spec_path, 'offset': 0, 'limit': 30000, 'reason': 'load spec'}
+            elif self.turn == 3:
+                pinned = last_payload(messages, 'read_file')
+                assert pinned['reference'] and pinned['retained'] and pinned['content'] == spec
+                # Paginated re-read the old code performed against the sandbox.
+                action = {'action': 'read_file', 'path': spec_path, 'offset': 2000, 'limit': 30000, 'reason': 'later slice'}
+            elif self.turn == 4:
+                cached = last_payload(messages, 'read_file')
+                assert cached['reference'] and cached['cached'] and cached['unchanged']
+                assert cached['content'] == spec[2000:32000]
+                action = {'action': 'run_verifier', 'argv': ['verify']}
+            elif self.turn == 5:
+                proof = last_payload(messages, 'run_verifier')
+                self.proof_id = proof['verification_id']
+                assert proof['ok']
+                action = {'action': 'record_validation', 'verification_id': self.proof_id, 'status': 'passed', 'summary': 'verified', 'evidence': 'observed 42', 'checks': ['answer 42']}
+            elif self.turn == 6:
+                for step in steps:
+                    step.update(status='completed', evidence='verified output')
+                action = base
+            elif self.turn == 7:
+                action = {'action': 'complete_skill', 'skill_index': 1, 'evidence': 'verified output'}
+            else:
+                assert self.turn == 8
+                action = {'action': 'finish', 'summary': 'answer 42', 'artifacts': ['/workspace/output/result.txt']}
+            return ModelResult(action, 'scripted', {})
+
+    sandbox = CountingSandbox()
+    with SessionLocal() as db:
+        job = db.get(WorkflowJob, created['id'])
+        contexts = [{'name': 'Test', 'version': '1', 'root': '/workspace/skill', 'skill_md': '# Answer', 'runtime_requirements': {}}]
+        result = asyncio.run(_run_agent_loop(db, job, sandbox, skill_contexts=contexts, gateway=Gateway(), job_cancelled=lambda: False))
+        assert result[1] == ['/workspace/output/result.txt']
+    # Exactly one sandbox read: the pin. The slice was served from the shelf.
+    assert sandbox.read_count == 1
+
+
 def test_command_timeout_is_recoverable_and_agent_resumes_with_sandbox_intact(client, user_headers, fake_model_gateway):
     from app.database import SessionLocal
     from app.models import WorkflowJob

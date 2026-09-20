@@ -141,6 +141,25 @@ def test_retained_reference_payload_stays_full_inline_and_is_never_offloaded():
     assert 'full_result_path' not in inline and 'truncated' not in inline
 
 
+def test_cached_reference_slice_payload_is_also_never_offloaded():
+    from app.sandbox_agent_loop import _append_tool_result_with_offload
+    class Sandbox:
+        def __init__(self):
+            self.writes = []
+        async def write_text(self, path, content):
+            self.writes.append((path, content))
+    sandbox = Sandbox()
+    payload = {'ok': True, 'path': '/workspace/skills/01-demo/demo/spec.md', 'reference': True,
+               'cached': True, 'unchanged': True, 'content': '规范' * 3000, 'offset': 2000,
+               'limit': 30000, 'chars': 18000}
+    messages = []
+    asyncio.run(_append_tool_result_with_offload(messages, SimpleNamespace(), 'read_file', payload,
+        sandbox=sandbox, turn_number=8, operation_number=9, tool_call_id='z'))
+    assert sandbox.writes == []
+    inline = json.loads(messages[0]['content'])['payload']
+    assert inline['cached'] and 'truncated' not in inline
+
+
 def test_context_failure_persists_budget_snapshot_and_fails_before_model_call(client, user_headers, fake_model_gateway):
     from app.database import SessionLocal
     from app.models import WorkflowJob, JobEvent
