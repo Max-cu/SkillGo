@@ -67,11 +67,61 @@ def test_streaming_parse_matches_random_access():
 
 def test_streaming_reader_enforces_archive_limit():
     blob = archive()
-    chunks = (blob[i:i + 4] for i in range(0, len(blob), 4))
+    chunks = (blob[i:i + 4] for i in range(4, len(blob), 4))
     reader = cp._ChunkReader(chunks, limit=10)
     with pytest.raises(ValueError, match='size limit'):
         with tarfile.open(fileobj=reader, mode='r|') as stream:
             cp._collect_entries(stream)
+
+
+def _tar_of(entries):
+    """entries: list of (arcname, bytes) regular files plus dir names."""
+    out = io.BytesIO()
+    with tarfile.open(fileobj=out, mode='w') as t:
+        for name, payload in entries:
+            info = tarfile.TarInfo(name)
+            info.mode = 0o640
+            if payload is None:
+                info.type = tarfile.DIRTYPE
+                t.addfile(info)
+            else:
+                info.size = len(payload)
+                t.addfile(info, io.BytesIO(payload))
+    return out.getvalue()
+
+
+def test_snapshot_excludes_immutable_package_files_but_keeps_generated_ones():
+    blob = _tar_of([
+        ('workspace/', None),
+        ('workspace/skills/', None),
+        ('workspace/skills/01-x/', None),
+        ('workspace/skills/01-x/SKILL.md', b'package'),
+        ('workspace/skills/01-x/scripts/a.py', b'print(1)'),
+        ('workspace/skills/01-x/exports/', None),
+        ('workspace/skills/01-x/exports/deck.pptx', b'PK-agent-work'),
+        ('workspace/work/', None),
+        ('workspace/work/notes.txt', b'notes'),
+    ])
+    excluded = frozenset({
+        '/workspace/skills/01-x/SKILL.md',
+        '/workspace/skills/01-x/scripts/a.py',
+    })
+    files, _modes, dirs = cp.unpack_snapshot(blob, excluded=excluded)
+    assert files == {
+        '/workspace/skills/01-x/exports/deck.pptx': b'PK-agent-work',
+        '/workspace/work/notes.txt': b'notes',
+    }
+    assert '/workspace/skills/01-x/exports' in dirs
+
+
+def test_snapshot_entry_bound_applies_only_to_non_immutable_files():
+    entries: list[tuple[str, bytes | None]] = [('workspace/', None), ('workspace/skills/', None)]
+    for i in range(cp.MAX_ENTRIES + 5):
+        entries.append((f'workspace/skills/s{i}.md', b'x'))
+    blob = _tar_of(entries)
+    excluded = frozenset(f'/workspace/skills/s{i}.md' for i in range(cp.MAX_ENTRIES + 5))
+    files, _modes, _dirs = cp.unpack_snapshot(blob, excluded=excluded)
+    assert files == {}
 
 
 @pytest.mark.parametrize('failure', ['none', 'copy', 'verify', 'cancel'])

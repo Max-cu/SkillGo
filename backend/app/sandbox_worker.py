@@ -537,8 +537,17 @@ async def execute_sandbox_job(
                 network_enabled=network_enabled,
                 **({"image_id": checkpoint_bundle[0]["image"]} if checkpoint_bundle else ({"image_id": prepared_image} if prepared_image else {})),
             ) as sandbox:
+                # Immutable package provisioning contract: snapshots exclude
+                # these files, so every fresh/restored sandbox re-stages them.
+                sandbox.provisioned_packages = dict(staged_packages)
+                sandbox.provisioned_extractions = [
+                    (str(context["archive_path"]), str(context["extract_root"]))
+                    for context in skill_contexts
+                ]
                 if checkpoint_bundle:
                     await restore_bundle(sandbox, checkpoint_bundle)
+                    from .sandbox_checkpoint import reprovision_skill_packages
+                    await reprovision_skill_packages(sandbox)
                     add_job_event(db, job, 'status', '已恢复持久化任务快照',
                                   '工作文件已校验，将从保存的执行轮继续', status='succeeded',
                                   data={'next_turn': checkpoint_bundle[0]['state']['next_turn']})
@@ -580,6 +589,22 @@ async def execute_sandbox_job(
                                 "SANDBOX_PACKAGE_SETUP_FAILED",
                                 setup.stderr or f"Could not unpack Skill package: {context['name']}",
                             )
+                # Register the exact immutable file set from the zips so the
+                # workspace snapshot can exclude package content while still
+                # capturing files the agent generates inside the package tree.
+                immutable_paths: set[str] = set(staged_packages.keys())
+                for context in skill_contexts:
+                    package = staged_packages.get(str(context["archive_path"]))
+                    if package is None:
+                        continue
+                    with zipfile.ZipFile(io.BytesIO(package)) as package_zip:
+                        root = str(context["extract_root"]).rstrip("/")
+                        immutable_paths.update(
+                            f"{root}/{info.filename}"
+                            for info in package_zip.infolist()
+                            if not info.is_dir()
+                        )
+                sandbox.immutable_workspace_paths = frozenset(immutable_paths)
                 available_binaries = await _preflight_sandbox_binaries(sandbox, skill_contexts)
                 environment = await preflight_environment(sandbox, skill_contexts)
                 if job.memory is None:

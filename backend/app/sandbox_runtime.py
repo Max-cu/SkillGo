@@ -103,6 +103,16 @@ class DockerSandbox:
         self.image = image_id or settings.sandbox_image
         self.container = None
         self.volume = None
+        # Immutable Skill package content is provisioned by the platform and
+        # must never be counted against workspace snapshot limits (a single
+        # asset-rich skill can ship >10k files). The exact zip-member paths are
+        # re-staged after a restore/handover instead of being snapshotted.
+        self.immutable_workspace_paths: frozenset[str] = frozenset()
+        # {absolute archive path: zip bytes} and [(archive_path, extract_root)]
+        # populated after the fresh-run package extraction, used to re-provision
+        # the same immutable files on restored/replaced sandboxes.
+        self.provisioned_packages: dict[str, bytes] = {}
+        self.provisioned_extractions: list[tuple[str, str]] = []
 
     def start(self) -> None:
         try:
@@ -335,6 +345,7 @@ class DockerSandbox:
         target = _workspace_path(path)
         source = """
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -346,15 +357,35 @@ if not path.exists():
     raise FileNotFoundError(f"directory does not exist: {path}")
 if not path.is_dir():
     raise NotADirectoryError(f"not a directory: {path}")
+# os.walk with followlinks=False: /workspace/deps/* are symlinks into
+# site-packages and must never be traversed as workspace content. Cap both
+# visited dirs and emitted entries so a huge package tree cannot blow up the
+# bounded command output.
 items = []
-for item in sorted(path.rglob("*"))[:500]:
-    if item.is_symlink():
-        continue
-    items.append({
-        "path": str(item),
-        "size": item.stat().st_size,
-        "type": "dir" if item.is_dir() else "file",
-    })
+dirs_walked = 0
+for current, dirnames, filenames in os.walk(path, followlinks=False):
+    dirs_walked += 1
+    if dirs_walked > 2000:
+        break
+    current_path = Path(current)
+    for name in sorted(dirnames + filenames):
+        if len(items) >= 500:
+            break
+        item = current_path / name
+        if item.is_symlink():
+            continue
+        try:
+            is_dir = item.is_dir()
+            size = item.stat().st_size
+        except OSError:
+            continue
+        items.append({
+            "path": str(item),
+            "size": size,
+            "type": "dir" if is_dir else "file",
+        })
+    if len(items) >= 500:
+        break
 print(json.dumps(items, ensure_ascii=False))
 """
         # A read-only directory listing must not kill a whole (possibly resumed)
