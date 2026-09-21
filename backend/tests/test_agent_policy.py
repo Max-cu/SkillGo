@@ -151,6 +151,26 @@ def _gate_plan(*, step_statuses: list[tuple[str, str]], deps: dict[str, list[str
     }
 
 
+def test_pre_plan_inspection_budget_is_bounded_and_closes_once_plan_exists():
+    from app.agent_policy import PRE_PLAN_INSPECTION_LIMIT
+    state = AgentExecutionState(skill_count=1)
+    assert state.pre_plan_inspection_allowed() is True
+    remaining = [state.note_pre_plan_inspection() for _ in range(PRE_PLAN_INSPECTION_LIMIT)]
+    assert remaining == [2, 1, 0]
+    assert state.pre_plan_inspection_calls == PRE_PLAN_INSPECTION_LIMIT
+    assert state.pre_plan_inspection_allowed() is False
+    assert state.update_plan(_completed_plan())["ok"]
+    assert state.pre_plan_inspection_allowed() is False
+
+
+def test_pre_plan_write_tools_stay_blocked_without_an_inspection_budget():
+    state = AgentExecutionState(skill_count=1)
+    state.pre_plan_inspection_calls = 3
+    result = state.ensure_active_step()
+    assert result["ok"] is False
+    assert result["error_code"] == "PLAN_REQUIRED"
+
+
 def test_ensure_active_step_requires_a_plan_but_never_creates_one():
     state = AgentExecutionState(skill_count=1)
     result = state.ensure_active_step()

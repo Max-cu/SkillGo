@@ -16,7 +16,7 @@ from .runtime_capability import request_capability
 from .durable_checkpoint import save_checkpoint, mark_inflight, state_to_json, state_from_json
 
 from .agent_kernel import AgentSession, ToolCallContext, ToolPipeline
-from .agent_policy import AgentExecutionState, action_fingerprint
+from .agent_policy import AgentExecutionState, PRE_PLAN_INSPECTION_HINT, action_fingerprint
 from .agent_context import project_context, estimate_tokens
 from .workflow_tools import run_verifier, snapshot_step_files, effective_instruction
 from .visual_inspection import VisualInspectionCache
@@ -275,7 +275,7 @@ Mandatory rules:
    {{"action":"finish","summary":"truthful final summary","artifacts":["/workspace/output/report.docx"]}}
 9a. SKILL.md files may use tool names from another Agent platform. Treat those names as capability intent, not as a requirement that an identically named API must exist. Use only the actions listed above and adapt an equivalent workflow when possible: directory listing/browsing to list_files; text reads/writes to read_file/write_file; command execution to command/run_python; Word/DOCX generation to run_python with python-docx; Excel/XLSX generation to run_python with openpyxl; PDF generation to run_python with reportlab; and PowerPoint/PPTX generation to run_python with python-pptx. Do not block merely because a vendor-specific tool name differs when these primitives can truthfully complete the work.
 10. Keep every action compact. Never place an entire report or long document directly inside one JSON response; use sandbox scripts/files and small incremental writes instead.
-11. On the first turn, plan and inspect the available files. Before executing any mutating tool, create a plan with one in_progress step. Do not finish before a real tool result proves the work is complete.
+11. Inspect first, then plan: read/list the available files, and for binary inputs (PDF/DOCX/images) use command/run_python to inspect their structure. A few pre-plan inspection calls are allowed, but call update_plan (with one in_progress step) before producing any file or running a Skill entrypoint, and before further work. Do not finish before a real tool result proves the work is complete.
 12. read_file is only for UTF-8 text files. For DOCX, XLSX, PDF, images, archives, or other binary files, use command or run_python with the approved Skill scripts/libraries. Never call read_file on a binary input.
 13. If the model endpoint falls back to JSON compatibility mode, return exactly one of the action objects shown in rule 9 and no other text.
 14. command executes argv directly without a shell. Never include pipes, redirects, &&, semicolons, or tokens such as 2>/dev/null. Use Python APIs or separate tool calls instead.
@@ -780,30 +780,41 @@ async def _run_agent_loop(
             action_name = context.name
             if action_name in {'request_capability', 'request_python_dependencies'} and len(calls) != 1:
                 validation_error = 'Environment requests must be the only tool call in this turn'
+            pre_plan_inspection_remaining: int | None = None
             if not validation_error and action_name in {'command', 'run_python', 'write_file', 'run_fixed_skill'}:
-                # Auto-activate the unique dependency-ready pending step
-                # instead of rejecting: rejecting cost a full reasoning round
-                # and showed as a red failed event in nearly every job. Only
-                # genuinely ambiguous/blocked plans stay hard errors.
-                step_guard = execution_state.ensure_active_step()
-                if step_guard.get("ok"):
-                    if step_guard.get("auto_activated"):
-                        activated_step = step_guard["step"]
-                        add_job_event(
-                            db,
-                            job,
-                            "status",
-                            "自动激活计划步骤",
-                            f"唯一就绪步骤「{str(activated_step.get('title') or activated_step['id'])[:60]}」已标记为进行中",
-                            status="succeeded",
-                            data={
-                                "tool": action_name,
-                                "step_id": activated_step["id"],
-                                "auto_activated": True,
-                            },
-                        )
+                if action_name in {'command', 'run_python'} and execution_state.pre_plan_inspection_allowed():
+                    # Binary inputs (PDF/DOCX/images) can only be inspected
+                    # via command/run_python, and the model needs that
+                    # structure to write an informed plan. Trust a bounded
+                    # number of pre-plan inspection calls; the result carries
+                    # a hint demanding update_plan before further work.
+                    pre_plan_inspection_remaining = execution_state.note_pre_plan_inspection()
                 else:
-                    validation_error = step_guard["message"]
+                    # Otherwise auto-activate the unique dependency-ready
+                    # pending step instead of rejecting: rejecting cost a
+                    # full reasoning round and showed as a red failed event
+                    # in nearly every job. Genuinely ambiguous/blocked plans
+                    # (and missing plans for write_file/fixed execution) stay
+                    # hard errors.
+                    step_guard = execution_state.ensure_active_step()
+                    if step_guard.get("ok"):
+                        if step_guard.get("auto_activated"):
+                            activated_step = step_guard["step"]
+                            add_job_event(
+                                db,
+                                job,
+                                "status",
+                                "自动激活计划步骤",
+                                f"唯一就绪步骤「{str(activated_step.get('title') or activated_step['id'])[:60]}」已标记为进行中",
+                                status="succeeded",
+                                data={
+                                    "tool": action_name,
+                                    "step_id": activated_step["id"],
+                                    "auto_activated": True,
+                                },
+                            )
+                    else:
+                        validation_error = step_guard["message"]
             agent_session.tool_call(context)
 
             fingerprint = action_fingerprint(action)
@@ -1165,6 +1176,11 @@ async def _run_agent_loop(
                         ),
                     }
                     progress_detail = "命令参数过长，Agent 正在改用工作区文件后重试"
+                if pre_plan_inspection_remaining is not None:
+                    payload["hint"] = (
+                        PRE_PLAN_INSPECTION_HINT
+                        + (" " + payload["hint"] if payload.get("hint") else "")
+                    )
                 payload = await _append_tool_result_with_offload(
                     messages,
                     result,
@@ -1213,6 +1229,11 @@ async def _run_agent_loop(
                         "execution_started": True,
                     }
                     progress_detail = "Python 工作流参数未通过，Agent 正在自动修正"
+                if pre_plan_inspection_remaining is not None:
+                    payload["hint"] = (
+                        PRE_PLAN_INSPECTION_HINT
+                        + (" " + payload["hint"] if payload.get("hint") else "")
+                    )
                 payload = await _append_tool_result_with_offload(
                     messages,
                     result,

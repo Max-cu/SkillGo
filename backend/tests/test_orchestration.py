@@ -368,6 +368,72 @@ def test_agent_loop_auto_activates_unique_ready_step_without_rejecting_work(clie
         assert job.execution_plan['steps'][0]['status'] == 'completed'
 
 
+def test_agent_loop_allows_pre_plan_binary_inspection_but_blocks_writes(client, user_headers, fake_model_gateway):
+    from app.database import SessionLocal
+    from app.models import WorkflowJob
+    from app.sandbox_agent_loop import _run_agent_loop
+    from test_workflow_jobs import create_version, sandbox_skill_zip
+    _, version = create_version(client, user_headers, slug='orchestration-preplan-inspect', package=sandbox_skill_zip())
+    created = client.post('/api/v1/jobs', headers=user_headers, data={'version_id': version['id'], 'instruction': 'answer 42'}).json()
+
+    class ScriptedGateway:
+        connection = SimpleNamespace(context_tokens=48000)
+        def __init__(self):
+            self.turn = 0
+        async def agent_step(self, *, messages):
+            self.turn += 1
+            base = {'action': 'update_plan', 'goal': 'answer 42', 'success_criteria': ['answer is 42'], 'validation_step_id': 'verify'}
+            if self.turn == 1:
+                # No plan yet: binary-input inspection via run_python must run.
+                action = {'action': 'run_python', 'code': "print('pdf structure: 19 pages')"}
+            elif self.turn == 2:
+                payloads = [json.loads(item['content'])['payload'] for item in messages
+                            if isinstance(item.get('content'), str) and '"tool_result"' in item['content']]
+                inspection = next(p for p in payloads if p.get('script_path'))
+                assert inspection.get('exit_code') == 0
+                assert 'update_plan' in inspection.get('hint', '')
+                # Producing files before a plan is still blocked.
+                action = {'action': 'write_file', 'path': '/workspace/work/premature.txt', 'content': 'x'}
+            elif self.turn == 3:
+                payloads = [json.loads(item['content'])['payload'] for item in messages
+                            if isinstance(item.get('content'), str) and '"tool_result"' in item['content']]
+                blocked = next(p for p in payloads if p.get('error_code') == 'SANDBOX_ACTION_INVALID')
+                assert 'plan' in blocked['message']
+                steps = [{'id': 'make', 'title': 'Make', 'status': 'in_progress', 'evidence': '', 'output_refs': ['/workspace/output/result.txt']}, {'id': 'verify', 'title': 'Verify', 'status': 'pending', 'evidence': '', 'depends_on': ['make']}]
+                action = {**base, 'steps': steps}
+            elif self.turn == 4:
+                action = {'action': 'run_verifier', 'argv': ['verify']}
+            elif self.turn == 5:
+                proof = next(json.loads(item['content'])['payload'] for item in reversed(messages) if isinstance(item.get('content'), str) and item['content'].startswith('{"tool_result": "run_verifier"'))
+                self.proof_id = proof['verification_id']
+                assert proof['ok']
+                action = {'action': 'record_validation', 'verification_id': self.proof_id, 'status': 'passed', 'summary': 'verified', 'evidence': 'observed 42', 'checks': ['answer 42']}
+            elif self.turn == 6:
+                steps = [
+                    {'id': 'make', 'title': 'Make', 'status': 'completed', 'evidence': 'result file exists', 'output_refs': ['/workspace/output/result.txt']},
+                    {'id': 'verify', 'title': 'Verify', 'status': 'completed', 'evidence': 'verified', 'depends_on': ['make']},
+                ]
+                action = {**base, 'steps': steps}
+            elif self.turn == 7:
+                action = {'action': 'complete_skill', 'skill_index': 1, 'evidence': 'verified output'}
+            else:
+                assert self.turn == 8
+                action = {'action': 'finish', 'summary': 'answer 42', 'artifacts': ['/workspace/output/result.txt']}
+            return ModelResult(action, 'scripted', {})
+
+    with SessionLocal() as db:
+        job = db.get(WorkflowJob, created['id'])
+        contexts = [{'name': 'Test', 'version': '1', 'root': '/workspace/skill', 'skill_md': '# Answer', 'runtime_requirements': {}}]
+        sandbox = MemorySandbox()
+        result = asyncio.run(_run_agent_loop(db, job, sandbox, skill_contexts=contexts, gateway=ScriptedGateway(), job_cancelled=lambda: False))
+        assert result[1] == ['/workspace/output/result.txt']
+        assert result[2] == 8
+        # The pre-plan inspection really executed (python3 ran in sandbox).
+        assert any(argv and argv[0] == 'python3' for argv in sandbox.calls)
+        # The premature write was refused and never reached the sandbox.
+        assert '/workspace/work/premature.txt' not in sandbox.files
+
+
 def test_agent_loop_recovers_when_file_tools_leave_workspace(client, user_headers, fake_model_gateway):
     from app.database import SessionLocal
     from app.models import WorkflowJob

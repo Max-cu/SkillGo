@@ -10,6 +10,17 @@ from typing import Any, Iterable
 
 PLAN_STATUSES = frozenset({"pending", "in_progress", "completed", "skipped"})
 OBSERVATION_TOOLS = frozenset({"list_files", "read_file"})
+# Binary inputs (PDF/DOCX/images) cannot be inspected with read_file: the
+# model needs command/run_python to learn their structure before it can
+# write an informed plan. Allow a small bounded number of such inspection
+# calls before the first plan; write_file and fixed-skill execution stay
+# blocked until a plan exists.
+PRE_PLAN_INSPECTION_LIMIT = 3
+PRE_PLAN_INSPECTION_HINT = (
+    "Pre-plan inspection is allowed and this call ran, but you must now call "
+    "update_plan with the first step in_progress before any further work. "
+    "write_file and run_fixed_skill remain blocked until the plan exists."
+)
 WORKSPACE_MUTATING_TOOLS = frozenset({"write_file", "command", "run_python"})
 
 # Immutable instruction material (Skill package reference/script files and
@@ -144,6 +155,9 @@ class AgentExecutionState:
     action_counts: dict[str, int] = field(default_factory=dict)
     mutation_epoch: int = 0
     progress_epoch: int = 0
+    # command/run_python calls dispatched before the first plan exists
+    # (binary-input inspection). Bounded by PRE_PLAN_INSPECTION_LIMIT.
+    pre_plan_inspection_calls: int = 0
     _result_signatures: dict[str, str] = field(default_factory=dict)
     verification: dict[str, Any] | None = None
     requirements: list[str] = field(default_factory=list)
@@ -399,6 +413,25 @@ class AgentExecutionState:
                 "missing": missing_refs,
             }]
         return payload
+
+    def pre_plan_inspection_allowed(self) -> bool:
+        """True if one more command/run_python may run before any plan exists.
+
+        Binary inputs can only be inspected via command/run_python, so a
+        bounded number of pre-plan inspection calls is trusted; the result
+        payload carries PRE_PLAN_INSPECTION_HINT demanding the plan next.
+        """
+
+        return (
+            self.plan is None
+            and self.pre_plan_inspection_calls < PRE_PLAN_INSPECTION_LIMIT
+        )
+
+    def note_pre_plan_inspection(self) -> int:
+        """Record one dispatched pre-plan inspection; return calls remaining."""
+
+        self.pre_plan_inspection_calls += 1
+        return PRE_PLAN_INSPECTION_LIMIT - self.pre_plan_inspection_calls
 
     def ensure_active_step(self) -> dict[str, Any]:
         """Make sure a plan step is in_progress before a mutating tool runs.

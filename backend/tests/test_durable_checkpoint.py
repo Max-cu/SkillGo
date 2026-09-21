@@ -49,12 +49,13 @@ def test_write_bundle_fsyncs_directory_on_posix(job, monkeypatch):
 
 
 def test_state_roundtrip():
-    state = AgentExecutionState(skill_count=2, loaded_skills={0,1}, skill_evidence={0:'proof'}, mutation_epoch=8)
+    state = AgentExecutionState(skill_count=2, loaded_skills={0,1}, skill_evidence={0:'proof'}, mutation_epoch=8, pre_plan_inspection_calls=2)
     state._observation_cache[(8, 'x')] = object()
     restored = cp.state_from_json(json.loads(json.dumps(cp.state_to_json(state))))
     assert restored.loaded_skills == {0,1}
     assert restored.skill_evidence == {0:'proof'}
     assert restored.mutation_epoch == 8
+    assert restored.pre_plan_inspection_calls == 2
     assert restored._observation_cache == {}
 
 
