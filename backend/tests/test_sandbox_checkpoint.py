@@ -124,6 +124,29 @@ def test_snapshot_entry_bound_applies_only_to_non_immutable_files():
     assert files == {}
 
 
+def test_snapshot_directory_entries_do_not_count_against_file_cap():
+    # Package trees contain many directories; they carry no bytes and are
+    # bounded independently of the mutable-file budget (246 dirs vs 12.7k
+    # files in ppt-master). Use a small monkeypatched bound to prove the
+    # separation without building ten thousand tar entries.
+    entries: list[tuple[str, bytes | None]] = [('workspace/', None)]
+    for i in range(3):
+        entries.append((f'workspace/skills/pkg/d{i}/', None))
+    blob = _tar_of(entries)
+    files, _modes, dirs = cp.unpack_snapshot(blob)
+    assert files == {}
+    assert len(dirs) == 4  # workspace + skills/pkg parents + 3 leaf dirs
+
+
+def test_snapshot_directory_cap_is_independent_and_enforced(monkeypatch):
+    monkeypatch.setattr(cp, 'MAX_ENTRIES', 2)
+    entries = [('workspace/', None)] + [
+        (f'workspace/d{i}/', None) for i in range(3)
+    ]
+    with pytest.raises(ValueError):
+        cp.unpack_snapshot(_tar_of(entries))
+
+
 @pytest.mark.parametrize('failure', ['none', 'copy', 'verify', 'cancel'])
 def test_handover_adopts_only_verified_candidate(monkeypatch, failure):
     old = SimpleNamespace(container=Mock(attrs={'Image': 'sha256:fixed'}), volume=Mock(),

@@ -592,10 +592,22 @@ async def execute_sandbox_job(
                 # Register the exact immutable file set from the zips so the
                 # workspace snapshot can exclude package content while still
                 # capturing files the agent generates inside the package tree.
-                immutable_paths: set[str] = set(staged_packages.keys())
+                immutable_paths: set[str] = set()
                 for context in skill_contexts:
-                    package = staged_packages.get(str(context["archive_path"]))
+                    # context["archive_path"] is the in-sandbox absolute path
+                    # (/workspace/skill-packages/NN.zip); staged_packages is
+                    # keyed by the workspace-relative name.
+                    archive_in_workspace = str(context["archive_path"])
+                    staged_key = archive_in_workspace
+                    if staged_key.startswith("/workspace/"):
+                        staged_key = staged_key[len("/workspace/"):]
+                    immutable_paths.add(archive_in_workspace)
+                    package = staged_packages.get(staged_key)
                     if package is None:
+                        logger.warning(
+                            "Skill package missing from stage job_id=%s key=%s",
+                            job.id, staged_key,
+                        )
                         continue
                     with zipfile.ZipFile(io.BytesIO(package)) as package_zip:
                         root = str(context["extract_root"]).rstrip("/")

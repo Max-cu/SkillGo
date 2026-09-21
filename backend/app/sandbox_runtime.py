@@ -357,10 +357,17 @@ if not path.exists():
     raise FileNotFoundError(f"directory does not exist: {path}")
 if not path.is_dir():
     raise NotADirectoryError(f"not a directory: {path}")
-# os.walk with followlinks=False: /workspace/deps/* are symlinks into
-# site-packages and must never be traversed as workspace content. Cap both
-# visited dirs and emitted entries so a huge package tree cannot blow up the
-# bounded command output.
+# Seed tree for the fresh-run context message: never recurse INTO a mounted
+# Skill package tree from /workspace root — asset-rich packages ship tens of
+# thousands of files (and os.walk would stat every one under gVisor). Package
+# internals are discovered via read_skill/tool calls against the skill root;
+# listing that root directly still walks normally.
+skip_roots = []
+if path == root:
+    skills_dir = root / "skills"
+    if skills_dir.is_dir():
+        skip_roots = [skills_dir / name for name in os.listdir(skills_dir)]
+    skip_roots = {p.resolve() for p in skip_roots}
 items = []
 dirs_walked = 0
 for current, dirnames, filenames in os.walk(path, followlinks=False):
@@ -368,6 +375,9 @@ for current, dirnames, filenames in os.walk(path, followlinks=False):
     if dirs_walked > 2000:
         break
     current_path = Path(current)
+    # Prune package trees (and symlinked roots like deps mounts) in-place so
+    # os.walk never descends into them.
+    dirnames[:] = [d for d in dirnames if not (current_path / d).resolve() in skip_roots]
     for name in sorted(dirnames + filenames):
         if len(items) >= 500:
             break
@@ -379,6 +389,10 @@ for current, dirnames, filenames in os.walk(path, followlinks=False):
             size = item.stat().st_size
         except OSError:
             continue
+        # Surface each mounted skill root itself (one entry) without contents.
+        resolved = item.resolve()
+        if resolved in skip_roots:
+            is_dir = True
         items.append({
             "path": str(item),
             "size": size,

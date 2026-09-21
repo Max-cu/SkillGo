@@ -64,7 +64,8 @@ def _collect_entries(archive, *, excluded: frozenset[str] = frozenset()):
 
     files, modes, directories = {}, {}, []
     total = 0
-    seen = set()
+    seen_files: set[str] = set()
+    seen_dirs: set[str] = set()
     for entry in archive:
         path = PurePosixPath(entry.name)
         if (path.is_absolute() or '..' in path.parts or not path.parts
@@ -76,15 +77,21 @@ def _collect_entries(archive, *, excluded: frozenset[str] = frozenset()):
         # (thousands of small files) out of the bounded mutable snapshot.
         if name in excluded:
             continue
-        if name in seen or len(seen) >= MAX_ENTRIES:
-            raise ValueError('Duplicate or oversized snapshot')
-        seen.add(name)
         if not (entry.isdir() or entry.isfile()):
             raise ValueError('Snapshot contains links or special files')
         modes[name] = entry.mode & 0o777
         if entry.isdir():
+            # Directories carry no bytes and an asset-rich package tree may
+            # contain hundreds; bound them separately from the file cap so
+            # package directories cannot exhaust the mutable-file budget.
+            if name in seen_dirs or len(seen_dirs) >= MAX_ENTRIES:
+                raise ValueError('Duplicate or oversized snapshot')
+            seen_dirs.add(name)
             directories.append(name)
         else:
+            if name in seen_files or len(seen_files) >= MAX_ENTRIES:
+                raise ValueError('Duplicate or oversized snapshot')
+            seen_files.add(name)
             total += entry.size
             if total > MAX_BYTES:
                 raise ValueError('Snapshot exceeds size limit')
