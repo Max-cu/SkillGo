@@ -65,8 +65,8 @@ services:
       SKILLGO_WORKSPACE_CONTEXT_MAX_CHARS: ${SKILLGO_WORKSPACE_CONTEXT_MAX_CHARS:-40000}
       SKILLGO_CORS_ORIGINS: ${SKILLGO_CORS_ORIGINS:-http://localhost:8080}
       # Skill package upload validation runs in the API.
-      SKILLGO_MAX_UPLOAD_BYTES: ${SKILLGO_MAX_UPLOAD_BYTES:-20971520}
-      SKILLGO_MAX_UNCOMPRESSED_BYTES: ${SKILLGO_MAX_UNCOMPRESSED_BYTES:-104857600}
+      SKILLGO_MAX_UPLOAD_BYTES: ${SKILLGO_MAX_UPLOAD_BYTES:-52428800}
+      SKILLGO_MAX_UNCOMPRESSED_BYTES: ${SKILLGO_MAX_UNCOMPRESSED_BYTES:-262144000}
       SKILLGO_MAX_ARCHIVE_FILES: ${SKILLGO_MAX_ARCHIVE_FILES:-500}
     volumes:
       - skillgo-storage:/var/lib/skillgo/storage
@@ -208,10 +208,12 @@ services:
     security_opt: ["no-new-privileges:true"]
     read_only: true
     tmpfs:
-      - /var/cache/nginx:rw,nosuid,nodev,noexec,size=32m,uid=101,gid=101,mode=0750
+      # nginx spools proxied upload bodies here (read_only rootfs); must hold
+      # the 51 MiB skill-package cap plus concurrent 10 MiB attachment uploads.
+      - /var/cache/nginx:rw,nosuid,nodev,noexec,size=96m,uid=101,gid=101,mode=0750
       - /var/run:rw,nosuid,nodev,noexec,size=4m,uid=101,gid=101,mode=0750
     pids_limit: 128
-    mem_limit: 128m
+    mem_limit: 256m
     cpus: 0.5
     restart: unless-stopped
 

@@ -38,9 +38,9 @@ class Settings:
     bootstrap_email: str | None = os.getenv("SKILLGO_BOOTSTRAP_EMAIL")
     bootstrap_password: str | None = os.getenv("SKILLGO_BOOTSTRAP_PASSWORD")
     bootstrap_name: str = os.getenv("SKILLGO_BOOTSTRAP_NAME", "SkillGo Owner")
-    max_upload_bytes: int = int(os.getenv("SKILLGO_MAX_UPLOAD_BYTES", str(20 * 1024 * 1024)))
+    max_upload_bytes: int = int(os.getenv("SKILLGO_MAX_UPLOAD_BYTES", str(50 * 1024 * 1024)))
     max_uncompressed_bytes: int = int(
-        os.getenv("SKILLGO_MAX_UNCOMPRESSED_BYTES", str(100 * 1024 * 1024))
+        os.getenv("SKILLGO_MAX_UNCOMPRESSED_BYTES", str(250 * 1024 * 1024))
     )
     max_archive_files: int = int(os.getenv("SKILLGO_MAX_ARCHIVE_FILES", "500"))
     max_run_input_bytes: int = int(os.getenv("SKILLGO_MAX_RUN_INPUT_BYTES", str(512 * 1024)))

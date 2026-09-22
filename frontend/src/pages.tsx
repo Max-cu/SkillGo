@@ -67,7 +67,7 @@ function useLoad<T>(path: string, initial: T) {
   return { data, setData, loading, error };
 }
 
-const maxSkillPackageBytes = 20 * 1024 * 1024;
+const maxSkillPackageBytes = 50 * 1024 * 1024;
 
 const skillPackageNetworkHint =
   "Skill 包上传连接被中断或被网关拒绝。这通常不是 ZIP 格式错误：当前网络可能会拦截包含 .py、.js、.sh 等脚本的压缩包。请检查网络后重试，或改用不含可执行脚本的纯指令型 Skill。";
@@ -169,7 +169,7 @@ function SkillPackagePicker({ file, onChange, busy = false, busyLabel = "正在�
     if (selected.size > maxSkillPackageBytes) {
       if (input) input.value = "";
       onChange(null);
-      setProblem("ZIP 包不能超过 20 MB");
+      setProblem("ZIP 包不能超过 50 MB");
       return;
     }
     onChange(selected);
@@ -184,7 +184,7 @@ function SkillPackagePicker({ file, onChange, busy = false, busyLabel = "正在�
     <span className="package-picker-icon">{busy ? <RotateCw className="spin-icon" /> : file ? <FileCheck2 /> : <CloudUpload />}</span>
     <span className="package-picker-copy" aria-live="polite">
       <strong title={file?.name}>{file ? file.name : "选择 Skill ZIP"}</strong>
-      <span>{file ? `${formatPackageSize(file.size)} · ZIP 包 · 待上传` : "最大 20 MB；兼容标准 SKILL.md 与 SkillGo 扩展包"}</span>
+      <span>{file ? `${formatPackageSize(file.size)} · ZIP 包 · 待上传` : "最大 50 MB；兼容标准 SKILL.md 与 SkillGo 扩展包"}</span>
     </span>
     <span className="package-picker-action">{busy ? busyLabel : file ? "已选择，点击可更换" : "点击选择或拖入 ZIP"}</span>
     {problem && <span className="package-picker-error">{problem}</span>}
