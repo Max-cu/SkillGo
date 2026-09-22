@@ -33,6 +33,80 @@ def test_write_payload_limit_covers_base64_of_max_text_file():
     assert base64_chars < 384 * 1024
 
 
+async def _drive_write(content, *, fail_on_chunk=None):
+    """Run DockerSandbox.write_text with a fake transport; return the sandbox
+    and the per-chunk argv list the in-container interpreter would receive."""
+    from app.sandbox_runtime import SandboxCommandResult
+
+    sandbox = DockerSandbox(SimpleNamespace(), job_id="chunk-job")
+    calls = []
+
+    async def fake_command(argv, *, timeout_seconds=30, allow_large_arguments=False):
+        assert allow_large_arguments is True
+        calls.append(argv)
+        if fail_on_chunk is not None and len(calls) == fail_on_chunk:
+            return SandboxCommandResult(exit_code=1, stdout="", stderr="disk full")
+        return SandboxCommandResult(exit_code=0, stdout="", stderr="")
+
+    sandbox.command = fake_command
+    await sandbox.write_text("/workspace/work/out.json", content)
+    return calls
+
+
+def test_write_text_streams_large_payload_in_truncate_then_append_chunks():
+    import asyncio
+    import base64
+    from app.sandbox_runtime import WRITE_CHUNK_BYTES
+
+    payload = "字" * 200000  # ~600 KiB of UTF-8
+    assert len(payload.encode("utf-8")) > WRITE_CHUNK_BYTES
+
+    calls = asyncio.run(_drive_write(payload))
+
+    assert len(calls) == 3
+    # First chunk truncates, every later chunk appends.
+    assert [argv[5] for argv in calls] == ["wb", "ab", "ab"]
+    # Base64 of a raw chunk must stay under the 384 KiB internal argv ceiling.
+    assert all(len(argv[4]) < 384 * 1024 for argv in calls)
+    reassembled = b"".join(base64.b64decode(argv[4]) for argv in calls)
+    assert reassembled.decode("utf-8") == payload
+
+
+def test_write_text_empty_string_still_emits_one_truncating_chunk():
+    import asyncio
+
+    calls = asyncio.run(_drive_write(""))
+    assert len(calls) == 1 and calls[0][5] == "wb"
+
+
+def test_write_text_rejects_above_effective_cap_without_any_transport_call():
+    import asyncio
+    from app.sandbox_runtime import MAX_WRITE_BYTES
+
+    sentinel = []
+
+    async def fake_command(argv, **kwargs):
+        sentinel.append(argv)
+        raise AssertionError("oversized write must be rejected before transport")
+
+    sandbox = DockerSandbox(SimpleNamespace(), job_id="cap-job")
+    sandbox.command = fake_command
+    with pytest.raises(SandboxRuntimeError) as caught:
+        asyncio.run(sandbox.write_text("/workspace/work/x.json", "x" * (MAX_WRITE_BYTES + 1)))
+    assert caught.value.code == "SANDBOX_WRITE_TOO_LARGE"
+    assert sentinel == []
+
+
+def test_write_text_mid_stream_chunk_failure_surfaces_write_failed():
+    import asyncio
+
+    with pytest.raises(SandboxRuntimeError) as caught:
+        asyncio.run(_drive_write("y" * (256 * 1024 + 10), fail_on_chunk=2))
+    assert caught.value.code == "SANDBOX_WRITE_FAILED"
+    assert "disk full" in str(caught.value)
+
+
+
 class _FakeContainer:
     def __init__(self):
         self.started = False

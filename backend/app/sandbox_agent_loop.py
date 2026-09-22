@@ -392,11 +392,13 @@ LEGACY_INLINE_BYTES = 4_000
 HEAD_TAIL_BYTES = 2_000
 
 
-def _head_tail(text: str, *, full_result_path: str, total_bytes: int) -> str:
+def _head_tail(text: str, *, full_result_path: str | None, total_bytes: int) -> str:
     """Head + tail of a long text stream with an omission marker.
 
     Character-safe on UTF-8 boundaries, so the model keeps both the command
-    context at the start and the final status/traceback at the end.
+    context at the start and the final status/traceback at the end. When
+    persistence failed (full_result_path is None) the marker tells the agent
+    to redirect large output to a workspace file itself.
     """
 
     encoded = text.encode("utf-8", errors="ignore")
@@ -405,9 +407,13 @@ def _head_tail(text: str, *, full_result_path: str, total_bytes: int) -> str:
     head = encoded[:HEAD_TAIL_BYTES].decode("utf-8", errors="ignore")
     tail = encoded[-HEAD_TAIL_BYTES:].decode("utf-8", errors="ignore")
     omitted = total_bytes - len(head.encode("utf-8", errors="ignore")) - len(tail.encode("utf-8", errors="ignore"))
+    location = (
+        f"full output preserved at {full_result_path}"
+        if full_result_path
+        else "output was not preserved — re-run with stdout redirected to a file under /workspace/work"
+    )
     return (
-        f"{head}\n\n[... {omitted} bytes omitted; full output preserved at "
-        f"{full_result_path} ...]\n\n{tail}"
+        f"{head}\n\n[... {omitted} bytes omitted; {location} ...]\n\n{tail}"
     )
 
 
@@ -450,8 +456,44 @@ async def _append_tool_result_with_offload(
     )
     try:
         await sandbox.write_text(full_result_path, serialized)
-    except SandboxRuntimeError as exc:
-        raise SandboxRuntimeError("TOOL_RESULT_PERSIST_FAILED", "Could not preserve complete tool output; write large results to a workspace file.") from exc
+    except SandboxRuntimeError:
+        # Observation bookkeeping must never kill the task (job b9a72828 died
+        # this way in the 256 KiB-8 MiB dead zone). Degrade to an inline
+        # head/tail excerpt with a redirect hint so the agent self-corrects.
+        persist_hint = (
+            "Output was too large to preserve. Re-run the command with stdout "
+            "redirected to a file under /workspace/work (e.g. '> /workspace/work/out.txt'), "
+            "then read that file in pages with read_file."
+        )
+        if action in RECENT_TIER_TOOLS and isinstance(payload, dict):
+            degraded: dict[str, Any] = {"truncated": True, "persist_failed": True, "hint": persist_hint}
+            for key, value in payload.items():
+                if key in {"stdout", "stderr"} and isinstance(value, str):
+                    degraded[key] = _head_tail(
+                        value,
+                        full_result_path=None,
+                        total_bytes=len(value.encode("utf-8", errors="ignore")),
+                    )
+                else:
+                    degraded[key] = value
+            payload = degraded
+        elif isinstance(payload, dict):
+            metadata = {key: payload[key] for key in ("ok", "exit_code", "error_code", "verification_id", "message")
+                        if key in payload}
+            metadata = {key: value[:400] if isinstance(value, str) else value for key, value in metadata.items()}
+            payload = {"excerpt": serialized.encode("utf-8")[:1600].decode("utf-8", errors="ignore"),
+                       "truncated": True, "persist_failed": True, "hint": persist_hint, **metadata}
+        else:
+            payload = {"content": str(payload)[:4000], "truncated": True,
+                       "persist_failed": True, "hint": persist_hint}
+        _append_tool_result(
+            messages,
+            result,
+            action,
+            payload,
+            tool_call_id=tool_call_id,
+        )
+        return payload
 
     if action in RECENT_TIER_TOOLS and isinstance(payload, dict):
         clipped: dict[str, Any] = {"full_result_path": full_result_path, "truncated": True}

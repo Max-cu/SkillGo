@@ -124,6 +124,35 @@ def test_non_command_tools_keep_legacy_4kb_tier():
     assert result['truncated'] and result['full_result_path'] in sandbox.files
 
 
+def test_persist_failure_degrades_to_recoverable_excerpt_instead_of_fatal():
+    """Job b9a72828 died fatally when persisting a 256 KiB-8 MiB command result
+    failed. The loop must instead return a recoverable head/tail payload so the
+    agent can redirect its output to a file and continue."""
+    from app.sandbox_agent_loop import _append_tool_result_with_offload
+    from app.sandbox_runtime import SandboxRuntimeError
+
+    class Sandbox:
+        async def write_text(self, path, content):
+            raise SandboxRuntimeError("SANDBOX_WRITE_TOO_LARGE", "boom")
+
+    stdout = 'START_MARKER-' + ('middle line\n' * 20000) + '-END_MARKER'
+    assert len(stdout.encode()) > 52 * 1024
+    original = {'exit_code': 0, 'stdout': stdout, 'stderr': ''}
+    messages = []
+    result = asyncio.run(_append_tool_result_with_offload(
+        messages, SimpleNamespace(), 'command', original,
+        sandbox=Sandbox(), turn_number=15, operation_number=16, tool_call_id='x'))
+    # No exception propagated: task survives with a recoverable payload.
+    assert result['truncated'] is True
+    assert result['persist_failed'] is True
+    assert 'redirected to a file' in result['hint']
+    assert 'full_result_path' not in result
+    assert 'START_MARKER' in result['stdout'] and 'END_MARKER' in result['stdout']
+    assert 'output was not preserved' in result['stdout']
+    inline = json.loads(messages[0]['content'])['payload']
+    assert inline['persist_failed'] is True
+
+
 def test_read_file_window_is_never_offloaded_even_when_large():
     """The model's explicit bounded window must arrive whole; this contract
     break caused the copy-to-work-file/smaller-chunk loop."""

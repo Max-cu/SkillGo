@@ -28,6 +28,14 @@ TIMEOUT_KILL_GRACE_SECONDS = 5
 # transport itself must answer within this grace period or the sandbox is
 # considered wedged and destroyed (distinct from a normal command timeout).
 COMMAND_TRANSPORT_GRACE_SECONDS = 30
+# Effective ceiling for one sandbox write. Must stay just above the 8 MiB
+# command-output cap so every command result the runtime can return also fits
+# in the tool-result persistence file (the old 256 KiB write cap created a
+# fatal dead zone for 256 KiB-8 MiB outputs).
+MAX_WRITE_BYTES = 9 * 1024 * 1024
+# Raw bytes per chunk; base64 (~350 KiB) stays under the 384 KiB ceiling for
+# internal allow_large_arguments argv items.
+WRITE_CHUNK_BYTES = 256 * 1024
 
 
 def wrap_argv_with_timeout(argv: list[str], timeout: int) -> list[str]:
@@ -451,12 +459,19 @@ print(data[start:start + limit], end="")
 
     async def write_text(self, path: str, content: str) -> None:
         data = content.encode("utf-8")
-        if len(data) > 256 * 1024:
-            raise SandboxRuntimeError("SANDBOX_WRITE_TOO_LARGE", "One write is limited to 256 KiB")
+        if len(data) > MAX_WRITE_BYTES:
+            raise SandboxRuntimeError(
+                "SANDBOX_WRITE_TOO_LARGE",
+                f"One write is limited to {MAX_WRITE_BYTES // (1024 * 1024)} MiB",
+            )
         import base64
 
         target = _workspace_path(path, allow_root=False)
-        encoded = base64.b64encode(data).decode("ascii")
+        # Content rides to the container as a base64 argv item, so each chunk
+        # stays under the 384 KiB internal-argument ceiling. The first chunk
+        # truncates, later chunks append — this makes the effective write cap
+        # MAX_WRITE_BYTES rather than the old single-arg 256 KiB limit, which
+        # used to make oversized command-result persistence fail fatally.
         source = """
 import base64
 import sys
@@ -471,17 +486,24 @@ if path.exists() and path.is_dir():
 if path.is_symlink():
     raise PermissionError(f"symbolic links cannot be written: {path}")
 path.parent.mkdir(parents=True, exist_ok=True)
-path.write_bytes(base64.b64decode(sys.argv[2]))
+mode = sys.argv[3]
+with open(path, mode) as handle:
+    handle.write(base64.b64decode(sys.argv[2]))
 """
-        result = await self.command(
-            ["python3", "-c", source, target, encoded],
-            timeout_seconds=30,
-            # Content is capped at 256 KiB above and Base64 is data, not code.
-            # Agent-authored command calls never receive this exemption.
-            allow_large_arguments=True,
-        )
-        if result.exit_code != 0:
-            raise SandboxRuntimeError("SANDBOX_WRITE_FAILED", result.stderr or "Could not write file")
+        chunks = [data[i:i + WRITE_CHUNK_BYTES] for i in range(0, len(data), WRITE_CHUNK_BYTES)] or [b""]
+        for index, chunk in enumerate(chunks):
+            encoded = base64.b64encode(chunk).decode("ascii")
+            mode = "wb" if index == 0 else "ab"
+            result = await self.command(
+                ["python3", "-c", source, target, encoded, mode],
+                timeout_seconds=30,
+                # Content is split into <=256 KiB chunks above and Base64 is
+                # data, not code. Agent-authored command calls never receive
+                # this exemption.
+                allow_large_arguments=True,
+            )
+            if result.exit_code != 0:
+                raise SandboxRuntimeError("SANDBOX_WRITE_FAILED", result.stderr or "Could not write file")
 
     def download_file(self, path: str) -> bytes:
         target = _workspace_path(path, allow_root=False)
