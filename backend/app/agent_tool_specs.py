@@ -16,8 +16,8 @@ def extend_tools(tools: list[dict]) -> None:
     verifier['name'] = 'run_verifier'
     verifier['description'] = ('Run the final read-only verifier. stdout must be exactly JSON with checks: '
         '[{requirement_id:"r1",passed:true,observed:"actual value"}]. Cover every success_criteria as r1, r2, etc. '
-        'The platform checks exit code and unchanged artifacts and returns verification_id. '
-        'Use write_file to prepare the verifier, then this tool to execute it.')
+        'The platform checks exit code and unchanged artifacts, automatically records successful validation, and returns verification_id and validation_recorded. Do not call record_validation after success. '
+        'Reuse a suitable existing Skill verifier. For short checks, pass python3 -c and the code directly in argv (each argument must fit 4096 characters); use write_file only for a longer program.')
     tools.append({'type': 'function', 'function': verifier})
     fixed = deepcopy(by_name['read_skill'])
     fixed['name'] = 'run_fixed_skill'

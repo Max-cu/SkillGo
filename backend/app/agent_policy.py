@@ -359,7 +359,7 @@ class AgentExecutionState:
             if (not self.validation or self.validation.get('status') != 'passed'
                     or self.validation.get('mutation_epoch') != self.mutation_epoch
                     or criteria != self.requirements):
-                return {"ok": False, "error_code": "PLAN_VERIFICATION_REQUIRED", "message": "Keep final verification pending/in_progress until run_verifier and record_validation pass for the current requirements and outputs."}
+                return {"ok": False, "error_code": "PLAN_VERIFICATION_REQUIRED", "message": "Keep final verification pending/in_progress until run_verifier passes and the platform records validation for the current requirements and outputs."}
             if by_id[validation_step_id]['status'] == 'skipped':
                 return {"ok": False, "error_code": "PLAN_VERIFICATION_REQUIRED", "message": "Final verification cannot be skipped; mark it completed after validation passes."}
         missing_refs: dict[str, list[str]] = {}
@@ -640,7 +640,7 @@ class AgentExecutionState:
             if incomplete:
                 return f"Update the plan before finish; incomplete step ids: {incomplete}."
         if self.validation is None or self.validation.get("mutation_epoch") != self.mutation_epoch:
-            return "Run one concentrated final verification on the current artifacts and record_validation before finish."
+            return "Run one concentrated run_verifier check on the current artifacts before finish; successful validation is recorded automatically."
         if self.validation.get("artifacts") != dict(sorted(current_artifacts.items())):
             return "Current artifact bytes differ from the files bound to the latest validation; rerun verification."
         return None

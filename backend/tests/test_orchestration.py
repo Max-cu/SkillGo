@@ -264,43 +264,70 @@ def test_agent_loop_executes_platform_verifier_before_finish(client, user_header
         assert job.execution_plan['steps'][0]['status'] == 'completed'
 
 
-def test_agent_loop_syncs_verification_plan_and_finishes_without_replan(client, user_headers, fake_model_gateway):
+@pytest.mark.parametrize("legacy_registration", [False, True])
+@pytest.mark.parametrize("tamper_before_finish", [False, True])
+def test_agent_loop_syncs_verification_plan_and_finishes_without_replan(client, user_headers, fake_model_gateway, legacy_registration, tamper_before_finish):
     from app.database import SessionLocal
     from app.models import WorkflowJob
     from app.sandbox_agent_loop import _run_agent_loop
     from test_workflow_jobs import create_version, sandbox_skill_zip
     _, version = create_version(client, user_headers, slug='orchestration-auto-sync', package=sandbox_skill_zip())
     created = client.post('/api/v1/jobs', headers=user_headers, data={'version_id': version['id'], 'instruction': 'answer 42'}).json()
+    class FinishRejected(Exception):
+        pass
+
     class ScriptedGateway:
         connection = SimpleNamespace(context_tokens=48000)
         def __init__(self):
             self.turn = 0
         async def agent_step(self, *, messages):
             self.turn += 1
+            if self.turn == 3:
+                proof = next(json.loads(item['content'])['payload'] for item in reversed(messages) if isinstance(item.get('content'), str) and item['content'].startswith('{"tool_result": "run_verifier"'))
+                assert proof['validation_recorded'] is True
+                assert proof['validation_step_completed'] is True
+            step = self.turn if legacy_registration or self.turn < 3 else self.turn + 1
+            if step == 6 and tamper_before_finish:
+                rejected = next(json.loads(item['content'])['payload'] for item in reversed(messages) if isinstance(item.get('content'), str) and item['content'].startswith('{"tool_result": "finish"'))
+                assert rejected['ok'] is False
+                assert rejected['error_code'] == 'AGENT_PLAN_INCOMPLETE'
+                raise FinishRejected()
             steps = [{'id': 'make', 'title': 'Make', 'status': 'completed', 'evidence': 'result file exists', 'output_refs': ['/workspace/output/result.txt']}, {'id': 'verify', 'title': 'Verify', 'status': 'in_progress', 'evidence': '', 'depends_on': ['make']}]
             base = {'action': 'update_plan', 'goal': 'answer 42', 'steps': steps, 'success_criteria': ['answer is 42'], 'validation_step_id': 'verify'}
-            if self.turn == 1:
+            if step == 1:
                 action = base
-            elif self.turn == 2:
+            elif step == 2:
                 action = {'action': 'run_verifier', 'argv': ['verify']}
-            elif self.turn == 3:
+            elif step == 3:
                 proof = next(json.loads(item['content'])['payload'] for item in reversed(messages) if isinstance(item.get('content'), str) and item['content'].startswith('{"tool_result": "run_verifier"'))
                 self.proof_id = proof['verification_id']
                 assert proof['ok']
                 action = {'action': 'record_validation', 'verification_id': self.proof_id, 'status': 'passed', 'summary': 'verified', 'evidence': 'observed 42', 'checks': ['answer 42']}
-            elif self.turn == 4:
+            elif step == 4:
                 action = {'action': 'complete_skill', 'skill_index': 1, 'evidence': 'verified output'}
             else:
-                assert self.turn == 5
+                assert step == 5
+                if tamper_before_finish:
+                    sandbox.files['/workspace/output/result.txt'] = b'43'
                 action = {'action': 'finish', 'summary': 'answer 42', 'artifacts': ['/workspace/output/result.txt']}
             return ModelResult(action, 'scripted', {})
     with SessionLocal() as db:
         job = db.get(WorkflowJob, created['id'])
         contexts = [{'name': 'Test', 'version': '1', 'root': '/workspace/skill', 'skill_md': '# Answer', 'runtime_requirements': {}}]
-        sandbox = MemorySandbox()
+        class CountingSandbox(MemorySandbox):
+            downloads = 0
+            def download_file(self, path):
+                self.downloads += 1
+                return self.read_workspace_file(path)
+        sandbox = CountingSandbox()
+        if tamper_before_finish:
+            with pytest.raises(FinishRejected):
+                asyncio.run(_run_agent_loop(db, job, sandbox, skill_contexts=contexts, gateway=ScriptedGateway(), job_cancelled=lambda: False))
+            return
         result = asyncio.run(_run_agent_loop(db, job, sandbox, skill_contexts=contexts, gateway=ScriptedGateway(), job_cancelled=lambda: False))
         assert result[1] == ['/workspace/output/result.txt']
-        assert result[2] == 5
+        assert result[2] == (5 if legacy_registration else 4)
+        assert sandbox.downloads == (4 if legacy_registration else 3)
         assert job.execution_plan['steps'][0]['status'] == 'completed'
 
         assert job.execution_plan['steps'][-1]['status'] == 'completed'
@@ -866,3 +893,27 @@ def test_artifact_failure_is_recoverable_and_repair_can_be_verified(code):
     repaired = asyncio.run(run_verifier(sandbox, {'argv': ['verify']}, requirements=['correct']))
     assert repaired['ok'] is True
     assert repaired['verification_id'] != proof['verification_id']
+
+
+def test_plan_snapshot_reads_overlapping_refs_once_but_refreshes_next_snapshot():
+    from collections import Counter
+    from app.workflow_tools import snapshot_step_files
+    class Sandbox(MemorySandbox):
+        def __init__(self):
+            super().__init__()
+            self.reads = Counter()
+        async def list_files(self, path):
+            return await super().list_files(path) + [
+                {'path': '/workspace/output', 'type': 'directory'},
+            ]
+        def read_workspace_file(self, path):
+            self.reads[path] += 1
+            return super().read_workspace_file(path)
+    sandbox = Sandbox()
+    refs = ['/workspace/output', '/workspace/output/result.txt']
+    first = asyncio.run(snapshot_step_files(sandbox, refs))
+    assert sandbox.reads['/workspace/output/result.txt'] == 1
+    sandbox.files['/workspace/output/result.txt'] = b'43'
+    second = asyncio.run(snapshot_step_files(sandbox, refs))
+    assert sandbox.reads['/workspace/output/result.txt'] == 2
+    assert all(first[path] != second[path] for path in refs)

@@ -204,7 +204,7 @@ SANDBOX_AGENT_TOOLS: list[dict[str, Any]] = [
                 "Declare dependencies and input/output files; output_refs may name a produced "
                 "directory, which is tracked as an aggregate. Referenced paths need not exist at "
                 "update time but must exist before finish. Update after each stage. Final verification "
-                "can be completed only after run_verifier and record_validation pass; it cannot be skipped."
+                "is automatically completed after run_verifier passes when all other steps are complete; it cannot be skipped."
             ),
             "parameters": {
                 "type": "object",
@@ -267,7 +267,7 @@ SANDBOX_AGENT_TOOLS: list[dict[str, Any]] = [
         "function": {
             "name": "record_validation",
             "description": (
-                "Record the outcome of one concentrated final verification after a real verifier "
+                "Compatibility tool: successful run_verifier already records validation automatically; do not call this again. Record the outcome after a real verifier "
                 "command or Python program. The platform binds that operation to SHA-256 hashes of "
                 "every current output artifact. Report observed checks, not just PASS."
             ),

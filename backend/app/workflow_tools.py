@@ -61,10 +61,16 @@ async def snapshot_plan_refs(sandbox, paths: list[str]) -> tuple[dict[str, str],
 
     result: dict[str, str] = {}
     missing: list[str] = []
+    # Overlapping directory/file refs should download each member only once
+    # within this snapshot. Never reuse hashes across separate operations.
+    digests: dict[str, str] = {}
+    def digest_file(path: str) -> str:
+        if path not in digests:
+            digests[path] = hashlib.sha256(sandbox.read_workspace_file(path)).hexdigest()
+        return digests[path]
     for ref in refs:
         if ref in files_present:
-            data = sandbox.read_workspace_file(ref)
-            result[ref] = hashlib.sha256(data).hexdigest()
+            result[ref] = digest_file(ref)
         elif ref in dirs_present:
             members = sorted(p for p in files_present if p.startswith(ref.rstrip('/') + '/'))
             members = members[:MAX_DIRECTORY_MEMBERS]
@@ -73,7 +79,7 @@ async def snapshot_plan_refs(sandbox, paths: list[str]) -> tuple[dict[str, str],
                 continue
             aggregate = hashlib.sha256()
             for member in members:
-                digest = hashlib.sha256(sandbox.read_workspace_file(member)).hexdigest()
+                digest = digest_file(member)
                 aggregate.update(f'{PurePosixPath(member).relative_to(ref)}:{digest}\n'.encode())
             result[ref] = aggregate.hexdigest()
         else:
