@@ -353,6 +353,7 @@ GitHub Actions 检查后端测试、前端构建、部署脚本和沙箱 Compose
 ## 参与项目
 
 ·欢迎提交问题、改进建议与 Pull Request。如果你认可SkillGo，不妨点个star⭐，这将鼓励我们。
+
 ·开发约定见 [CONTRIBUTING.md](CONTRIBUTING.md)，安全问题请按 [SECURITY.md](SECURITY.md) 私下报告。
 
-SkillGo 使用 [MIT License](LICENSE)。
+·SkillGo 使用 [MIT License](LICENSE)。
