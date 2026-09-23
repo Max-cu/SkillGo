@@ -217,7 +217,11 @@ def test_model_adapter_reserves_output_budget_and_selects_parameter_names():
     assert request_options(connection) == {'reasoning_effort': 'high', 'max_completion_tokens': 16000}
 
 
-def test_agent_loop_executes_platform_verifier_before_finish(client, user_headers, fake_model_gateway):
+@pytest.mark.parametrize('tool_limit', [0, 480])
+def test_agent_loop_executes_platform_verifier_before_finish(client, user_headers, fake_model_gateway, monkeypatch, tool_limit):
+    from dataclasses import replace
+    from app import sandbox_agent_loop
+    monkeypatch.setattr(sandbox_agent_loop, 'settings', replace(sandbox_agent_loop.settings, sandbox_max_agent_tool_calls=tool_limit))
     from app.database import SessionLocal
     from app.models import WorkflowJob
     from app.sandbox_agent_loop import _run_agent_loop

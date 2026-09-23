@@ -103,3 +103,20 @@ def test_every_path_looks_unique_even_with_many_repeats():
     )
     names = unique_artifact_filenames(paths)
     assert len(set(names.values())) == 6
+
+
+def test_truncated_collisions_keep_numeric_suffix():
+    for extension in ('', '.xlsx'):
+        paths = [f'/workspace/output/{"a" * 180}{i}{extension}' for i in range(12)]
+        names = list(unique_artifact_filenames(paths).values())
+        assert len(set(names)) == len(paths)
+        assert all(len(name) <= ARTIFACT_FILENAME_MAX for name in names)
+        assert all(name.endswith(extension) for name in names)
+        assert '_12' in names[-1]
+
+
+def test_long_extension_collisions_stay_within_limit():
+    paths = [f'/workspace/output/{i}/a.{"x" * 200}' for i in range(15)]
+    names = list(unique_artifact_filenames(paths).values())
+    assert len(set(names)) == len(paths)
+    assert all(len(name) <= ARTIFACT_FILENAME_MAX for name in names)

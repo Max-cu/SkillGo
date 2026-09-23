@@ -62,7 +62,14 @@ function useLoad<T>(path: string, initial: T) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   useEffect(() => {
-    api<T>(path).then(setData).catch((reason: Error) => setError(reason.message)).finally(() => setLoading(false));
+    const controller = new AbortController();
+    setLoading(true);
+    setError("");
+    api<T>(path, { signal: controller.signal })
+      .then((value) => { if (!controller.signal.aborted) setData(value); })
+      .catch((reason: Error) => { if (!controller.signal.aborted) setError(reason.message); })
+      .finally(() => { if (!controller.signal.aborted) setLoading(false); });
+    return () => controller.abort();
   }, [path]);
   return { data, setData, loading, error };
 }
@@ -1269,7 +1276,7 @@ export function RunSkillPage() {
   async function uploadWorkspaceFile(event: ChangeEvent<HTMLInputElement>) {
     const selectedFile = event.target.files?.[0];
     event.target.value = "";
-    if (!selectedFile || busy || fileBusy) return;
+    if (!selectedFile || busy || fileBusy || contextBusy) return;
     setFileBusy(true); setContextMessage(""); setError("");
     try {
       const activeConversation = selectedConversation || await createConversation();
@@ -1319,7 +1326,7 @@ export function RunSkillPage() {
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const text = messageText.trim();
-    if (!text || busy || contextBusy) return;
+    if (!text || busy || contextBusy || fileBusy || messagesLoading) return;
     setBusy(true); setError(""); setContextMessage("");
     setPendingMessage(text); setMessageText("");
     try {
@@ -1350,10 +1357,10 @@ export function RunSkillPage() {
     <PageTitle eyebrow="INSTRUCTION DEBUG" title={`${skill.name} · 对话调试`} description="仅用于调试纯指令 Skill。需要脚本、工具或正式产物时，请使用“运行任务”。" action={<Link className="button ghost" to={`/app/skills/${skill.id}`}><ArrowLeft size={16} />返回 Skill 详情</Link>} />
     <div className="agent-console">
       <aside className="agent-conversations">
-        <div className="agent-conversations-head"><div><span className="eyebrow">CONVERSATIONS</span><strong>会话</strong></div><button type="button" aria-label="新建会话" title="新建会话" disabled={busy || contextBusy} onClick={() => void createConversation()}><Plus /></button></div>
-        <label className="agent-version">Skill 版本<select value={selectedVersion.id} disabled={busy || contextBusy} onChange={(event) => changeVersion(event.target.value)}>{[...versions].reverse().map((version) => <option key={version.id} value={version.id}>v{version.version}</option>)}</select></label>
+        <div className="agent-conversations-head"><div><span className="eyebrow">CONVERSATIONS</span><strong>会话</strong></div><button type="button" aria-label="新建会话" title="新建会话" disabled={busy || contextBusy || fileBusy} onClick={() => void createConversation()}><Plus /></button></div>
+        <label className="agent-version">Skill 版本<select value={selectedVersion.id} disabled={busy || contextBusy || fileBusy} onChange={(event) => changeVersion(event.target.value)}>{[...versions].reverse().map((version) => <option key={version.id} value={version.id}>v{version.version}</option>)}</select></label>
         <div className="agent-conversation-list">
-          {versionConversations.length ? versionConversations.map((conversation) => <button type="button" className={conversation.id === selectedConversationId ? "active" : ""} key={conversation.id} onClick={() => { setSelectedConversationId(conversation.id); setRenaming(false); setRenameDraft(""); setContextMessage(""); setError(""); }}><MessageSquareText /><span><strong>{conversation.title}</strong><small>{conversation.message_count ? `${Math.floor(conversation.message_count / 2)} 轮对话` : "新会话"}</small></span></button>) : <p className="agent-no-conversations">还没有会话。直接在右侧发送消息即可开始。</p>}
+          {versionConversations.length ? versionConversations.map((conversation) => <button type="button" disabled={busy || contextBusy || fileBusy} className={conversation.id === selectedConversationId ? "active" : ""} key={conversation.id} onClick={() => { setSelectedConversationId(conversation.id); setRenaming(false); setRenameDraft(""); setContextMessage(""); setError(""); }}><MessageSquareText /><span><strong>{conversation.title}</strong><small>{conversation.message_count ? `${Math.floor(conversation.message_count / 2)} 轮对话` : "新会话"}</small></span></button>) : <p className="agent-no-conversations">还没有会话。直接在右侧发送消息即可开始。</p>}
         </div>
         <div className="agent-context-note"><i /><span>不同用户的会话和历史互相隔离</span></div>
       </aside>
@@ -1361,22 +1368,22 @@ export function RunSkillPage() {
       <section className="agent-chat">
         <header className="agent-chat-head">
           <div className="agent-identity"><span><Sparkles /></span><div>{renaming && selectedConversation ? <div className="agent-rename"><input aria-label="编辑会话名称" value={renameDraft} maxLength={160} autoFocus disabled={contextBusy} onChange={(event) => setRenameDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); void renameConversation(); } if (event.key === "Escape") { setRenaming(false); setRenameDraft(""); } }} /><button type="button" title="保存" onClick={renameConversation}><Check /></button><button type="button" title="取消" onClick={() => { setRenaming(false); setRenameDraft(""); }}><X /></button></div> : <><strong>{selectedConversation?.title || "新对话"}</strong><small>{skill.name} · v{selectedVersion.version} · 最多携带最近 10 轮上下文</small></>}</div></div>
-          {selectedConversation && !renaming && <div className="agent-chat-actions"><button type="button" title="重命名" aria-label="重命名会话" disabled={busy || contextBusy} onClick={beginRename}><PencilLine /></button><button type="button" title="清空消息" aria-label="清空消息" disabled={busy || contextBusy || !selectedConversation.message_count} onClick={clearConversation}><RotateCw /></button><button className="danger" type="button" title="删除会话" aria-label="删除会话" disabled={busy || contextBusy} onClick={deleteConversation}><Trash2 /></button></div>}
+          {selectedConversation && !renaming && <div className="agent-chat-actions"><button type="button" title="重命名" aria-label="重命名会话" disabled={busy || contextBusy || fileBusy} onClick={beginRename}><PencilLine /></button><button type="button" title="清空消息" aria-label="清空消息" disabled={busy || contextBusy || fileBusy || messagesLoading || !selectedConversation.message_count} onClick={clearConversation}><RotateCw /></button><button className="danger" type="button" title="删除会话" aria-label="删除会话" disabled={busy || contextBusy || fileBusy} onClick={deleteConversation}><Trash2 /></button></div>}
         </header>
 
         <div className="agent-messages" aria-live="polite">
-          {messagesLoading ? <div className="agent-messages-loading"><i /><i /><i /></div> : !messages.length && !pendingMessage ? <div className="agent-chat-empty"><span><Sparkles /></span><h2>开始与 {skill.name} 对话</h2><p>像使用普通 Agent 一样描述你的需求，不需要填写 JSON。</p><button type="button" onClick={() => setMessageText("先介绍一下你能帮我完成什么任务")}>先介绍一下你能做什么</button></div> : messages.map((message) => <article className={`agent-message ${message.role === "assistant" ? "assistant" : "user"}`} key={message.id}><span className="agent-message-avatar">{message.role === "assistant" ? <Sparkles /> : "你"}</span><div><div className="agent-message-bubble">{chatMessageText(message.content)}</div><div className="agent-message-meta"><time>{new Date(message.created_at).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}</time>{message.role === "assistant" && selectedConversation && <button type="button" disabled={fileBusy || busy} onClick={() => void saveMessageAsArtifact(message)}><Save />保存为文件</button>}</div></div></article>)}
+          {messagesLoading ? <div className="agent-messages-loading"><i /><i /><i /></div> : !messages.length && !pendingMessage ? <div className="agent-chat-empty"><span><Sparkles /></span><h2>开始与 {skill.name} 对话</h2><p>像使用普通 Agent 一样描述你的需求，不需要填写 JSON。</p><button type="button" onClick={() => setMessageText("先介绍一下你能帮我完成什么任务")}>先介绍一下你能做什么</button></div> : messages.map((message) => <article className={`agent-message ${message.role === "assistant" ? "assistant" : "user"}`} key={message.id}><span className="agent-message-avatar">{message.role === "assistant" ? <Sparkles /> : "你"}</span><div><div className="agent-message-bubble">{chatMessageText(message.content)}</div><div className="agent-message-meta"><time>{new Date(message.created_at).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}</time>{message.role === "assistant" && selectedConversation && <button type="button" disabled={fileBusy || busy || contextBusy} onClick={() => void saveMessageAsArtifact(message)}><Save />保存为文件</button>}</div></div></article>)}
           {pendingMessage && <article className="agent-message user pending"><span className="agent-message-avatar">你</span><div><div className="agent-message-bubble">{pendingMessage}</div><time>刚刚</time></div></article>}
           {busy && <article className="agent-message assistant thinking"><span className="agent-message-avatar"><Sparkles /></span><div><div className="agent-message-bubble"><i /><i /><i /></div><time>Skill 正在处理</time></div></article>}
           <div ref={messagesEndRef} />
         </div>
 
-        {workspaceFiles.length > 0 && <div className="agent-files"><span><Paperclip />当前会话文件</span>{workspaceFiles.map((file) => <article key={file.id}><FileText /><span><strong title={file.filename}>{file.filename}</strong><small>{file.purged_at ? "已超过 15 天保留期" : `${formatPackageSize(file.size_bytes)} · ${file.source === "generated" ? "Skill 产物" : file.readable ? "可供 Skill 读取" : "仅存储"}`}</small></span><button type="button" title={file.purged_at ? "文件已到期" : "下载"} aria-label={`下载 ${file.filename}`} disabled={Boolean(file.purged_at)} onClick={() => void downloadWorkspaceFile(file)}>{file.purged_at ? <Clock3 /> : <Download />}</button><button className="danger" type="button" title="删除" aria-label={`删除 ${file.filename}`} disabled={fileBusy || busy} onClick={() => void deleteWorkspaceFile(file)}><X /></button></article>)}</div>}
+        {workspaceFiles.length > 0 && <div className="agent-files"><span><Paperclip />当前会话文件</span>{workspaceFiles.map((file) => <article key={file.id}><FileText /><span><strong title={file.filename}>{file.filename}</strong><small>{file.purged_at ? "已超过 15 天保留期" : `${formatPackageSize(file.size_bytes)} · ${file.source === "generated" ? "Skill 产物" : file.readable ? "可供 Skill 读取" : "仅存储"}`}</small></span><button type="button" title={file.purged_at ? "文件已到期" : "下载"} aria-label={`下载 ${file.filename}`} disabled={Boolean(file.purged_at)} onClick={() => void downloadWorkspaceFile(file)}>{file.purged_at ? <Clock3 /> : <Download />}</button><button className="danger" type="button" title="删除" aria-label={`删除 ${file.filename}`} disabled={fileBusy || busy || contextBusy} onClick={() => void deleteWorkspaceFile(file)}><X /></button></article>)}</div>}
         {contextMessage && <div className="agent-context-message" aria-live="polite">{contextMessage}</div>}
         <form className="agent-composer" onSubmit={submit}>
           <label className="agent-model-picker"><span>对话模型</span><select aria-label="选择对话模型" value={selectedModelName} disabled={busy || contextBusy || !availableModels.configured} onChange={(event) => setSelectedModelName(event.target.value)}>{availableModels.models.map((modelName) => <option key={modelName} value={modelName}>{modelName}</option>)}</select></label>
           <textarea aria-label="给 Skill 发送消息" rows={3} maxLength={20000} value={messageText} disabled={busy || contextBusy || selectedConversation?.is_running} onChange={(event) => { setMessageText(event.target.value); setError(""); }} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); event.currentTarget.form?.requestSubmit(); } }} placeholder={`给 ${skill.name} 发送消息…`} />
-          <div><button className="agent-attach" type="button" title="上传会话文件" aria-label="上传会话文件" disabled={busy || fileBusy || contextBusy} onClick={() => fileInputRef.current?.click()}>{fileBusy ? <RotateCw className="spin-icon" /> : <Paperclip />}</button><input ref={fileInputRef} type="file" hidden onChange={uploadWorkspaceFile} accept=".txt,.md,.csv,.json,.yaml,.yml,.log,.html,.htm,.xml,.docx,.xlsx,.pdf,.png,.jpg,.jpeg" /><span className="agent-composer-hint">附件保留 15 天，请及时保存</span>{error && <small>{error}</small>}<button type="submit" aria-label="发送消息" disabled={!messageText.trim() || busy || contextBusy || selectedConversation?.is_running}><SendHorizontal /></button></div>
+          <div><button className="agent-attach" type="button" title="上传会话文件" aria-label="上传会话文件" disabled={busy || fileBusy || contextBusy} onClick={() => fileInputRef.current?.click()}>{fileBusy ? <RotateCw className="spin-icon" /> : <Paperclip />}</button><input ref={fileInputRef} type="file" hidden onChange={uploadWorkspaceFile} accept=".txt,.md,.csv,.json,.yaml,.yml,.log,.html,.htm,.xml,.docx,.xlsx,.pdf,.png,.jpg,.jpeg" /><span className="agent-composer-hint">附件保留 15 天，请及时保存</span>{error && <small>{error}</small>}<button type="submit" aria-label="发送消息" disabled={!messageText.trim() || busy || contextBusy || fileBusy || messagesLoading || selectedConversation?.is_running}><SendHorizontal /></button></div>
         </form>
       </section>
     </div>

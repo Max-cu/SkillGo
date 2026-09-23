@@ -149,6 +149,9 @@ async def restore_bundle(sandbox, bundle):
     metadata_path = '/workspace/.skillgo-restore-' + uuid4().hex + '.json'
     small = {k: meta[k] for k in ('directories', 'modes', 'manifest')}
     await asyncio.to_thread(sandbox.put_files, {**files, metadata_path: json.dumps(small).encode()})
+    # Stage every package before the first command starts the task container.
+    from .sandbox_checkpoint import reprovision_skill_packages
+    await reprovision_skill_packages(sandbox)
     code = ('import os,json,hashlib\ns=json.load(open(' + repr(metadata_path) + '))\n'
             'for p in s["directories"]: os.makedirs(p,exist_ok=True)\n'
             'for p,h in s["manifest"].items(): assert hashlib.sha256(open(p,"rb").read()).hexdigest()==h,p\n'

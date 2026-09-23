@@ -113,6 +113,27 @@ def test_restore_only_passes_filesystem_metadata(job):
     asyncio.run(cp.restore_bundle(sandbox, bundle))
     assert sandbox.durable_resume['next_turn'] == 4
 
+
+def test_restore_stages_packages_before_starting_container(job):
+    publish(job)
+    class Sandbox:
+        container = None
+        provisioned_packages = {'skill-packages/01.zip': b'package'}
+        provisioned_extractions = [('/workspace/skill-packages/01.zip', '/workspace/skills/01')]
+        def __init__(self):
+            self.staged = {}
+        def put_files(self, files):
+            assert self.container is None, 'Cannot stage after container starts'
+            self.staged.update(files)
+        async def command(self, argv, **kwargs):
+            assert 'skill-packages/01.zip' in self.staged
+            assert '/workspace/work/a' in self.staged
+            self.container = object()
+            return SimpleNamespace(exit_code=0)
+    sandbox = Sandbox()
+    asyncio.run(cp.restore_bundle(sandbox, cp.load_bundle(job)))
+    assert sandbox.durable_resume['next_turn'] == 4
+
 def test_agent_continues_from_disk_after_losing_all_in_memory_state(client, user_headers, fake_model_gateway, monkeypatch, job):
     from dataclasses import replace
     from app import sandbox_agent_loop as loop

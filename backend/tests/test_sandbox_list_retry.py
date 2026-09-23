@@ -1,4 +1,4 @@
-﻿"""list_files must survive one transient invalid-output glitch.
+"""list_files must survive one transient invalid-output glitch.
 
 Regression for job 4b5fed78 resume: a single gofer/exec hiccup returned
 exit 0 with non-JSON stdout and killed the whole recovered task.

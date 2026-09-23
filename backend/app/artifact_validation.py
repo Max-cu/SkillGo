@@ -95,10 +95,12 @@ def unique_artifact_filenames(paths: list[str]) -> dict[str, str]:
         if candidate in chosen:
             stem = PurePosixPath(candidate).stem
             suffix = PurePosixPath(candidate).suffix
+            if len(suffix) >= ARTIFACT_FILENAME_MAX - 8:
+                stem, suffix = candidate, ""
             counter = 2
             while True:
                 suffix_text = f"_{counter}{suffix}"
-                candidate = _cap_filename_length(f"{stem}{suffix_text}")
+                candidate = f"{stem[:ARTIFACT_FILENAME_MAX - len(suffix_text)]}{suffix_text}"
                 if candidate not in chosen:
                     break
                 counter += 1

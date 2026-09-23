@@ -11,7 +11,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import Engine, create_engine, inspect, insert, select
+from sqlalchemy import Engine, MetaData, Table, create_engine, inspect, insert, select
 from sqlalchemy.engine import Connection
 
 from app.database import Base, engine as target_engine
@@ -54,10 +54,22 @@ def table_counts(engine: Engine) -> dict[str, int | None]:
     return result
 
 
+def unsupported_populated_tables(source: Engine) -> list[str]:
+    existing = set(inspect(source).get_table_names())
+    unsupported = []
+    with source.connect() as connection:
+        for name in sorted(existing - set(TABLE_ORDER) - {"alembic_version", "sqlite_sequence"}):
+            table = Table(name, MetaData(), autoload_with=connection)
+            if connection.execute(select(table).limit(1)).first() is not None:
+                unsupported.append(name)
+    return unsupported
+
+
 def show_inventory(source: Engine, target: Engine) -> None:
     payload: dict[str, Any] = {
         "source": table_counts(source),
         "target": table_counts(target),
+        "unsupported_populated_source_tables": unsupported_populated_tables(source),
     }
     for label, engine in (("source", source), ("target", target)):
         existing = set(inspect(engine).get_table_names())
@@ -154,6 +166,15 @@ def unique_version(base: str, occupied: set[str]) -> str:
 
 def migrate(source: Engine, target: Engine, source_storage: Path, target_storage: Path) -> dict[str, Any]:
     existing_source = set(inspect(source).get_table_names())
+    # This is a legacy merge utility, not a full current-schema migration.
+    # Check before copying files or opening a target transaction.
+    unsupported = unsupported_populated_tables(source)
+    if unsupported:
+        raise RuntimeError(
+            "Legacy migration cannot preserve populated tables: "
+            + ", ".join(unsupported)
+            + ". No files or target data were changed. Use a full-schema migration for this source."
+        )
     missing_required = {"users", "skills", "skill_versions"} - existing_source
     if missing_required:
         raise RuntimeError(f"Source database is missing required tables: {sorted(missing_required)}")
@@ -366,7 +387,7 @@ def migrate(source: Engine, target: Engine, source_storage: Path, target_storage
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Merge a SkillGo SQLite database into PostgreSQL.")
+    parser = argparse.ArgumentParser(description="Merge legacy SkillGo SQLite tables into PostgreSQL; modern populated tables are rejected.")
     parser.add_argument("--source-db", type=Path, required=True)
     parser.add_argument("--source-storage", type=Path, required=True)
     parser.add_argument("--target-storage", type=Path, required=True)

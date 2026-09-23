@@ -799,7 +799,7 @@ async def _run_agent_loop(
             mark_inflight(db, job, fence)
         for tool_call_id, action in calls:
             tool_operation_count += 1
-            if tool_operation_count > settings.sandbox_max_agent_tool_calls:
+            if settings.sandbox_max_agent_tool_calls > 0 and tool_operation_count > settings.sandbox_max_agent_tool_calls:
                 raise SandboxRuntimeError(
                     "SANDBOX_AGENT_TOOL_LIMIT",
                     f"Sandbox workflow exceeded {settings.sandbox_max_agent_tool_calls} tool operations",

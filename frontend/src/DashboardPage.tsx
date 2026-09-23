@@ -18,7 +18,10 @@ gsap.registerPlugin(useGSAP);
 function useLoad<T>(path: string, initial: T) {
   const [data, setData] = useState<T>(initial);
   useEffect(() => {
-    api<T>(path).then(setData).catch(() => undefined);
+    const controller = new AbortController();
+    api<T>(path, { signal: controller.signal })
+      .then((value) => { if (!controller.signal.aborted) setData(value); }).catch(() => undefined);
+    return () => controller.abort();
   }, [path]);
   return data;
 }
@@ -453,7 +456,7 @@ export function DashboardPage() {
   }
 
   async function openConversation(conversationId: string) {
-    if (loadingConversationId || conversationId === activeConversation?.id) return;
+    if (launching || loadingConversationId || conversationActionId || conversationId === activeConversation?.id) return;
     setLoadingConversationId(conversationId);
     setLaunchError("");
     try {
@@ -471,6 +474,7 @@ export function DashboardPage() {
   }
 
   function startNewConversation() {
+    if (launching || loadingConversationId) return;
     setActiveConversation(null);
     setConversationMenuOpen(false);
     setEditingConversationId(null);
@@ -513,6 +517,7 @@ export function DashboardPage() {
   }
 
   async function deleteConversation(conversationId: string) {
+    if (launching || loadingConversationId) return;
     if (conversationActionId) return;
     setConversationActionId(conversationId);
     setLaunchError("");
@@ -541,7 +546,7 @@ export function DashboardPage() {
 
   async function launchAgent(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if ((!hasPromptContent(messageParts) && !attachments.length && !selectedHistoryFiles.length) || launching || conversationBusy) return;
+    if ((!hasPromptContent(messageParts) && !attachments.length && !selectedHistoryFiles.length) || launching || conversationBusy || loadingConversationId || conversationActionId) return;
     const textSize = messageParts.reduce((size, part) => size + (part.type === "text" ? part.text.length : 0), 0);
     if (textSize > 20_000) {
       setLaunchError("任务描述不能超过 20,000 个字符");
@@ -715,7 +720,7 @@ export function DashboardPage() {
   }
 
   async function retryJob(job: WorkflowJob) {
-    if (launching || conversationBusy || !activeConversation) return;
+    if (launching || conversationBusy || loadingConversationId || conversationActionId || !activeConversation) return;
     setLaunching(true);
     setLaunchError("");
     try {
@@ -783,7 +788,7 @@ export function DashboardPage() {
   }
 
   const canSend = hasPromptContent(messageParts) || attachments.length > 0 || selectedHistoryFiles.length > 0;
-  const composerDisabled = launching || conversationBusy;
+  const composerDisabled = launching || conversationBusy || Boolean(loadingConversationId || conversationActionId);
   const conversationMessages = activeConversation?.messages || [];
   const visibleConversations = conversations
     .filter((conversation) => conversation.title.toLocaleLowerCase().includes(conversationQuery.trim().toLocaleLowerCase()))
@@ -798,8 +803,8 @@ export function DashboardPage() {
         <label className="agent-conversation-history-search"><input autoFocus type="search" value={conversationQuery} placeholder="搜索会话名称" onChange={(event) => setConversationQuery(event.target.value)} />{conversationQuery && <button type="button" aria-label="清空搜索" onClick={() => setConversationQuery("")}><X /></button>}</label>
         <div>{visibleConversations.length ? visibleConversations.map((conversation) => <article className={`${conversation.id === activeConversation?.id ? "active" : ""}${deletingConversationId === conversation.id ? " deleting" : ""}`} key={conversation.id}>
           {editingConversationId === conversation.id ? <form className="agent-conversation-rename" onSubmit={(event) => { event.preventDefault(); void renameConversation(conversation.id); }}><label><span>会话名称</span><input autoFocus maxLength={160} value={editingConversationTitle} onChange={(event) => setEditingConversationTitle(event.target.value)} /></label><div><button className="save" type="submit" disabled={!editingConversationTitle.trim() || conversationActionId === conversation.id}>{conversationActionId === conversation.id ? <RotateCw className="spin-icon" /> : <Check />}保存</button><button type="button" onClick={() => setEditingConversationId(null)}><X />取消</button></div></form> : <>
-            <button className="agent-conversation-open" type="button" disabled={Boolean(loadingConversationId || conversationActionId)} onClick={() => void openConversation(conversation.id)}><MessageSquareText /><span><strong>{conversation.title}</strong><small>{Math.ceil(conversation.message_count / 2)} 轮 · {new Date(conversation.updated_at).toLocaleString("zh-CN")}</small></span>{loadingConversationId === conversation.id ? <RotateCw className="spin-icon" /> : <ChevronRight />}</button>
-            <div className="agent-conversation-item-actions">{deletingConversationId === conversation.id ? <><button className="confirm-delete" type="button" disabled={conversationActionId === conversation.id} onClick={() => void deleteConversation(conversation.id)}>{conversationActionId === conversation.id ? <RotateCw className="spin-icon" /> : <Trash2 />}确认删除</button><button type="button" onClick={() => setDeletingConversationId(null)}><X />取消</button></> : <><button type="button" onClick={() => beginRenameConversation(conversation)}><PencilLine />重命名</button><button className="delete" type="button" onClick={() => { setDeletingConversationId(conversation.id); setEditingConversationId(null); }}><Trash2 />删除</button></>}</div>
+            <button className="agent-conversation-open" type="button" disabled={Boolean(launching || loadingConversationId || conversationActionId)} onClick={() => void openConversation(conversation.id)}><MessageSquareText /><span><strong>{conversation.title}</strong><small>{Math.ceil(conversation.message_count / 2)} 轮 · {new Date(conversation.updated_at).toLocaleString("zh-CN")}</small></span>{loadingConversationId === conversation.id ? <RotateCw className="spin-icon" /> : <ChevronRight />}</button>
+            <div className="agent-conversation-item-actions">{deletingConversationId === conversation.id ? <><button className="confirm-delete" type="button" disabled={launching || Boolean(loadingConversationId) || conversationActionId === conversation.id} onClick={() => void deleteConversation(conversation.id)}>{conversationActionId === conversation.id ? <RotateCw className="spin-icon" /> : <Trash2 />}确认删除</button><button type="button" onClick={() => setDeletingConversationId(null)}><X />取消</button></> : <><button type="button" onClick={() => beginRenameConversation(conversation)}><PencilLine />重命名</button><button className="delete" type="button" onClick={() => { setDeletingConversationId(conversation.id); setEditingConversationId(null); }}><Trash2 />删除</button></>}</div>
           </>}
         </article>) : <p>{conversationQuery ? "没有匹配的会话。" : "还没有历史对话。"}</p>}</div>
       </aside>
@@ -865,7 +870,7 @@ export function DashboardPage() {
           <div><div><strong>{activeConversation.title}</strong><small>普通消息直接回复 · Skill 任务在当前对话中运行</small></div></div>
           <div className="agent-conversation-actions">
             {conversationHistory}
-            <button type="button" onClick={startNewConversation}><Plus />新对话</button>
+            <button type="button" disabled={launching || Boolean(loadingConversationId)} onClick={startNewConversation}><Plus />新对话</button>
           </div>
         </header>
         <div className="agent-workspace-messages-wrap">

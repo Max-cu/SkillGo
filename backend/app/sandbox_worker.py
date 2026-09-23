@@ -546,8 +546,6 @@ async def execute_sandbox_job(
                 ]
                 if checkpoint_bundle:
                     await restore_bundle(sandbox, checkpoint_bundle)
-                    from .sandbox_checkpoint import reprovision_skill_packages
-                    await reprovision_skill_packages(sandbox)
                     add_job_event(db, job, 'status', '已恢复持久化任务快照',
                                   '工作文件已校验，将从保存的执行轮继续', status='succeeded',
                                   data={'next_turn': checkpoint_bundle[0]['state']['next_turn']})
