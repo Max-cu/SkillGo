@@ -5,248 +5,312 @@
 <h1 align="center">SkillGo</h1>
 
 <p align="center">
-  企业级多用户 Skill 管理、任务级独立沙箱运行与二次开发平台。<br />
-  <sub>A self-hosted, multi-user Skill platform for governance, isolated per-task execution, and API integration.</sub>
+  把 Skill 变成团队可以使用、管理和集成的任务能力。<br />
+  <sub>A self-hosted, multi-user platform for running agent skills in isolated sandboxes and delivering verifiable artifacts.</sub>
 </p>
 
 <p align="center">
-  <img alt="License" src="https://img.shields.io/badge/license-MIT-3f36c9" />
-  <img alt="Python" src="https://img.shields.io/badge/Python-3.12-3776ab" />
-  <img alt="Node.js" src="https://img.shields.io/badge/Node.js-24-339933" />
-  <img alt="Status" src="https://img.shields.io/badge/status-active%20development-6957ee" />
+  <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-3f36c9" /></a>
+  <img alt="Python 3.12" src="https://img.shields.io/badge/Python-3.12-3776ab" />
+  <img alt="Node.js 24" src="https://img.shields.io/badge/Node.js-24-339933" />
+  <a href="https://github.com/Max-cu/SkillGo/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/Max-cu/SkillGo/actions/workflows/ci.yml/badge.svg" /></a>
   <a href="https://github.com/Max-cu/SkillGo/releases"><img alt="Release" src="https://img.shields.io/github/v/release/Max-cu/SkillGo?color=6957ee" /></a>
 </p>
 
 <p align="center">
-  <a href="#项目定位">项目定位</a> ·
-  <a href="#核心能力">核心能力</a> ·
-  <a href="#skill-包上传">Skill 包上传</a> ·
-  <a href="#运行联网">运行联网</a> ·
-  <a href="#执行与隔离">执行与隔离</a> ·
+  <a href="#能用-skillgo-做什么">产品能力</a> ·
+  <a href="#从-skill-到交付物">使用流程</a> ·
+  <a href="#agent-如何执行任务">Agent 执行</a> ·
   <a href="#快速开始">快速开始</a> ·
-  <a href="#文档">文档</a> ·
-  <a href="deploy/README.md">部署指南</a>
+  <a href="#通过-api-接入业务">API 接入</a> ·
+  <a href="#开发与文档">开发与文档</a>
 </p>
 
-SkillGo 面向需要私有化部署、多人共用和业务集成的团队。它把 Skill 的上传、版本、审核、运行、产物交付和 API 接入放进同一条闭环，并让每次任务尝试都在全新的容器与 Volume 中执行，避免不同用户、不同任务之间共享文件、依赖、进程或运行状态；gVisor 在此基础上提供纵深隔离。
+SkillGo 是一个可私有化部署的多用户 Skill 平台。你可以上传现有的 `SKILL.md` 技能包，管理版本与审核，在网页中通过自然语言和附件发起任务，再下载生成的文档、表格、演示稿、图片或其他文件。已发布的 Skill 也可以绑定独立 API Endpoint，接入已有业务系统。
 
-普通消息可以直接流式调用模型；需要脚本、工具或文件处理的 Skill 则进入持久任务和独立沙箱。所有关键步骤、联网授权和产物校验都有记录，已发布的固定 Skill 版本还可以部署为带独立密钥的 API Endpoint，供现有系统二次开发和集成。
+普通消息直接进入模型对话；需要脚本和文件处理的任务，由 Agent 在独立的 Linux 沙箱中执行。平台负责环境准备、任务调度、工具约束、状态记录、产物验证和存储，模型负责理解目标、组织步骤与使用 Skill。
+
+本文描述当前 `main` 的实现。项目仍在持续演进；部署已发布版本时，请结合对应 Tag 的文档与 [Release Notes](https://github.com/Max-cu/SkillGo/releases)。
 
 <p align="center">
-  <img src="docs/assets/skillgo-workbench.png" width="100%" alt="SkillGo 任务工作台与独立沙箱执行过程" />
+  <img src="docs/assets/skillgo-workbench.png" width="100%" alt="SkillGo 任务工作台：对话、执行进度与文件交付" />
 </p>
 
-## 能力与运行环境
+## 能用 SkillGo 做什么
 
-普通 Skill 可仅提供 SKILL.md，也可在 YAML frontmatter 中添加 `capabilities`（如 `pdf.render`、`office.docx`、`fonts.cjk`）。平台将声明映射到受控能力目录，任务运行前实测库、命令和字体；必需能力缺失时在模型执行前明确报错。文档推断只是建议，不自动授予安装或联网权限。
-
-Agent 使用平台提供的环境清单，常见 pip/npm 安装命令被拒绝。启用环境准备服务后，平台可构建经验证的能力环境，并支持任务中最多两次依赖升级请求。分期设计、兼容边界和验证方式见 [能力环境设计](docs/capability-environments-2026-09-10.md)。
-
-## 项目定位
-
-当前编排方式是 Agent 驱动的任务执行：同一任务内由一个 Agent 在独立沙箱中顺序协调所选 Skill。界面的“执行计划”描述业务步骤，平台检查已声明的依赖、输入输出文件和最终验证证据；固定的任务阶段用于跟踪运行生命周期。当前不提供通用 DAG 调度、条件分支、任务内并发或子 Agent。内部 `workflow` API 路径保留兼容，不代表这些扩展能力已经实现。
-
-SkillGo 不只是 Skill 仓库，也不只是聊天界面。它关注的是如何让 Skill 成为一个**可治理、可隔离运行、可验证交付、可接入业务**的运行单元：
-
-```text
-上传 Skill → 固定版本 → 审核发布 → 发起任务 → 隔离执行 → 验证产物 → 网页或 API 交付
-```
-
-| 环节 | SkillGo 提供的能力 |
+| 能力 | 当前支持 |
 | --- | --- |
-| 治理 | ZIP/目录结构检查、不可变版本、权限声明、审核发布与逐版本联网授权 |
-| 协作 | 普通对话、附件工作区、多 Skill 顺序编排与任务时间线 |
-| 执行 | 租约 Worker、每次尝试独立 Volume 与容器、gVisor `runsc` |
-| 交付 | 只接收真实输出文件，并校验大小、SHA-256 与文件结构 |
-| 接入 | 将已发布的固定版本部署为同步或异步 API Endpoint |
+| Skill 管理 | ZIP 上传、元数据分析、版本管理、审核发布、社区展示、收藏和下载 |
+| 对话工作台 | 流式回复、历史会话、附件、历史文件复用，以及在对话中发起 Skill 任务 |
+| 文件任务 | 一个任务选择多个 Skill，查看执行计划、关键进度、技术日志和生成文件 |
+| 模型接入 | 配置多个模型连接，分别选择对话、视觉与 OCR 能力及默认模型 |
+| 任务执行 | Agent 工具调用、Python 与命令执行、固定入口 Skill、取消、重试和等待用户补充信息 |
+| 运行环境 | 基础能力探测、独立环境准备服务、Python 依赖解析、环境复用与运行中升级 |
+| 故障恢复 | 租约与心跳、失效 Worker 回收；可选的工作区与 Agent 状态持久化恢复 |
+| 团队治理 | 成员、管理员、唯一超级管理员；资源归属校验、版本联网授权与审计记录 |
+| 业务集成 | 固定版本 Endpoint、独立密钥、同步调用、异步任务、幂等提交和产物下载 |
+| 存储管理 | 文件占用统计、保留期限、过期清理、备份与恢复脚本 |
 
-SkillGo 的重点不是长期维护一组会互相污染的共享运行环境，而是把“**固定版本 + 本次输入 + 本次授权**”组合成可追踪的一次执行。它尤其适合在同一套私有部署中为多个用户提供 Skill 能力，同时保留管理员治理和后续业务集成空间。
-
-> SkillGo 仍处于积极开发阶段。正式部署（包括企业内网）应配置 TLS、妥善保管密钥并限制 Worker 对 Docker Socket 的宿主访问范围。明文 HTTP 会暴露登录信息与上传内容，也可能导致包含脚本的 Skill ZIP 被企业网络设备检查或中断。
-
-## 核心能力
-
-- **Skill 生命周期**：兼容以唯一 `SKILL.md` 为入口的 Agent Skill，允许常见仓库包装目录和嵌套目录，支持可选的 `skillgo.yaml`；版本可提交、审核、发布且发布后保持不可变。
-- **任务工作台**：支持普通模型对话、附件、多 Skill 编排、步骤事件、取消、重试和历史任务。
-- **任务级沙箱**：每次执行尝试使用独立 Docker Volume 与容器；任务结束、取消、超时或租约失效后回收。
-- **联网手动授权**：运行联网默认关闭；只有管理员可以为已审核的具体 Skill 版本开启，授权来源随任务固化并进入审计。
-- **可验证产物**：只有写入 `/workspace/output`、持久化成功并通过完整性检查的真实文件才能作为任务产物交付。
-- **多用户与角色**：提供成员、管理员和唯一超级管理员，资源访问在 API 与存储层按所有者校验，关键操作写入审计。
-- **私有模型**：对话与视觉模型通过 OpenAI-compatible Chat Completions 接入；OCR 既支持 OpenAI-compatible 接口，也支持 MinerU `/file_parse`。平台设置可分别维护能力标签、接口类型与默认模型。图片默认由视觉模型理解，用户按需开启 OCR 后会同时执行文字识别和视觉分析；PDF 开启 OCR 后交给文件解析模型处理。
-- **业务 API**：已发布版本可创建独立 Endpoint；密钥只完整显示一次，服务端仅保存前缀和 SHA-256 摘要。
-- **生命周期管理**：管理员可以查看服务器磁盘与平台文件占用；附件、任务输入和产物按配置自动到期清理。
-
-## Skill 包上传
-
-SkillGo 接受最大 50 MiB 的 ZIP，并在保存版本前完成结构与安全校验。标准包和带一层或多层仓库包装目录的下载包都可以使用，但解压后的安全文件树中必须且只能包含一个 `SKILL.md`。
-
-- **真实仓库兼容**：兼容 `SKILL.md` 位于嵌套目录、UTF-8 BOM 和文件名大小写差异；`name` 或 `description` 缺失时，可以从目录名、一级标题和正文推断，并向用户显示兼容提示。
-- **资料预填不阻断上传**：平台会尝试调用对话模型生成名称、简介和分类；默认等待 45 秒，模型超时或不可用时自动回退到本地解析结果，用户仍可继续确认和上传。
-- **唯一标识规范化**：中文或不符合规则的标识会转换为安全 slug；已有标识冲突时建议 `-2`、`-3` 等可用值。
-- **安全拒绝保持严格**：多个 `SKILL.md`、路径穿越、符号链接或特殊文件、重复路径、异常压缩、解压后超限和无法解析的 YAML 仍会被拒绝，并返回具体校验原因。
-- **区分格式错误与传输中断**：后端 `422` 表示平台已经收到 ZIP 并发现明确的包格式问题；`Failed to fetch`、状态码 `0` 或网关空 `400` 通常表示上传链路被中断，界面会提示检查网络策略以及包内 `.py`、`.js`、`.sh` 等脚本是否触发企业网关检查。
-
-## 运行联网
-
-SkillGo 把“允许执行”和“允许联网”作为两项独立权限。一个 Skill 可以审核发布并在断网沙箱中运行，只有确实需要访问外部服务、下载公开数据或安装依赖时，管理员才手动打开该版本的运行联网。
-
-```text
-提交固定版本 → 管理员审核代码 → 发布并默认断网 → 按需手动开启联网 → 新任务保存授权快照
-```
-
-- **默认断网**：未授权任务使用 `network_mode=none`；负责写入 Skill 与输入文件的一次性 Stager 始终断网。
-- **逐版本控制**：联网开关绑定到审核通过的具体 Skill 版本，不是全平台开关，也不能由普通用户、Skill 或模型自行开启。
-- **组合任务规则**：多 Skill 任务中只要一个选中版本获得联网授权，整个本次任务沙箱即联网；运行记录会明确列出授权来源。
-- **管理员决策**：管理员可以在审核批准时授权，也可以在版本发布后开启或关闭。后续变更影响新建任务，不改写既有任务的授权记录。
-- **任务留痕**：任务保存是否联网以及由哪些 Skill 版本触发授权，便于在运行记录中查看和追溯。
-- **密钥不入沙箱**：即使允许联网，任务容器也不会获得数据库连接、JWT Secret、模型 API Key、用户凭据或 Endpoint Key。
-- **当前边界**：开启后沙箱可以通过 Docker bridge 访问网络，当前不限制目标域名。管理员应在确认 Skill 来源、代码行为和数据范围后再授权，因为恶意 Skill 仍可能主动上传它能够读取的任务输入。
-
-这套策略首先服务于多用户运行环境的独立性，同时把外部通信变成一个明确、可见、可撤销的管理动作，而不是由 Skill 声明后自动放行。
-
-## 界面预览
+文档处理、表格分析、演示稿生成等具体业务能力由上传的 Skill 和所配置模型决定；平台提供通用执行与交付机制。
 
 <table>
   <tr>
-    <td width="50%">
-      <img src="docs/assets/skillgo-skills.png" alt="SkillGo Skill 管理与版本状态" />
-      <br /><sub>Skill 管理：固定版本、审核发布与运行联网状态</sub>
-    </td>
-    <td width="50%">
-      <img src="docs/assets/skillgo-storage.png" alt="SkillGo 存储生命周期管理" />
-      <br /><sub>存储管理：服务器磁盘、文件分类与自动保留期限</sub>
-    </td>
+    <td width="50%"><img src="docs/assets/skillgo-skills.png" alt="Skill 管理与版本状态" /><br /><sub>Skill 管理与发布</sub></td>
+    <td width="50%"><img src="docs/assets/skillgo-storage.png" alt="文件占用与存储保留期限" /><br /><sub>存储与生命周期管理</sub></td>
   </tr>
 </table>
 
-## 执行与隔离
-
-<p align="center">
-  <img src="docs/assets/skillgo-flow.png" width="100%" alt="SkillGo 从任务创建、Worker 调度、独立沙箱到产物验证的执行闭环" />
-</p>
-
-SkillGo 会根据 Skill 内容和权限声明识别执行画像：
-
-| 执行画像 | 运行方式 |
-| --- | --- |
-| 普通消息 | API 直接流式调用模型，不创建任务容器 |
-| `instruction_only` | 由可信模型执行路径处理，不运行不受信任脚本 |
-| `sandbox_required` | 创建持久任务，由 Worker 在独立沙箱中执行 |
-| `platform_tools` | 所需平台工具尚未安全接入时保持阻断并明确提示 |
-
-### gVisor 在 SkillGo 中的位置
-
-普通 Docker 容器与宿主机共享 Linux 内核。SkillGo 在创建真正执行 Skill 的容器时显式传入 `runtime=runsc`，让 gVisor 在任务进程和宿主 Linux 内核之间提供额外的系统调用隔离层：
+## 从 Skill 到交付物
 
 ```text
-FastAPI 控制面 ──► PostgreSQL：任务、归属、状态与审计
-                         │
-                         ▼ 租约领取
-可信 Worker：模型编排、Docker Socket、沙箱生命周期
-  │
-  ├─► 一次性 Stager ──► 本次 execution_id 的 Docker Volume
-  │    断网，只负责写入固定 Skill 版本和任务输入
-  │
-  └─► Docker create(runtime="runsc")
-         └─► gVisor runsc
-                └─► 非 root Skill 进程，仅挂载本次 /workspace
+上传 Skill → 准备运行环境 → 固定版本并审核发布
+                                  ↓
+                   自然语言 + 附件 + 选定的 Skill
+                                  ↓
+                   Agent 编排 → 独立沙箱执行
+                                  ↓
+                   验证真实文件 → 网页 / API 交付
 ```
 
-`runsc` 安装在 Linux 宿主机并注册到 Docker，而不是安装在 API、Worker 或任务容器内部。Worker 启动时会检查 Runtime 和沙箱镜像；任一项缺失都会将运行环境报告为不可用，不会静默退回普通 `runc` 执行 Skill。
+1. **导入 Skill**：上传 ZIP，平台解析结构、名称、说明、执行画像与依赖信息。元数据智能分析不可用时会回退到本地解析。
+2. **准备和发布版本**：需要环境准备的版本先完成构建与探测；管理员审核版本，并按需授权运行联网。版本内容固定，修改需要上传新版本。
+3. **发起任务**：选择 Skill，输入目标并添加附件。普通对话与 Skill 任务可以出现在同一会话里；纯指令 Skill 也有独立对话调试入口。
+4. **查看过程**：工作台展示计划、关键执行进度和产物；完整工具记录可展开查看。缺少关键输入时，任务可等待用户回答。
+5. **获取结果**：下载验证通过的真实文件。失败、取消或受阻会保留明确状态，用户可以查看原因并重试。
 
-### 一次任务尝试如何运行
+### Skill 包格式
 
-1. API 将用户、固定 Skill 版本、输入文件和执行画像保存为 `WorkflowJob`。
-2. Worker 通过数据库行锁领取任务，为本次尝试生成独立 `execution_id`、租约令牌和过期时间，并持续心跳。
-3. Worker 创建带 `job_id` 与 `execution_id` 标签的专用 Docker Volume。一个断网的临时 Stager 只获得 `CHOWN` 能力，将本次选定的 Skill 和输入写入 Volume，设置为任务用户所有后立即销毁；Stager 不执行 Skill 代码。
-4. Worker 使用受控基础镜像创建实际任务容器，指定 `runtime=runsc`，并只把本次 Volume 挂载为可写 `/workspace`。
-5. 模型负责计划和选择受限工具，Worker 负责路径、命令、超时和状态校验；实际命令始终以 `10001:10001` 身份在 gVisor 容器内执行。声明 `spec.execution.mode: fixed` 的单 Skill 由平台直接运行审核版本中的固定 argv，不经过模型选择脚本。
-6. 正常命令超时由容器内 timeout 终止进程组，保留工作区供任务续跑；Docker exec 通信超时仍会销毁容器。重试会获得新的 `execution_id`、容器和 Volume；旧租约即使恢复也不能提交结果。
-7. Agent 验证会绑定真实 verifier 操作与当时全部输出文件的 SHA-256；`finish` 前再次核对字节。Worker 只收集 `/workspace/output` 下声明的常规文件，并逐个拒绝符号链接、空文件、越界路径和超限文件；持久化后重新核对大小、SHA-256 与文件结构，再把任务标记为成功。
-   验证通过后由平台自动登记结果，并在其他计划步骤完成时自动完成验证步骤，无需模型额外调用 `record_validation`。计划文件检查在单次快照内复用重叠引用的文件哈希，下一次检查仍重新读取文件。
-8. 成功、失败、取消或超时都会回收本次容器和 Volume；Worker 启动与租约恢复逻辑还会按标签清理崩溃后遗留的孤儿资源，同时避开仍有有效租约的任务。启用持久化快照时，租约中断后可在新沙箱恢复已完成轮次的工作区和 Agent 状态；执行中断且结果不确定的工具不会自动重放。未启用时从原始输入重新开始。
+普通技能包以一个 `SKILL.md` 为入口，可包含脚本、参考资料和素材；需要平台扩展配置时，可添加 `skillgo.yaml`。
 
-### 强制执行的沙箱边界
+```text
+my-skill/
+├── SKILL.md
+├── scripts/          # 可选：执行脚本
+├── references/       # 可选：参考文档
+├── assets/           # 可选：模板与素材
+├── requirements.txt  # 可选：Python 依赖
+└── skillgo.yaml      # 可选：SkillGo 扩展声明
+```
 
-| 边界 | 当前实现 |
+- 支持常见仓库下载包的外层包装目录，安全文件树中必须且只能有一个 `SKILL.md`。
+- 名称、说明缺失时可从目录或正文推断；兼容 UTF-8 BOM，并对标识做规范化处理。
+- 默认 ZIP 上限 **50 MiB**、解压后上限 **250 MiB**、文件数上限 **500**。素材密集型 Skill 可由管理员调整文件数配置，大小限制仍然生效。
+- 路径穿越、符号链接、特殊文件、重复路径和异常压缩等内容会被拒绝。
+- 可声明 `capabilities`、`python_dependencies`；依赖分析不等于任意安装命令的执行授权。
+
+示例见 [`examples/`](examples/)，格式与校验实现见 [`skill_package.py`](backend/app/skill_package.py)。
+
+## Agent 如何执行任务
+
+当前任务编排由**一个 Agent 在一个任务沙箱内协调所选 Skill**。计划可以声明步骤依赖、输入输出引用和成功条件；工具调用按返回顺序执行。不同任务由多个 Worker 领取，任务内没有通用并行 DAG 调度或子 Agent 系统。
+
+| 执行路径 | 适用情况 |
 | --- | --- |
-| Runtime | 实际 Skill 容器强制使用配置的 `runsc`；Docker 未注册时拒绝运行 |
-| 身份 | Skill 命令固定为非 root `10001:10001` |
-| 文件系统 | 容器根文件系统只读；唯一持久可写位置是本次 `/workspace`，`/tmp` 为独立 `tmpfs` |
-| Linux 权限 | `cap_drop=ALL`、`no-new-privileges`，不挂载设备、宿主目录或 Docker Socket |
-| 资源 | Compose 默认 2 GiB 内存、1 CPU、128 PIDs；单命令默认 120 秒（部署示例为 900 秒），任务总时限默认关闭，均可配置 |
-| 网络 | 默认 `network_mode=none`；仅管理员可为已审核的具体 Skill 版本开启运行联网，任务会保存授权来源快照；当前不限制目标域名 |
-| 密钥 | 任务容器不接收数据库连接、JWT Secret、用户凭据、模型 API Key 或 Endpoint Key |
-| 产物 | 只允许 `/workspace/output` 下经过大小、哈希和结构复核的真实文件，单文件默认上限 50 MiB |
+| 普通对话 | 不运行 Skill 脚本，直接调用模型回复 |
+| `instruction_only` | 纯指令 Skill，通过模型执行路径处理 |
+| `sandbox_required` | 脚本、文件或工具任务，进入持久任务队列和独立沙箱 |
+| 固定入口 | 声明 `spec.execution.mode: fixed` 的 Skill 使用固定入口与验证契约；单 Skill 任务可直接执行，无需模型选择脚本 |
+| `platform_tools` | 所需平台能力未安全接入时明确阻断，不静默降级 |
 
-这里的隔离粒度是“**一次任务执行尝试一套临时环境**”，不是为每个用户长期保留一台虚拟机。gVisor 也不是完整虚拟机或宿主安全管理的替代品：持有 Docker Socket 的 Worker 仍属于可信执行面，需要限制访问范围并及时更新 Linux、Docker 和 gVisor；API、Web 与实际 Skill 容器都不挂载该 Socket。
+### 计划、工具与上下文
 
-实现可直接查看 [`sandbox_runtime.py`](backend/app/sandbox_runtime.py)、[`sandbox_worker.py`](backend/app/sandbox_worker.py)、[`sandbox_agent_loop.py`](backend/app/sandbox_agent_loop.py)、[`artifact_validation.py`](backend/app/artifact_validation.py) 与 [`deterministic_runtime.py`](backend/app/deterministic_runtime.py)，整体设计见 [产品与技术架构](docs/PRODUCT_ARCHITECTURE.md) 和 [Agent 内核](docs/agent-kernel.md)。完整部署自检会真正启动一个 `runsc`、非 root、只读且断网的测试容器，而不是只检查配置文本。
+Agent 可以读取 Skill 和文件、更新计划、执行命令或 Python、检查生成图片、请求环境能力、进行最终验证，以及在缺少关键信息时提问。平台检查工具参数、工作区路径和执行状态，并把可恢复错误交回 Agent 处理。
 
-## Skill API
+同轮允许执行具有安全顺序的多个工具调用；计划状态更新等已知操作可以合并，减少单独的记账轮次。较大的工具结果保存到工作区，模型获得摘要和读取路径；上下文按预算整理，并保留选定参考资料、计划和执行证据。
 
-已审核发布且当前环境可执行的 Skill 版本可以固定为 Endpoint：
+### 验证与交付
 
-| Skill 类型 | 调用方式 | 返回 |
-| --- | --- | --- |
-| `instruction_only` | `POST /api/v1/invoke/{slug}` | 同步结构化结果与 `run_id` |
-| `sandbox_required` | `POST /api/v1/workflow-endpoints/{slug}/jobs` | `202 Accepted`、任务地址与后续产物 |
+平台将业务验证和文件交付连起来：
 
-异步 Endpoint 支持 `Idempotency-Key`，重复提交不会重复创建任务。外部请求仍遵守 Endpoint 所有权、任务归属、沙箱隔离和产物验证边界。调用契约见 [工作流 API](docs/workflow-api.md)，示例见 [Python 客户端](examples/workflow_api_client.py)。
+1. Agent 优先复用 Skill 自带检查，或执行覆盖任务成功条件的只读验证程序。
+2. `run_verifier` 检查退出状态、结构化检查结果，以及验证前后产物是否一致。
+3. **验证成功后，平台自动登记证据**，并在其他步骤已完成时完成验证步骤，无需模型再调用一次 `record_validation`。
+4. 交付前重新核对产物与已验证文件的哈希；Worker 收集文件时再检查路径、大小、结构和持久化结果。
 
-## 数据与安全边界
+计划检查会在单次快照内复用重叠引用的文件读取结果，下一次检查仍读取当前文件。优化减少了重复调用和 I/O，但不把“命令退出成功”直接当成“用户目标已完成”。结构与哈希检查也不能保证文档内容或模型判断在业务上完全正确。
 
-| 项目 | 当前行为 |
+### 中断与恢复
+
+Worker 通过数据库租约领取任务并持续心跳，每次尝试都有独立执行身份。正常命令超时会终止命令进程组并保留沙箱供后续处理；Docker exec 通信超时等故障会触发相应的失败或恢复路径。
+
+启用 `SKILLGO_DURABLE_CHECKPOINTS_ENABLED=true` 后，平台会在轮次边界保存工作文件、计划、消息、验证状态和执行位置。已完成工具轮次的快照可被新 Worker 接管；工具执行中断、结果不确定时明确报错，避免自动重放可能已有副作用的操作。
+
+恢复不包含进程内存、后台进程或 `/tmp`。当前仍是每轮全量可变工作区快照，采用流式归档并排除平台配置的不可变 Skill 文件；大工作区会增加冻结和 I/O 成本。等待用户回答后的继续执行采用重新发起尝试的语义，并非恢复原进程。详见 [持久化任务快照](docs/durable-task-checkpoints.md)。
+
+## 环境准备与依赖
+
+SkillGo 将环境准备交给独立的 `environment-worker`，任务容器内常见的临时 pip/npm 安装命令会被拦截。
+
+- **能力目录**：覆盖 PDF、Office、图像、表格、中文字体、Markdown、二维码、条形码、XML 等能力。任务运行前通过探针确认实际可用性。
+- **Python 依赖**：支持声明、`requirements.txt` 和部分导入/安装示例分析。解析器从公共 PyPI 解析兼容 wheel，保留底座版本约束，校验哈希后离线安装并验证候选环境。
+- **明确失败**：不支持任意 URL、本地路径、源码包构建或直接执行 Skill 的安装脚本；无法解析或与底座冲突的依赖会报错，不静默替换已有环境。
+- **环境复用**：环境规格与准备结果绑定到版本，兼容任务可复用准备镜像；任务按不可变镜像 ID 执行。
+- **运行中升级**：Agent 可请求补充平台能力或 Python 依赖，每个任务最多两次实际升级尝试。成功后在新环境恢复工作文件，继续任务并重新验证结果；不会恢复进程或 `/tmp`。
+
+环境准备**默认关闭**，需要配置基础镜像并启动 `environments` profile。能力目录和 Python 依赖解析的实现分别见 [`environment_capabilities.py`](backend/app/environment_capabilities.py)、[`python_dependencies.py`](backend/app/python_dependencies.py) 与 [`environment_builder.py`](backend/app/environment_builder.py)。当前环境缓存面向单 Docker 主机，不提供跨主机镜像分发。
+
+## 执行隔离与权限
+
+```text
+浏览器 / 业务系统
+       │
+       ▼
+Web + FastAPI ────────── PostgreSQL / 文件存储
+       │                       ▲
+       │ 任务队列              │ 状态、证据与产物
+       ▼                       │
+可信 Worker ── 模型编排 ── 任务容器（gVisor runsc）
+       │                       └─ 本次尝试独立 /workspace Volume
+       └─ 环境准备服务提供已验证镜像
+```
+
+隔离粒度是**一次任务尝试一套容器和工作卷**。多个 Skill 在同一任务内共享该任务工作区，不同任务不会复用同一工作卷。
+
+| 边界 | 实现 |
 | --- | --- |
-| 对话文字、任务状态、结果摘要、审计 | 不随文件生命周期自动删除 |
-| 对话附件、任务输入、生成产物 | 默认保留 15 天，可通过环境变量调整 |
-| 运行详细事件 | 成功默认保留 7 天，失败或取消默认保留 30 天 |
-| 数据库 | 生产使用 PostgreSQL；开发环境支持 SQLite；Alembic 管理迁移 |
-| 文件存储 | 按用户、会话或任务组织路径，并再次校验根目录边界 |
-| 身份 | Argon2 密码哈希、带签发方/受众/过期时间的 JWT、三级角色 |
+| 任务运行时 | Linux Docker + gVisor `runsc`；运行环境不可用时拒绝执行，不静默回退普通容器 |
+| 身份与文件 | 非 root `10001:10001`、只读根文件系统、独立 `/workspace`、临时 `/tmp` |
+| Linux 权限 | `cap_drop=ALL`、`no-new-privileges`；任务容器不挂载 Docker Socket 或宿主目录 |
+| 资源 | 内存、CPU、进程数、命令时间、模型轮次和工具调用次数可配置 |
+| 访问归属 | API 与存储路径检查用户、会话、任务或 Endpoint 的归属 |
+| 密钥 | 任务容器不注入平台数据库、JWT、模型或 Endpoint 密钥 |
+| 产物 | 只交付 `/workspace/output` 内声明的常规文件，默认单文件上限 50 MiB |
 
-Skill 包、模型响应、上传文件和工具结果都被视为不可信输入。更多约束与漏洞报告方式见 [安全政策](SECURITY.md)。
+运行联网默认关闭，由管理员对具体已审核版本授权。**多 Skill 任务中，只要一个选中版本获准联网，整个任务沙箱就具有网络访问能力。** 任务保存授权来源；权限调整作用于新任务。当前联网沙箱不限制目标域名，依赖构建服务的下载策略与任务运行联网是两套机制。
 
-SQLite → PostgreSQL 的 `scripts/migrate_sqlite_to_postgres.py` 仅支持旧版表合并；源库包含非空 Agent、Workflow、Environment 或其他未支持表时，在复制文件和写入目标前拒绝执行。当前版本完整迁移不能使用此旧工具。
+Worker 和环境准备服务持有 Docker 管理权限，属于可信控制面。gVisor 不替代宿主机维护、访问控制和密钥管理。公网部署应配置 HTTPS；更多边界见 [安全政策](SECURITY.md)。
 
 ## 快速开始
 
-### 基础模式
+### 1. 基础模式：先体验界面与对话
 
-基础模式适合查看界面、管理 Skill 和测试普通对话，需要 Docker Compose，但不启动沙箱 Worker。
+需要 Git、Docker Engine / Docker Desktop 和 Docker Compose v2。在终端执行：
 
-```powershell
-Copy-Item .env.example .env
-# 编辑 .env，替换数据库密码、JWT Secret、Bootstrap 邮箱和密码
+```bash
+git clone https://github.com/Max-cu/SkillGo.git
+cd SkillGo
+cp .env.example .env
+```
+
+编辑 `.env`，至少替换 `POSTGRES_PASSWORD`、`SKILLGO_JWT_SECRET`、`SKILLGO_BOOTSTRAP_EMAIL` 和 `SKILLGO_BOOTSTRAP_PASSWORD`，再启动：
+
+```bash
 docker compose up -d --build
 ```
 
-默认访问 `http://127.0.0.1:8080`。
+访问 **http://127.0.0.1:8080**，使用配置的 Bootstrap 账号登录。这是实例唯一的超级管理员；模型可在登录后的平台设置中配置，也可提前填写 `.env` 中的模型地址、密钥和名称。
 
-### 完整沙箱模式
+基础模式启动 Web、API 和 PostgreSQL，适合管理 Skill 和普通模型对话；**不会启动执行脚本任务的沙箱 Worker**。Windows PowerShell 可用 `Copy-Item .env.example .env` 替代 `cp`。
 
-完整模式需要 Linux、Docker Engine，以及已向 Docker 注册的 gVisor `runsc`。配置 `.env` 和 `deploy/ecs.env` 后：
+### 2. 完整模式：运行沙箱任务
+
+需要 **Linux + Docker Engine + 已注册到 Docker 的 gVisor `runsc`**。gVisor 安装、Docker Socket GID 和服务器配置按 [部署指南](deploy/README.md) 完成。在项目根目录准备配置：
 
 ```bash
+cp deploy/ecs.env.example deploy/ecs.env
+# 编辑 deploy/ecs.env：填写 Docker GID、访问地址和端口
 docker compose --env-file .env --env-file deploy/ecs.env --profile build-only build sandbox-runtime
 bash deploy/preflight.sh
-docker compose --env-file .env --env-file deploy/ecs.env --profile sandbox up -d --build
+docker compose --env-file .env --env-file deploy/ecs.env --profile sandbox up -d --build --scale worker=1
 SKILLGO_INSTALL_ROOT="$PWD" bash deploy/verify-ecs.sh
 ```
 
-服务器规格、密钥生成、Docker GID、gVisor 安装、备份恢复、升级和回滚见 [完整部署指南](deploy/README.md)。生产环境建议固定到 [GitHub Release](https://github.com/Max-cu/SkillGo/releases)，不要直接追随 `main`。
+上例以 **1 个 Worker** 起步；仓库 Compose 配置为 5 个副本，可按宿主资源使用 `--scale worker=N` 调整。Worker 本身与每个任务沙箱都会占用资源，应根据任务文件大小和并发量规划容量。
 
-### 本地开发
+`deploy/ecs.env.example` 默认对外监听 80 端口，需填写实际访问地址；它覆盖根目录 `.env` 的同名配置。部署示例给任务沙箱配置 2 GiB 内存、1 CPU、128 PIDs 和 900 秒单命令超时，任务总时限默认关闭；这些是可调整的预算，不是性能承诺。
+
+### 3. 可选：启用环境准备与持久化恢复
+
+先取得基础镜像 ID：
+
+```bash
+docker image inspect skillgo/sandbox-runtime:local --format '{{.Id}}'
+```
+
+将以下配置写入 `deploy/ecs.env`，把基础镜像占位值替换成上一步完整输出：
+
+```dotenv
+SKILLGO_ENVIRONMENT_PREPARATION_ENABLED=true
+SKILLGO_ENVIRONMENT_BASE_IMAGE=sha256:<完整镜像ID>
+SKILLGO_DURABLE_CHECKPOINTS_ENABLED=true
+```
+
+两个功能可以独立启用。启用环境准备时启动对应服务，并保持 API、Worker 与环境服务配置一致：
+
+```bash
+docker compose --env-file .env --env-file deploy/ecs.env --profile sandbox --profile environments up -d --build --scale worker=1 api worker environment-worker
+# API 重建后同步重建 Web，刷新 Nginx 的后端地址
+docker compose --env-file .env --env-file deploy/ecs.env up -d --no-deps --force-recreate web
+```
+
+已有业务的实例应在任务空闲时变更配置，先备份再更新。环境构建需要访问依赖源；任务沙箱是否联网仍按版本授权控制。
+
+## 通过 API 接入业务
+
+Endpoint 固定绑定拥有者和已审核、可执行的 Skill 版本。密钥只在创建或轮换时完整展示，服务端保存前缀与摘要。请求通过 `X-SkillGo-Key` 认证。
+
+| 方式 | 接口 | 返回 |
+| --- | --- | --- |
+| 纯指令同步调用 | `POST /api/v1/invoke/{slug}` | 结构化结果与 `run_id` |
+| 沙箱异步任务 | `POST /api/v1/workflow-endpoints/{slug}/jobs` | `202 Accepted`、任务 ID 与查询地址 |
+
+异步接口当前接收一个必填输入文件和可选指令，支持 `Idempotency-Key`：
+
+```bash
+export SKILLGO_BASE_URL="https://skillgo.example.com"
+export SKILLGO_API_KEY="<你的 Endpoint 密钥>"
+
+curl "$SKILLGO_BASE_URL/api/v1/workflow-endpoints/your-slug/jobs" \
+  -H "X-SkillGo-Key: $SKILLGO_API_KEY" \
+  -H "Idempotency-Key: request-001" \
+  -F "file=@./input.docx" \
+  -F "instruction=检查日期、金额和前后矛盾，生成检查报告"
+```
+
+提交后查询任务状态，再下载产物；外部接口仍执行 Endpoint 与任务归属校验。完整契约见 [任务 API](docs/workflow-api.md)，可运行示例见 [Python 客户端](examples/workflow_api_client.py)。开发环境 API 文档位于 `http://127.0.0.1:8000/api/docs`。
+
+## 数据与运维
+
+| 数据 | 默认策略 |
+| --- | --- |
+| 对话附件、任务输入、生成产物 | 保留 15 天，可配置；到期文件不再可下载 |
+| 成功运行的详细事件 | 保留 7 天 |
+| 失败或取消运行的详细事件 | 保留 30 天 |
+| 对话文字、任务状态、结果摘要、审计 | 不随上述文件保留期限自动删除 |
+| 数据库 | PostgreSQL 用于生产；SQLite 用于本地开发；Alembic 管理结构迁移 |
+
+管理员可查看平台文件分类和服务器磁盘占用。更新前应备份数据库、托管文件及配置：
+
+```bash
+bash deploy/backup-skillgo.sh
+```
+
+安装、指定版本升级、自检、备份和恢复流程见 [部署指南](deploy/README.md)。生产环境应选择经过验证的提交或 Release；GitHub `main` 上的新功能可能尚未进入最近的 Release。
+
+旧工具 `scripts/migrate_sqlite_to_postgres.py` 仅支持旧版表合并。源库含有未支持的非空表时会在复制和写入前停止，**不能用它完成当前完整数据库的跨引擎迁移**。
+
+## 当前边界
+
+- 多 Skill 是同一 Agent、同一任务工作区内的协调执行；步骤依赖检查不等于通用并行 DAG、条件分支或多 Agent 调度。
+- 模型兼容性取决于服务端对 Chat Completions、流式输出和工具调用等协议的实现。对话、视觉使用 OpenAI-compatible 接口；OCR 还支持 MinerU `/file_parse`，需要单独配置相应能力。
+- 图片可以由视觉模型理解，OCR 按需开启；平台不保证所有文件格式都能完整解析。
+- 依赖准备当前侧重受约束的 Python wheel 与平台能力目录，不提供通用 npm、apt 或源码编译服务。
+- 快照是工作文件和 Agent 状态的恢复，不是进程快照；等待环境构建仍占用当前任务 Worker。
+- 当前模型耗时、工具执行、文件规模与检查点 I/O 都会影响完成速度；减少流程调用不代表所有任务都获得固定比例提速。
+
+## 开发与文档
+
+本地开发使用 Python 3.12、Node.js 24。以下为 PowerShell 示例：
 
 ```powershell
 Copy-Item backend\.env.example backend\.env
-# 编辑 backend/.env
+# 编辑 backend/.env：替换密钥、Bootstrap 信息和模型配置
 python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r backend\requirements-dev.lock
 .\.venv\Scripts\python.exe -m uvicorn app.main:app --app-dir backend --env-file backend/.env --reload
 ```
 
-另开终端：
+另开终端启动前端：
 
 ```powershell
 Set-Location frontend
@@ -254,54 +318,40 @@ npm.cmd ci
 npm.cmd run dev
 ```
 
-前端为 `http://127.0.0.1:5173`，API 文档为 `http://127.0.0.1:8000/api/docs`。详细说明见 [开发文档](docs/development.md)。
+前端地址为 `http://127.0.0.1:5173`，通过 Vite 代理访问本机 API。开发服务器不会自动提供 Linux/gVisor 沙箱能力。
 
-## 验证
+从项目根目录运行验证：
 
 ```powershell
 .\.venv\Scripts\python.exe -m pytest -q
-Set-Location frontend
-npm.cmd run build
+npm.cmd --prefix frontend run build
 ```
 
-CI 同时验证后端测试、前端生产构建、部署脚本与完整沙箱 Compose 配置。
+GitHub Actions 检查后端测试、前端构建、部署脚本和沙箱 Compose 配置；真实 Docker/gVisor 自检由部署脚本执行。
 
-## 技术栈
-
-| 层级 | 实现 |
+| 目录 | 内容 |
 | --- | --- |
-| Web | React、TypeScript、Vite、Nginx |
-| API | Python 3.12、FastAPI、Pydantic、SQLAlchemy |
-| 数据 | PostgreSQL、SQLite（开发）、Alembic |
-| 模型 | OpenAI-compatible Chat Completions / tool calling；MinerU `/file_parse` OCR |
-| 执行 | 数据库租约 Worker、Docker SDK、gVisor `runsc` |
-| 质量 | pytest、TypeScript、Vite、GitHub Actions |
-
-## 文档
-
-| 文档 | 内容 |
-| --- | --- |
-| [文档索引](docs/README.md) | 当前文档与历史规划材料的边界 |
-| [完整部署指南](deploy/README.md) | Linux、gVisor、配置、升级、备份与回滚 |
-| [产品与技术架构](docs/PRODUCT_ARCHITECTURE.md) | 产品边界、执行分层与隔离模型 |
-| [Agent 内核](docs/agent-kernel.md) | 计划、工具、上下文、验证与产物门禁 |
-| [工作流 API](docs/workflow-api.md) | 异步 Endpoint、幂等、状态与产物下载 |
-| [技术设计](docs/technical-design.md) | 数据模型、控制面、执行面与安全约束 |
-| [开发文档](docs/development.md) | 本地环境、模型配置、测试与 Compose |
-
-## 项目结构
-
-| 路径 | 用途 |
-| --- | --- |
-| `backend/app` | FastAPI、领域服务、Agent、Worker 与沙箱协议 |
+| `backend/app` | FastAPI、模型网关、Agent、任务 Worker、环境准备与存储 |
 | `backend/tests` | 后端回归测试 |
-| `frontend/src` | React 工作台、社区与管理界面 |
-| `sandbox-runtime` | 受控任务沙箱镜像 |
+| `frontend/src` | React / TypeScript 工作台、Skill 社区与管理界面 |
+| `sandbox-runtime` | Linux 任务基础镜像 |
 | `examples` | 示例 Skill 与 API 客户端 |
-| `deploy` | 部署、预检、升级、备份恢复与自检脚本 |
+| `deploy` | 安装、预检、自检、升级、备份与恢复 |
 
-## 参与和许可证
+| 文档 | 用途 |
+| --- | --- |
+| [部署指南](deploy/README.md) | Linux、gVisor、配置、备份与运维 |
+| [开发指南](docs/development.md) | 本地环境与开发流程 |
+| [任务 API](docs/workflow-api.md) | 异步调用、状态查询与产物下载 |
+| [产品与技术架构](docs/PRODUCT_ARCHITECTURE.md) | 产品边界与系统分层 |
+| [Agent 内核](docs/agent-kernel.md) | 编排、工具、上下文与验证设计 |
+| [持久化任务快照](docs/durable-task-checkpoints.md) | 恢复语义、边界与验收记录 |
+| [文档索引](docs/README.md) | 其他设计资料与历史阶段记录 |
 
-贡献流程见 [CONTRIBUTING.md](CONTRIBUTING.md)，漏洞请按 [SECURITY.md](SECURITY.md) 报告。SkillGo 采用 [MIT License](LICENSE)。
+部分设计文档保留了阶段性状态与当时的验证记录，不能作为当前功能开关或部署状态的证明；具体行为以所用版本的代码、配置和测试为准。
 
-如果你认同“让 Skill 在独立、可治理的环境中真正运行”这个方向，欢迎在 [GitHub 仓库](https://github.com/Max-cu/SkillGo) 点一个 ⭐ Star。
+## 参与项目
+
+欢迎提交问题、改进建议与 Pull Request。开发约定见 [CONTRIBUTING.md](CONTRIBUTING.md)，安全问题请按 [SECURITY.md](SECURITY.md) 私下报告。
+
+SkillGo 使用 [MIT License](LICENSE)。
