@@ -925,20 +925,12 @@ export function WorkflowPage() {
     event.preventDefault();
     const instruction = messageText.trim() || "请根据上传文件完整执行这个 Skill，并生成最终结果。";
     if ((!messageText.trim() && !attachment) || busy || jobActive || !selectedVersion.runtime_runnable) return;
-    // PDF 只能经 OCR 提取文字：未配置模型时当场拦截，已配置则强制随本次发送开启。
-    const attachmentIsPdf = Boolean(attachment?.name.toLocaleLowerCase().endsWith(".pdf"));
-    if (attachmentIsPdf && !availableModels.ocr_configured) {
-      setError("PDF 需要 OCR 模型支持，请联系管理员在平台设置中配置 OCR 模型");
-      return;
-    }
-    const effectiveOcrEnabled = ocrEnabled || attachmentIsPdf;
-    if (attachmentIsPdf && !ocrEnabled) setOcrEnabled(true);
     setBusy(true); setError("");
     const body = new FormData();
     body.set("version_id", selectedVersion.id);
     body.set("instruction", instruction);
     if (selectedModelName) body.set("model_name", selectedModelName);
-    if (effectiveOcrEnabled) body.set("ocr_enabled", "true");
+    if (ocrEnabled) body.set("ocr_enabled", "true");
     if (attachment) body.set("file", attachment);
     try {
       const job = await api<WorkflowJob>("/jobs", { method: "POST", body });
