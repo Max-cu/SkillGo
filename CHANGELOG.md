@@ -2,7 +2,7 @@
 
 所有重要变更都记录在此文件中。版本号遵循 [Semantic Versioning](https://semver.org/)。
 
-## [Unreleased]
+## [0.4.1] - 2026-09-24
 
 ### Added
 
