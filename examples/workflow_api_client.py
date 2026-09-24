@@ -22,6 +22,10 @@ import requests
 
 
 TERMINAL_STATUSES = {"succeeded", "failed", "cancelled", "blocked"}
+# waiting_user is not terminal for the platform, but an API-key integration
+# cannot answer the agent's question: the endpoint owner must answer in the
+# web UI (or the caller cancels). Stop polling instead of hanging forever.
+NEEDS_HUMAN_STATUSES = {"waiting_user"}
 
 
 def required_env(name: str) -> str:
@@ -69,6 +73,13 @@ def main() -> None:
         response.raise_for_status()
         job = response.json()
         print(f"Job {job_id}: {job['status']}")
+        if job["status"] in NEEDS_HUMAN_STATUSES:
+            question = job.get("pending_question") or {}
+            raise SystemExit(
+                "Job is waiting for a human answer, which the Endpoint API key "
+                f"cannot provide (question id={question.get('id')}): the endpoint "
+                "owner must answer in the SkillGo web UI, or cancel this job."
+            )
 
     if job["status"] != "succeeded":
         raise SystemExit(
