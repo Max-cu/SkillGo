@@ -26,6 +26,19 @@ def extend_tools(tools: list[dict]) -> None:
     for name, description, properties in [
         ('ask_user', 'Pause when a material requirement or input is missing. The sandbox is released; the answer starts a fresh attempt with original inputs and all answers. Ask before expensive work. Never fabricate a required business parameter.', {'question': {'type': 'string', 'maxLength': 2000}}),
         ('inspect_image', 'Inspect a generated PNG/JPEG/WebP using the configured vision model. Render document pages to images first. Returns observations, not automatic validation.', {'path': {'type': 'string'}, 'question': {'type': 'string', 'maxLength': 2000}}),
+        ('inspect_document', (
+            'Understand an uploaded PDF/image on demand. Use intent "structure" (MinerU layout OCR) when you need the actual text WITH positions - '
+            'scanned/image-only PDFs, OCR, or in-place bilingual translation/annotation: it returns every block as {type,text,bbox:[x0,y0,x1,y1],page_idx} and a content_path JSON holding the complete list. '
+            'Use intent "understand" (vision model) to ask what a rendered PNG/JPEG page looks like. "auto" picks understand for images and structure for PDFs. '
+            'Digital PDFs with a real text layer usually do NOT need this: extract text directly with PyMuPDF. Optional pages:[start,end] (0-based) processes a page range. '
+            'Results are cached per file/intent/pages.'
+        ), {
+            'path': {'type': 'string', 'description': 'Absolute path to a PDF/PNG/JPEG/WebP file under /workspace'},
+            'intent': {'type': 'string', 'enum': ['structure', 'understand', 'auto'], 'description': 'structure=OCR text+bbox via MinerU; understand=vision description; auto=route by file type'},
+            'pages': {'type': 'array', 'items': {'type': 'integer'}, 'minItems': 2, 'maxItems': 2, 'description': 'Optional [start_page, end_page], 0-based inclusive'},
+            'question': {'type': 'string', 'maxLength': 2000, 'description': 'Required question for intent understand; ignored for structure'},
+        }),
     ]:
+        required = ['path'] if name == 'inspect_document' else list(properties)
         tools.append({'type': 'function', 'function': {'name': name, 'description': description,
-            'parameters': {'type': 'object', 'properties': properties, 'required': list(properties), 'additionalProperties': False}}})
+            'parameters': {'type': 'object', 'properties': properties, 'required': required, 'additionalProperties': False}}})

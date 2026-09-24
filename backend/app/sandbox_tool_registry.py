@@ -41,6 +41,7 @@ TOOL_NAMES = frozenset(
         "run_fixed_skill",
         "ask_user",
         "inspect_image",
+        "inspect_document",
     }
 )
 
@@ -83,6 +84,23 @@ def validate_agent_action(action: dict[str, Any]) -> str | None:
     if action_name == "inspect_image":
         if not isinstance(action.get("path"), str) or not isinstance(action.get("question"), str) or not action['question'].strip():
             return "inspect_image requires path and question"
+    elif action_name == "inspect_document":
+        if not isinstance(action.get("path"), str) or not action["path"].strip():
+            return "inspect_document requires path"
+        intent = action.get("intent", "auto")
+        if intent not in {"structure", "understand", "auto"}:
+            return "inspect_document intent must be structure, understand or auto"
+        if "question" in action and not isinstance(action.get("question"), str):
+            return "inspect_document question must be text"
+        pages = action.get("pages")
+        if pages is not None:
+            if (
+                not isinstance(pages, list) or len(pages) != 2
+                or any(not isinstance(v, int) or isinstance(v, bool) for v in pages)
+            ):
+                return "inspect_document pages must be [start, end] integers"
+            if pages[0] < 0 or pages[1] < pages[0]:
+                return "inspect_document pages must satisfy 0 <= start <= end"
     if action_name == "read_skill":
         index = action.get("skill_index")
         if not isinstance(index, int) or isinstance(index, bool) or index < 1:

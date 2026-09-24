@@ -2,6 +2,16 @@
 
 所有重要变更都记录在此文件中。版本号遵循 [Semantic Versioning](https://semver.org/)。
 
+## [Unreleased]
+
+### Added
+
+- Agent 新增 `inspect_document` 工具，文档/图片理解按需路由：`structure` 走 MinerU `/file_parse` 并请求 `content_list`，返回每个文本块的 `type`/`text`/`bbox`/`page_idx` 与页码范围支持，支撑扫描件 OCR 与原位翻译/标注；完整块列表落盘 `/workspace/work/document_inspection/<sha256>.json`，模型上下文只返回路径与前 20 个样例。`understand` 走视觉模型回答渲染页面问题，`auto` 按文件类型自动选择；结果按文件摘要/意图/页码范围缓存，避免重复 OCR。
+
+### Changed
+
+- 系统提示明确：数字版 PDF 存在可用文本层时直接用 PyMuPDF 抽取文字与坐标，不再无谓调用 OCR；仅扫描件或需要块级坐标时才使用 `inspect_document(structure)`。
+
 ## [0.4.0] - 2026-09-20
 
 本版本主线是**让长任务真正跑得完、断了能续**：新增 Skill 能力环境自动准备与任务持久化快照恢复，命令超时不再摧毁沙箱，并系统治理 Agent 上下文（重复读文件、工具输出被截断）；执行过程界面改为 Codex 风格的扁平行动流。

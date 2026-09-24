@@ -54,3 +54,116 @@ def test_failures_not_cached_and_cache_bounded():
         assert len(cache.entries) == 1
         assert not (await cache.inspect(sandbox, gateway, path='a.png', question='read'))['cached']
     asyncio.run(scenario())
+
+
+class DocumentGateway:
+    """Gateway stub exposing separate vision/ocr connections."""
+    def __init__(self):
+        self.ocr_calls = 0
+        self.written = {}
+        self.ocr = SimpleNamespace(
+            connection=SimpleNamespace(api_format='mineru'),
+            parse_document_mineru=self._parse_document,
+            model_name='MinerU OCR',
+        )
+        self.vision = SimpleNamespace(
+            connection=SimpleNamespace(api_format='openai'),
+            analyze_image=self._analyze_image,
+            model_name='qwen-vl',
+        )
+    def for_capability(self, capability):
+        return self.ocr if capability == 'ocr' else self.vision
+    async def _parse_document(self, *, data, media_type, pages):
+        self.ocr_calls += 1
+        blocks = [
+            {'type': 'text', 'text': '扫描标题', 'bbox': [10, 20, 100, 50], 'page_idx': 0},
+        ]
+        return SimpleNamespace(output={
+            'blocks': blocks, 'page_count': 1, 'block_count': 1,
+            'block_types': {'text': 1}, 'markdown': '扫描标题', 'provider': 'mineru',
+        }, model_name='MinerU OCR')
+    async def _analyze_image(self, *, data, media_type, prompt, purpose):
+        return SimpleNamespace(output={'text': 'page looks fine'}, model_name='qwen-vl')
+
+
+def _doc_sandbox(files):
+    written = {}
+    async def write_text(path, content):
+        written[path] = content
+    return SimpleNamespace(
+        read_workspace_file=files.__getitem__,
+        write_text=write_text,
+        _written=written,
+    )
+
+
+def test_inspect_document_structure_persists_blocks_and_caches():
+    async def scenario():
+        files = {'/workspace/input/scan.pdf': b'%PDF-1.4'}
+        sandbox = _doc_sandbox(files)
+        gateway = DocumentGateway()
+        cache = VisualInspectionCache()
+        result = await cache.inspect_document(
+            sandbox, gateway, path='/workspace/input/scan.pdf', intent='structure')
+        assert result['ok'] and result['mode'] == 'document_structure'
+        assert result['page_count'] == 1 and result['block_count'] == 1
+        assert result['blocks'][0]['bbox'] == [10, 20, 100, 50]
+        assert result['content_path'].startswith('/workspace/work/document_inspection/')
+        import json
+        persisted = json.loads(sandbox._written[result['content_path']])
+        assert persisted['blocks'][0]['text'] == '扫描标题'
+        # Second call for same file/intent is cached: no second MinerU call.
+        again = await cache.inspect_document(
+            sandbox, gateway, path='/workspace/input/scan.pdf', intent='auto')
+        assert again['cached'] is True and gateway.ocr_calls == 1
+    asyncio.run(scenario())
+
+
+def test_inspect_document_auto_routes_images_to_vision():
+    async def scenario():
+        files = {'/workspace/work/page_01.png': b'\x89PNG'}
+        sandbox = _doc_sandbox(files)
+        gateway = DocumentGateway()
+        cache = VisualInspectionCache()
+        result = await cache.inspect_document(
+            sandbox, gateway, path='/workspace/work/page_01.png', intent='auto', question='版面如何')
+        assert result['mode'] == 'vision'
+        assert result['observation']['text'] == 'page looks fine'
+        assert gateway.ocr_calls == 0
+    asyncio.run(scenario())
+
+
+def test_inspect_document_understand_rejects_pdf():
+    async def scenario():
+        from app.sandbox_runtime import SandboxRuntimeError
+        files = {'/workspace/input/d.pdf': b'%PDF'}
+        sandbox = _doc_sandbox(files)
+        gateway = DocumentGateway()
+        with pytest.raises(SandboxRuntimeError, match='Vision understanding needs an image'):
+            await VisualInspectionCache().inspect_document(
+                sandbox, gateway, path='/workspace/input/d.pdf', intent='understand')
+    asyncio.run(scenario())
+
+
+def test_inspect_document_rejects_unsupported_type():
+    async def scenario():
+        from app.sandbox_runtime import SandboxRuntimeError
+        files = {'/workspace/work/x.docx': b'zip'}
+        sandbox = _doc_sandbox(files)
+        gateway = DocumentGateway()
+        with pytest.raises(SandboxRuntimeError, match='supports PDF, PNG, JPEG and WebP'):
+            await VisualInspectionCache().inspect_document(
+                sandbox, gateway, path='/workspace/work/x.docx')
+    asyncio.run(scenario())
+
+
+def test_inspect_document_action_validation():
+    from app.sandbox_tool_registry import validate_agent_action
+    base = {'action': 'inspect_document', 'path': '/workspace/input/a.pdf'}
+    assert validate_agent_action(dict(base)) is None
+    assert validate_agent_action({**base, 'intent': 'structure', 'pages': [0, 2]}) is None
+    assert validate_agent_action({**base, 'intent': 'bad'})
+    assert validate_agent_action({**base, 'pages': [2, 1]})
+    assert validate_agent_action({**base, 'pages': [0]})
+    assert validate_agent_action({'action': 'inspect_document'})
+

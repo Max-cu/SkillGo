@@ -789,10 +789,78 @@ class OpenAICompatibleGateway:
             latency_ms=round((time.perf_counter() - started_at) * 1000),
         )
 
+    async def parse_document_mineru(
+        self,
+        *,
+        data: bytes,
+        media_type: str,
+        pages: tuple[int, int] | None = None,
+    ) -> ModelResult:
+        """Parse one image/PDF with MinerU, keeping structured text blocks with bbox.
+
+        Unlike attachment OCR (Markdown only), this requests content_list so the
+        caller receives every text/table/image block with page index and bbox,
+        which in-place translation/annotation needs to place output precisely.
+        """
+
+        if self.connection.api_format != "mineru":
+            raise ModelGatewayError(
+                "DOCUMENT_STRUCTURE_BACKEND_UNAVAILABLE",
+                "结构化文档解析需要配置 MinerU 文件解析连接（api_format=mineru）",
+            )
+        form: dict[str, str] = {
+            "return_md": "true",
+            "return_images": "false",
+            "return_middle_json": "false",
+            "return_model_output": "false",
+            "return_content_list": "true",
+        }
+        if pages is not None:
+            form["start_page_id"] = str(max(0, pages[0]))
+            form["end_page_id"] = str(max(pages[0], pages[1]))
+        payload, latency_ms = await self._post_mineru_file_parse(
+            data=data, media_type=media_type, form=form, structured=True
+        )
+        return ModelResult(
+            output=payload,
+            model_name=self.connection.model_name,
+            token_usage={},
+            latency_ms=latency_ms,
+        )
+
     async def _analyze_image_with_mineru(
         self, *, data: bytes, media_type: str
     ) -> ModelResult:
         """Upload one image or PDF to MinerU and normalize its Markdown OCR response."""
+
+        payload, latency_ms = await self._post_mineru_file_parse(
+            data=data,
+            media_type=media_type,
+            form={
+                "return_md": "true",
+                "return_images": "false",
+                "return_middle_json": "false",
+                "return_model_output": "false",
+                "return_content_list": "false",
+            },
+            structured=False,
+        )
+        return ModelResult(
+            output=payload,
+            model_name=self.connection.model_name,
+            token_usage={},
+            latency_ms=latency_ms,
+        )
+
+    async def _post_mineru_file_parse(
+        self,
+        *,
+        data: bytes,
+        media_type: str,
+        form: dict[str, str],
+        structured: bool,
+    ) -> tuple[dict[str, Any], int]:
+        """Shared MinerU /file_parse multipart call. Returns (normalized payload, ms)."""
 
         headers: dict[str, str] = {}
         if self.connection.api_key:
@@ -813,13 +881,7 @@ class OpenAICompatibleGateway:
                     self._mineru_file_parse_url(),
                     headers=headers,
                     files={"files": (f"attachment{suffix}", data, media_type)},
-                    data={
-                        "return_md": "true",
-                        "return_images": "false",
-                        "return_middle_json": "false",
-                        "return_model_output": "false",
-                        "return_content_list": "false",
-                    },
+                    data=form,
                 )
                 response.raise_for_status()
         except httpx.HTTPStatusError as exc:
@@ -837,10 +899,20 @@ class OpenAICompatibleGateway:
             if not isinstance(results, dict) or not results:
                 raise TypeError("results is empty")
             markdown_parts: list[str] = []
+            blocks: list[dict[str, Any]] = []
             for item in results.values():
                 if not isinstance(item, dict) or not isinstance(item.get("md_content"), str):
                     raise TypeError("md_content is missing")
                 markdown_parts.append(item["md_content"])
+                if structured:
+                    raw_list = item.get("content_list")
+                    if isinstance(raw_list, str):
+                        raw_list = json.loads(raw_list)
+                    if not isinstance(raw_list, list):
+                        raise TypeError("content_list is missing")
+                    for block in raw_list:
+                        if isinstance(block, dict) and "type" in block:
+                            blocks.append(block)
             content = "\n\n".join(markdown_parts)
         except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
             raise ModelGatewayError(
@@ -857,11 +929,30 @@ class OpenAICompatibleGateway:
             **({"backend": backend} if isinstance(backend, str) else {}),
             **({"version": version} if isinstance(version, str) else {}),
         }
-        return ModelResult(
-            output={"message": content, **metadata},
-            model_name=self.connection.model_name,
-            token_usage={},
-            latency_ms=round((time.perf_counter() - started_at) * 1000),
+        if structured:
+            page_indexes = {
+                int(b["page_idx"]) for b in blocks
+                if isinstance(b.get("page_idx"), int)
+            }
+            type_counts: dict[str, int] = {}
+            for block in blocks:
+                block_type = str(block.get("type") or "unknown")
+                type_counts[block_type] = type_counts.get(block_type, 0) + 1
+            normalized = {
+                "message": (
+                    f"MinerU parsed {len(blocks)} block(s) across "
+                    f"{len(page_indexes)} page(s); structured blocks are in blocks/content_path."
+                ),
+                **metadata,
+                "markdown": content,
+                "blocks": blocks,
+                "page_count": len(page_indexes),
+                "block_count": len(blocks),
+                "block_types": type_counts,
+            }
+            return normalized, round((time.perf_counter() - started_at) * 1000)
+        return {**metadata, "message": content}, round(
+            (time.perf_counter() - started_at) * 1000
         )
 
     async def _request_json(
