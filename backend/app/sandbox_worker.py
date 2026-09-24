@@ -544,6 +544,19 @@ async def execute_sandbox_job(
                     (str(context["archive_path"]), str(context["extract_root"]))
                     for context in skill_contexts
                 ]
+
+                # User inputs are immutable platform provisioning: snapshots
+                # exclude /workspace/input, and this hook re-reads the
+                # originals from object storage on restore/handover. Bytes are
+                # loaded lazily only when a restore actually happens.
+                async def _provision_inputs(target) -> None:
+                    files = await asyncio.to_thread(lambda: {
+                        f"input/{item.filename}": storage.read(item.storage_path)
+                        for item in job.input_files
+                    })
+                    await asyncio.to_thread(target.put_files, files)
+
+                sandbox.provision_inputs = _provision_inputs
                 if checkpoint_bundle:
                     await restore_bundle(sandbox, checkpoint_bundle)
                     add_job_event(db, job, 'status', '已恢复持久化任务快照',
@@ -614,6 +627,12 @@ async def execute_sandbox_job(
                             for info in package_zip.infolist()
                             if not info.is_dir()
                         )
+                # User-provided inputs are read-only for the agent and are
+                # re-staged from object storage by provision_inputs, so keep
+                # their bytes out of every turn-boundary snapshot.
+                immutable_paths.update(
+                    f"/workspace/input/{item.filename}" for item in job.input_files
+                )
                 sandbox.immutable_workspace_paths = frozenset(immutable_paths)
                 available_binaries = await _preflight_sandbox_binaries(sandbox, skill_contexts)
                 environment = await preflight_environment(sandbox, skill_contexts)

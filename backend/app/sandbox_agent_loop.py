@@ -13,7 +13,13 @@ from sqlalchemy.orm import Session
 from sqlalchemy import select
 from .sandbox_checkpoint import replace_sandbox
 from .runtime_capability import request_capability
-from .durable_checkpoint import save_checkpoint, mark_inflight, state_to_json, state_from_json
+from .durable_checkpoint import (
+    save_checkpoint,
+    mark_inflight,
+    state_to_json,
+    state_from_json,
+    CheckpointUnavailable,
+)
 
 from .agent_kernel import AgentSession, ToolCallContext, ToolPipeline
 from .agent_policy import AgentExecutionState, PRE_PLAN_INSPECTION_HINT, action_fingerprint
@@ -671,16 +677,36 @@ async def _run_agent_loop(
                     raise AgentJobCancelled('Workflow job was cancelled')
             db.commit()
         if durable:
-            await save_checkpoint(db, job, sandbox, {
-                'next_turn': turn_number, 'messages': messages,
-                'execution_state': state_to_json(execution_state),
-                'versions': [x['skill_version_id'] for x in job.selected_skills], 'model_name': job.model_name,
-                'repeated_action': repeated_action, 'repeat_count': repeat_count,
-                'recoverable_errors': recoverable_errors, 'tool_operation_count': tool_operation_count,
-                'singleton_tool_turns': singleton_tool_turns,
-                'fixed_executed': [bool(c.get('fixed_executed')) for c in skill_contexts],
-                'memory': {k: v for k, v in job.memory.data.items() if k != 'durable_checkpoint'},
-            }, fence)
+            try:
+                await save_checkpoint(db, job, sandbox, {
+                    'next_turn': turn_number, 'messages': messages,
+                    'execution_state': state_to_json(execution_state),
+                    'versions': [x['skill_version_id'] for x in job.selected_skills], 'model_name': job.model_name,
+                    'repeated_action': repeated_action, 'repeat_count': repeat_count,
+                    'recoverable_errors': recoverable_errors, 'tool_operation_count': tool_operation_count,
+                    'singleton_tool_turns': singleton_tool_turns,
+                    'fixed_executed': [bool(c.get('fixed_executed')) for c in skill_contexts],
+                    'memory': {k: v for k, v in job.memory.data.items() if k != 'durable_checkpoint'},
+                }, fence)
+            except CheckpointUnavailable as exc:
+                # Durable snapshots are crash-recovery insurance, not part of
+                # task execution: a workspace over the 256 MiB / 10k-file cap
+                # (or a transient Docker socket stall) must not kill a task
+                # whose actual work is succeeding. Stop trying for the rest of
+                # this attempt; the previous snapshot (if any) stays valid.
+                durable = False
+                logger.warning(
+                    "Durable checkpoint unavailable, skipping for the rest of the run "
+                    "job_id=%s turn=%s: %s", job.id, turn_number, exc)
+                add_job_event(
+                    db, job, "status", "已跳过工作区快照",
+                    "工作文件超出快照容量上限或沙箱通信暂时不可用，已跳过本次崩溃恢复快照；"
+                    "任务继续执行，最终产物校验不受影响。",
+                    status="succeeded",
+                    data={"checkpoint": "unavailable", "turn": turn_number,
+                          "reason": str(exc)[:300]},
+                )
+                db.commit()
         agent_session.start_turn(turn_number)
         agent_session.start_step(turn_number)
         set_step(

@@ -7,16 +7,28 @@ import asyncio
 import hashlib
 import io
 import json
+import logging
 import tarfile
 from pathlib import PurePosixPath
 from uuid import uuid4
 
 from .sandbox_runtime import DockerSandbox, SandboxRuntimeError
 
-MAX_BYTES = 256 * 1024 * 1024
+logger = logging.getLogger(__name__)
+
+# Bounded against the 2 GiB worker container: export materializes files in
+# memory (~1x) and restore builds one tar via put_files (~1.2x peak). 512 MiB
+# covers legitimately heavy runs (embedded-image PPTX, batch OCR) while
+# keeping restore peak comfortably under the worker memory quota.
+MAX_BYTES = 512 * 1024 * 1024
 MAX_ENTRIES = 10000
 # Tar block + per-header overhead allowance on top of plain file bytes.
 MAX_ARCHIVE_BYTES = MAX_BYTES + MAX_ENTRIES * 2048
+
+# Docker daemon teardown of the frozen-view helper occasionally stalls under
+# load; the client default (60s) killed the delete and masked the real export
+# error. Give it room and retry once before leaving the helper for GC.
+HELPER_REMOVE_TIMEOUT = 180
 
 
 class _ChunkReader:
@@ -104,6 +116,19 @@ def unpack_snapshot(raw, *, excluded: frozenset[str] = frozenset()):
         return _collect_entries(archive, excluded=excluded)
 
 
+async def reprovision_input_files(sandbox) -> None:
+    """Re-stage immutable user inputs (/workspace/input) after a restore.
+
+    Snapshots deliberately omit platform-provisioned input files; the Worker
+    attaches an async ``provision_inputs`` hook that re-reads the originals
+    from object storage. Must run while the container is still unstarted
+    (put_files rejects staging once any command exists).
+    """
+    provider = getattr(sandbox, 'provision_inputs', None)
+    if provider is not None:
+        await provider(sandbox)
+
+
 async def reprovision_skill_packages(sandbox) -> None:
     """Re-stage immutable Skill zips and extract them into /workspace/skills.
 
@@ -132,6 +157,23 @@ async def reprovision_skill_packages(sandbox) -> None:
             )
 
 
+def _remove_helper(helper) -> None:
+    """Best-effort teardown of the frozen-view helper container.
+
+    Cleanup runs in ``export_workspace``'s ``finally``; a Docker transport
+    stall here must never replace the export's primary exception (it once hid
+    a Snapshot-exceeds-size-limit ValueError behind a ReadTimeout). A helper
+    that survives is picked up by later workspace cleanup.
+    """
+    for attempt in (1, 2):
+        try:
+            helper.remove(force=True, timeout=HELPER_REMOVE_TIMEOUT)
+            return
+        except Exception:
+            logger.warning(
+                "checkpoint helper remove failed (attempt %d/2)", attempt, exc_info=True)
+
+
 def export_workspace(sandbox):
     helper = None
     try:
@@ -151,7 +193,7 @@ def export_workspace(sandbox):
             return _collect_entries(archive, excluded=excluded)
     finally:
         if helper is not None:
-            helper.remove(force=True)
+            _remove_helper(helper)
 
 
 async def replace_sandbox(sandbox, cancelled, *, image_id=None, validate_candidate=None):
@@ -172,8 +214,13 @@ async def replace_sandbox(sandbox, cancelled, *, image_id=None, validate_candida
         # candidate gets the Skill files back after adopting the mutable state.
         candidate.provisioned_packages = getattr(sandbox, 'provisioned_packages', None) or {}
         candidate.provisioned_extractions = list(getattr(sandbox, 'provisioned_extractions', None) or [])
+        candidate.provision_inputs = getattr(sandbox, 'provision_inputs', None)
         await asyncio.to_thread(candidate.start)
         await asyncio.to_thread(candidate.put_files, files)
+        # Inputs (and packages below) use put_files, which is rejected once the
+        # container starts; package extraction runs the first command, so all
+        # staging must happen before reprovision_skill_packages.
+        await reprovision_input_files(candidate)
         await reprovision_skill_packages(candidate)
         manifest = {name: hashlib.sha256(data).hexdigest() for name, data in files.items()}
         # Validate bytes before adopting; no user-authored script is executed.

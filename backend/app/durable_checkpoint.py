@@ -13,6 +13,8 @@ from dataclasses import fields
 from pathlib import PurePosixPath
 from uuid import uuid4
 
+import requests
+
 from .config import settings
 from .storage import storage
 from .agent_policy import AgentExecutionState
@@ -21,6 +23,34 @@ from .sandbox_runtime import SandboxRuntimeError
 
 MAX_STATE = 16 * 1024 * 1024
 MAX_ARCHIVE = MAX_BYTES + MAX_STATE + MAX_ENTRIES * 2048
+
+
+class CheckpointUnavailable(RuntimeError):
+    """A turn-boundary snapshot could not be taken for capacity or transport
+    reasons (workspace over the byte/file cap, Docker daemon briefly
+    unreachable).
+
+    The live sandbox and its files are untouched, so callers may safely skip
+    durable checkpointing for the rest of the attempt and keep the task
+    running; the job only loses crash-recovery insurance. Integrity /
+    validation errors stay plain ValueErrors and remain fatal.
+    """
+
+
+# Exact ValueError messages raised by sandbox_checkpoint size/entry gates and
+# this module's write_bundle; anything else (bad paths, links, checksum
+# mismatches) is a real defect and must stay fatal.
+_SIZE_LIMIT_MARKERS = (
+    'Snapshot exceeds size limit',
+    'Snapshot archive exceeds size limit',
+    'Duplicate or oversized snapshot',
+    'Task snapshot workspace exceeds limits',
+    'Task snapshot exceeds size limit',
+)
+
+
+def _is_size_limit_error(exc: BaseException) -> bool:
+    return isinstance(exc, ValueError) and any(m in str(exc) for m in _SIZE_LIMIT_MARKERS)
 
 
 def state_to_json(state):
@@ -149,8 +179,10 @@ async def restore_bundle(sandbox, bundle):
     metadata_path = '/workspace/.skillgo-restore-' + uuid4().hex + '.json'
     small = {k: meta[k] for k in ('directories', 'modes', 'manifest')}
     await asyncio.to_thread(sandbox.put_files, {**files, metadata_path: json.dumps(small).encode()})
-    # Stage every package before the first command starts the task container.
-    from .sandbox_checkpoint import reprovision_skill_packages
+    # Immutable inputs then Skill packages: both stage via put_files, which is
+    # rejected after the first command starts the container.
+    from .sandbox_checkpoint import reprovision_input_files, reprovision_skill_packages
+    await reprovision_input_files(sandbox)
     await reprovision_skill_packages(sandbox)
     code = ('import os,json,hashlib\ns=json.load(open(' + repr(metadata_path) + '))\n'
             'for p in s["directories"]: os.makedirs(p,exist_ok=True)\n'
@@ -168,9 +200,18 @@ async def save_checkpoint(db, job, sandbox, state, fence):
     old = (job.memory.data or {}).get('durable_checkpoint')
     await asyncio.to_thread(sandbox.container.pause)
     try:
-        files, modes, directories = await asyncio.to_thread(export_workspace, sandbox)
-        image = sandbox.container.attrs['Image']
-        ref = await asyncio.to_thread(write_bundle, job, files, modes, directories, state, image)
+        try:
+            files, modes, directories = await asyncio.to_thread(export_workspace, sandbox)
+            image = sandbox.container.attrs['Image']
+            ref = await asyncio.to_thread(write_bundle, job, files, modes, directories, state, image)
+        except ValueError as exc:
+            if _is_size_limit_error(exc):
+                raise CheckpointUnavailable(str(exc)) from exc
+            raise
+        except requests.exceptions.RequestException as exc:
+            # Docker socket transport blip during archive streaming: the live
+            # container and volume are fine; skipping this snapshot is safe.
+            raise CheckpointUnavailable(f"sandbox transport unavailable: {exc}") from exc
         fence()
         job.memory.data = {**job.memory.data, 'durable_checkpoint': ref}
         db.commit()

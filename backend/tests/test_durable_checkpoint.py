@@ -4,6 +4,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
+import requests
 from app import durable_checkpoint as cp
 from app.agent_policy import AgentExecutionState
 from app.storage import LocalObjectStorage
@@ -102,6 +103,46 @@ def test_ambiguous_commit_keeps_object(job, monkeypatch):
     sandbox.container.unpause.assert_called_once()
 
 
+@pytest.mark.parametrize('message', cp._SIZE_LIMIT_MARKERS)
+def test_size_limit_markers_classified(message):
+    assert cp._is_size_limit_error(ValueError(message))
+    assert not cp._is_size_limit_error(ValueError('Invalid snapshot path'))
+    assert not cp._is_size_limit_error(ValueError('Snapshot contains links or special files'))
+
+
+def test_save_checkpoint_size_limit_is_skippable(job, monkeypatch):
+    sandbox = SimpleNamespace(container=Mock(attrs={'Image': 'sha256:' + 'a'*64}))
+    export = Mock(side_effect=ValueError('Snapshot exceeds size limit'))
+    monkeypatch.setattr(cp, 'export_workspace', export)
+    db = Mock()
+    with pytest.raises(cp.CheckpointUnavailable, match='Snapshot exceeds size limit'):
+        asyncio.run(cp.save_checkpoint(db, job, sandbox, {'next_turn': 1}, lambda: None))
+    export.assert_called_once_with(sandbox)
+    db.rollback.assert_called_once()
+    db.commit.assert_not_called()
+    sandbox.container.unpause.assert_called_once()
+    assert not list(cp.storage.root.rglob('*.zip'))
+
+
+def test_save_checkpoint_transport_stall_is_skippable(job, monkeypatch):
+    sandbox = SimpleNamespace(container=Mock(attrs={'Image': 'sha256:' + 'a'*64}))
+    monkeypatch.setattr(cp, 'export_workspace',
+                        Mock(side_effect=requests.exceptions.ReadTimeout('docker stalled')))
+    with pytest.raises(cp.CheckpointUnavailable, match='transport unavailable'):
+        asyncio.run(cp.save_checkpoint(Mock(), job, sandbox, {'next_turn': 1}, lambda: None))
+    sandbox.container.unpause.assert_called_once()
+
+
+def test_save_checkpoint_integrity_error_stays_fatal(job, monkeypatch):
+    sandbox = SimpleNamespace(container=Mock(attrs={'Image': 'sha256:' + 'a'*64}))
+    monkeypatch.setattr(cp, 'export_workspace',
+                        Mock(side_effect=ValueError('Invalid snapshot path')))
+    with pytest.raises(ValueError, match='Invalid snapshot path') as exc_info:
+        asyncio.run(cp.save_checkpoint(Mock(), job, sandbox, {'next_turn': 1}, lambda: None))
+    assert exc_info.type is ValueError
+    sandbox.container.unpause.assert_called_once()
+
+
 def test_restore_only_passes_filesystem_metadata(job):
     publish(job)
     bundle = cp.load_bundle(job)
@@ -112,6 +153,45 @@ def test_restore_only_passes_filesystem_metadata(job):
     sandbox = SimpleNamespace(put_files=Mock(), command=command)
     asyncio.run(cp.restore_bundle(sandbox, bundle))
     assert sandbox.durable_resume['next_turn'] == 4
+
+
+def test_restore_restages_immutable_inputs_before_first_command(job):
+    publish(job)
+    order = []
+
+    class Sandbox:
+        container = None
+        def put_files(self, files):
+            assert self.container is None, 'Cannot stage inputs after the container starts'
+            order.append(('put', sorted(files)))
+        async def command(self, argv, **kwargs):
+            order.append(('cmd',))
+            self.container = object()
+            return SimpleNamespace(exit_code=0)
+
+    async def provision(target):
+        await asyncio.to_thread(target.put_files, {'input/source.pdf': b'PDFBYTES'})
+
+    sandbox = Sandbox()
+    sandbox.provision_inputs = provision
+    asyncio.run(cp.restore_bundle(sandbox, cp.load_bundle(job)))
+    staged = {k for keys in (ev[1] for ev in order if ev[0] == 'put') for k in keys}
+    assert 'input/source.pdf' in staged and '/workspace/work/a' in staged
+    first_cmd = next(i for i, ev in enumerate(order) if ev[0] == 'cmd')
+    input_put = next(i for i, ev in enumerate(order)
+                     if ev[0] == 'put' and 'input/source.pdf' in ev[1])
+    assert input_put < first_cmd
+
+
+def test_restore_without_input_hook_still_works(job):
+    # Older/test sandboxes without the hook are unaffected.
+    publish(job)
+    sandbox = SimpleNamespace(put_files=Mock())
+    async def command(argv, **kwargs):
+        return SimpleNamespace(exit_code=0)
+    sandbox.command = command
+    asyncio.run(cp.restore_bundle(sandbox, cp.load_bundle(job)))
+    assert sandbox.put_files.called
 
 
 def test_restore_stages_packages_before_starting_container(job):
@@ -195,6 +275,74 @@ def test_agent_continues_from_disk_after_losing_all_in_memory_state(client, user
         assert result[1] == ['/workspace/output/result.txt']
         assert result[2] == 6
         assert restored.calls == []  # Previously completed verification was not replayed.
+
+def test_oversized_checkpoint_skips_without_killing_task(client, user_headers, fake_model_gateway, monkeypatch):
+    # Live incident db628789: a 266 MiB assembled PDF made every subsequent
+    # turn-boundary snapshot exceed the 256 MiB cap, which killed the whole
+    # task. The loop must record one skip event, stop retrying and finish.
+    from dataclasses import replace
+    from app import sandbox_agent_loop as loop
+    from app.database import SessionLocal
+    from app.models import WorkflowJob, JobEvent
+    from app.model_gateway import ModelResult
+    from test_orchestration import MemorySandbox
+    from test_workflow_jobs import create_version, sandbox_skill_zip
+    from sqlalchemy import select
+
+    _, version = create_version(client, user_headers, slug='oversize-skip', package=sandbox_skill_zip())
+    created = client.post('/api/v1/jobs', headers=user_headers,
+        data={'version_id': version['id'], 'instruction': 'answer 42'}).json()
+
+    class FakeSandbox(MemorySandbox):
+        def __init__(self):
+            super().__init__()
+            self.container = Mock(attrs={'Image': 'sha256:' + 'a'*64})
+
+    monkeypatch.setattr(loop, 'DockerSandbox', FakeSandbox)
+    monkeypatch.setattr(loop, 'settings', replace(loop.settings, durable_checkpoints_enabled=True))
+    export = Mock(side_effect=ValueError('Snapshot exceeds size limit'))
+    monkeypatch.setattr(cp, 'export_workspace', export)
+
+    class Gateway:
+        connection = SimpleNamespace(context_tokens=48000)
+        def __init__(self): self.turn = 0
+        async def agent_step(self, *, messages):
+            self.turn += 1
+            steps = [{'id':'make','title':'Make','status':'in_progress','evidence':'','output_refs':['/workspace/output/result.txt']},
+                {'id':'verify','title':'Verify','status':'pending','evidence':'','depends_on':['make']}]
+            base = {'action':'update_plan','goal':'answer 42','steps':steps,'success_criteria':['answer is 42'],'validation_step_id':'verify'}
+            if self.turn == 1:
+                action = base
+            elif self.turn == 2:
+                action = {'action':'run_verifier','argv':['verify']}
+            elif self.turn == 3:
+                proof = next(json.loads(x['content'])['payload'] for x in reversed(messages)
+                    if isinstance(x.get('content'),str) and x['content'].startswith('{"tool_result": "run_verifier"'))
+                action = {'action':'record_validation','verification_id':proof['verification_id'],'status':'passed','summary':'verified','evidence':'observed 42','checks':['answer 42']}
+            elif self.turn == 4:
+                for step in steps: step.update(status='completed', evidence='verified output')
+                action = base
+            elif self.turn == 5:
+                action = {'action':'complete_skill','skill_index':1,'evidence':'verified output'}
+            else:
+                assert self.turn == 6
+                action = {'action':'finish','summary':'answer 42','artifacts':['/workspace/output/result.txt']}
+            return ModelResult(action, 'scripted', {})
+
+    contexts = [{'name':'Test','version':'1','root':'/workspace/skill','skill_md':'# Answer','runtime_requirements':{}}]
+    with SessionLocal() as db:
+        task = db.get(WorkflowJob, created['id'])
+        result = asyncio.run(loop._run_agent_loop(db, task, FakeSandbox(),
+            skill_contexts=contexts, gateway=Gateway(), job_cancelled=lambda: False))
+        assert result[1] == ['/workspace/output/result.txt']
+        # Export was attempted once at turn 1; afterwards durable stays off.
+        assert export.call_count == 1
+        skipped = db.scalars(select(JobEvent).where(
+            JobEvent.job_id == created['id'], JobEvent.title == '已跳过工作区快照')).all()
+        assert len(skipped) == 1
+        assert skipped[0].status == 'succeeded'
+        assert skipped[0].data['checkpoint'] == 'unavailable'
+
 
 @pytest.mark.parametrize('snapshot_status', ['ready', 'in_flight'])
 def test_reaper_resumes_only_complete_snapshots(client, user_headers, fake_model_gateway, monkeypatch, snapshot_status):

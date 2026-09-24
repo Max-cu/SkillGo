@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
+import requests
 from app import sandbox_checkpoint as cp
 
 
@@ -145,6 +146,95 @@ def test_snapshot_directory_cap_is_independent_and_enforced(monkeypatch):
     ]
     with pytest.raises(ValueError):
         cp.unpack_snapshot(_tar_of(entries))
+
+
+def test_snapshot_excludes_immutable_input_files():
+    # /workspace/input is platform-provisioned and re-staged on restore, so
+    # the Worker registers exact input paths in the immutable exclusion set.
+    blob = _tar_of([
+        ('workspace/input/', None),
+        ('workspace/input/source.pdf', b'PDFBYTES'),
+        ('workspace/work/notes.txt', b'notes'),
+    ])
+    files, _modes, _dirs = cp.unpack_snapshot(
+        blob, excluded=frozenset({'/workspace/input/source.pdf'}))
+    assert files == {'/workspace/work/notes.txt': b'notes'}
+
+
+def test_handover_restages_immutable_inputs_before_first_command(monkeypatch):
+    old = SimpleNamespace(container=Mock(attrs={'Image': 'sha256:fixed'}), volume=Mock(),
+                          client=Mock(), job_id='job', execution_id='attempt', network_enabled=False)
+    candidate = SimpleNamespace(container=Mock(), volume=Mock(), execution_id='new',
+                                start=Mock(), close=Mock())
+    order = []
+    candidate.put_files = Mock(side_effect=lambda files: order.append(('put', sorted(files))))
+    async def command(*args, **kwargs):
+        order.append(('cmd',))
+        return SimpleNamespace(exit_code=0)
+    candidate.command = command
+
+    async def provision(target):
+        await asyncio.to_thread(target.put_files, {'input/source.pdf': b'PDFBYTES'})
+
+    old.provision_inputs = provision
+    monkeypatch.setattr(cp, 'DockerSandbox', lambda *args, **kw: candidate)
+    monkeypatch.setattr(cp, 'export_workspace',
+                        lambda _: ({'/workspace/output/a': b'a'}, {}, []))
+    asyncio.run(cp.replace_sandbox(old, lambda: False))
+    # Hook is carried onto the candidate and input staging happens before the
+    # first command (put_files is rejected once the container has started).
+    assert candidate.provision_inputs is provision
+    first_cmd = next(i for i, ev in enumerate(order) if ev[0] == 'cmd')
+    input_put = next(i for i, ev in enumerate(order) if ev[0] == 'put' and 'input/source.pdf' in ev[1])
+    assert input_put < first_cmd
+    staged = {k for keys in (ev[1] for ev in order if ev[0] == 'put') for k in keys}
+    assert {'input/source.pdf', '/workspace/output/a'} <= staged
+
+
+def _oversized_export_sandbox(helper, monkeypatch):
+    """Fake sandbox whose archive parse always trips the size cap."""
+    helper.get_archive.return_value = (iter([archive()]), None)
+    sandbox = SimpleNamespace(
+        client=SimpleNamespace(containers=SimpleNamespace(create=lambda **kw: helper)),
+        container=Mock(attrs={'Image': 'sha256:abc'}),
+        volume=SimpleNamespace(name='vol'),
+        job_id='job', execution_id='attempt',
+    )
+
+    def raise_size_limit(archive, excluded=frozenset()):
+        raise ValueError('Snapshot exceeds size limit')
+
+    monkeypatch.setattr(cp, '_collect_entries', raise_size_limit)
+    return sandbox
+
+
+def test_helper_cleanup_retries_and_keeps_primary_error(monkeypatch):
+    # First delete stalls (the 60s ReadTimeout from the live incident); the
+    # retry succeeds. The export's size-cap ValueError must be what propagates.
+    helper = Mock()
+    attempts = []
+
+    def remove(**kwargs):
+        attempts.append(kwargs)
+        if len(attempts) == 1:
+            raise requests.exceptions.ReadTimeout('docker stalled')
+
+    helper.remove.side_effect = remove
+    sandbox = _oversized_export_sandbox(helper, monkeypatch)
+    with pytest.raises(ValueError, match='Snapshot exceeds size limit'):
+        cp.export_workspace(sandbox)
+    assert len(attempts) == 2
+    assert attempts[0]['timeout'] == cp.HELPER_REMOVE_TIMEOUT
+    helper.start.assert_called_once()
+
+
+def test_helper_cleanup_failure_never_masks_primary_error(monkeypatch):
+    helper = Mock()
+    helper.remove.side_effect = requests.exceptions.ReadTimeout('docker stalled')
+    sandbox = _oversized_export_sandbox(helper, monkeypatch)
+    with pytest.raises(ValueError, match='Snapshot exceeds size limit'):
+        cp.export_workspace(sandbox)
+    assert helper.remove.call_count == 2
 
 
 @pytest.mark.parametrize('failure', ['none', 'copy', 'verify', 'cancel'])

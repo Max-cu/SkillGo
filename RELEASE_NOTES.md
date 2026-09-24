@@ -1,28 +1,31 @@
-# SkillGo v0.4.1
+# SkillGo v0.4.2
 
-本次发布的主线是**文档/图片理解的按需路由与扫描件原位处理**：新增 `inspect_document` 工具，在 MinerU 结构化版面解析与视觉模型之间自动路由，并让数字版 PDF 跳过无谓 OCR。
+本次发布聚焦**长任务快照机制的健壮性**：快照只是崩溃恢复保险，不应因为工作区较大就杀死已经产出有效结果的任务。同时把不可变的用户输入移出快照，降低重任务的每轮开销。
 
 ## 主要更新
 
-**文档理解按需路由（inspect_document）**
+**快照超容量不再杀死任务**
 
-- `structure` 意图调用 MinerU `/file_parse` 并请求 `content_list`，返回每个文本块的 `type`/`text`/`bbox [x0,y0,x1,y1]`/`page_idx`，支持 `pages` 页码范围，为扫描件 OCR、原位双语翻译与版面标注提供块级坐标。
-- `understand` 意图把渲染后的 PNG/JPEG/WebP 页面交给视觉模型回答版面问题；`auto` 按文件类型自动选择（图片走视觉、PDF 走结构化解析）。
-- 完整块列表落盘 `/workspace/work/document_inspection/<sha256>.json`，模型上下文只返回路径与前 20 个样例块，避免大结果挤占上下文。
-- 解析结果按文件摘要/意图/页码范围缓存（上限 32 条），同一文件不重复 OCR；失败不写缓存。
+- 工作区快照超过容量上限（或 Docker 守护进程短暂不可用）时，平台不再终止任务：记录一条"已跳过工作区快照"中性事件后继续执行，本运行内不再重复尝试；最终产物的收集与校验完全不受影响。
+- 路径越界、符号链接、校验和不符等完整性/安全错误仍然按致命处理，不会被降级放过。
+- 事故背景：一个 6 页翻译任务产出 266 MiB 图片型 PDF（工作区 315 MiB），在轮次边界快照超过 256 MiB 上限后整个任务被 `SANDBOX_INTERNAL_ERROR` 杀死，且辅助容器删除超时一度掩盖了真实原因。
 
-**避免冗余 OCR**
+**快照容量上限 256 MiB → 512 MiB**
 
-- 系统提示明确：存在可用文本层的数字版 PDF 直接用 PyMuPDF 抽取文字与块坐标（`page.get_text`），不再调用 OCR；仅扫描件/图片版 PDF 或需要块级坐标时才使用 `inspect_document(structure)`。
+- 依据线上 26 个真实快照的测量分布（中位数 14 MiB、P90 54 MiB、最大正常任务 127 MiB），为嵌图 PPTX、批量 OCR 等正当重任务留出 4 倍余量；恢复时内存峰值仍控制在 2 GiB worker 容器限额内。
 
-**工具与可观测性**
+**用户输入不再进入快照**
 
-- 工具注册校验：`intent` 限定 `structure`/`understand`/`auto`，`pages` 必须为 `[start, end]` 两个 0 起始且 start ≤ end 的整数。
-- 执行过程新增"解析上传文档"行动事件，携带 `mode`、`page_count`、`block_count`、`block_types`、`cached` 与耗时数据。
+- `/workspace/input` 是平台投放、任务全程只读的不可变文件，与已有的大型 Skill 包采用同一机制：快照排除这些字节，崩溃恢复、手动沙箱切换、任务中依赖升级换箱时从对象存储重新投放原件（逐字节一致，`input_refs` 哈希校验不受影响）。
+- 输入字节仅在恢复真正发生时才从存储读取，不在 worker 内存中常驻。
+
+**快照辅助容器清理加固**
+
+- 冻结视图辅助容器的删除超时由 60s 提高到 180s，失败自动重试一次；重试仍失败只记告警并留给垃圾回收，清理异常不再覆盖真正的导出错误。
 
 ## 升级
 
-本版本**无数据库迁移**。MinerU 服务地址在平台模型连接中配置（接口类型 MinerU、能力 OCR），升级后在管理后台把 OCR 连接指向 MinerU 服务并使用"测试连接"验证（校验 `/openapi.json` 的 `/file_parse` 路径，不触发真实 OCR）。
+本版本**无数据库迁移、无配置变更**，重建 api 与 worker 镜像即可（worker 建议在无运行中任务时滚动重建）。
 
 Git 工作区部署：
 
@@ -33,15 +36,9 @@ sudo SKILLGO_INSTALL_ROOT=/opt/skillgo \
 
 sudo SKILLGO_INSTALL_ROOT=/opt/skillgo \
   SKILLGO_DEPLOY_ENV=deploy/ecs.env \
-  bash deploy/upgrade-skillgo.sh v0.4.1
+  bash deploy/upgrade-skillgo.sh v0.4.2
 ```
 
-源码压缩包部署按现有安装方式更新源文件后重建 api、worker、web 镜像。
+## 验证
 
-## 验证与能力边界
-
-- 后端 481 项回归全部通过，含 MinerU 结构化解析、页码范围表单、错误映射、意图路由、块落盘与缓存等新增测试。
-- 结构化解析要求 OCR 连接使用 MinerU 文件解析协议（`api_format=mineru`）；未配置时返回可恢复的 `DOCUMENT_STRUCTURE_BACKEND_UNAVAILABLE`，不影响其余工具。
-- 文档上传上限 30 MiB；支持 PDF、PNG、JPEG、WebP，其他类型在工具入口被拒绝。
-
-完整变更见 [CHANGELOG.md](CHANGELOG.md)。
+- 后端 496 项回归全部通过，新增 15 项覆盖：超容量降级端到端（任务照常 finish、告警只发一次）、完整性错误仍致命、辅助容器清理重试不掩盖主错误、输入文件排除与恢复/换箱重投放（含首条命令启动容器前的投放顺序）。

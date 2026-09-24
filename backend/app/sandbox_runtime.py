@@ -121,6 +121,12 @@ class DockerSandbox:
         # the same immutable files on restored/replaced sandboxes.
         self.provisioned_packages: dict[str, bytes] = {}
         self.provisioned_extractions: list[tuple[str, str]] = []
+        # Async callable(sandbox) -> None set by the Worker. User inputs under
+        # /workspace/input are platform-provisioned and immutable, so snapshots
+        # exclude them; the hook re-reads the originals from object storage and
+        # re-stages them on a restored/replaced sandbox (lazy: bytes are only
+        # read when a restore actually happens, not held for the whole run).
+        self.provision_inputs = None
 
     def start(self) -> None:
         try:
