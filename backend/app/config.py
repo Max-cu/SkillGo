@@ -107,9 +107,10 @@ class Settings:
         os.getenv("SKILLGO_SANDBOX_JOB_TIMEOUT_SECONDS", "0")
     )
     sandbox_command_timeout_seconds: int = int(
-        # Default and clamp ceiling for one sandbox command. 900 matches the
-        # agent tool hard limit; longer work must use resumable batch scripts.
-        os.getenv("SKILLGO_SANDBOX_COMMAND_TIMEOUT_SECONDS", "900")
+        # Default and clamp ceiling for one sandbox command. Raised to 3000
+        # (2026-09-24) because large drawing-check batches legitimately need
+        # ~30-45 min; resumable batch scripts remain the preferred pattern.
+        os.getenv("SKILLGO_SANDBOX_COMMAND_TIMEOUT_SECONDS", "3000")
     )
     sandbox_tool_inline_bytes: int = int(
         # Recent command/run_python/verifier results up to this size stay

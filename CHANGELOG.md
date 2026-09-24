@@ -2,6 +2,12 @@
 
 所有重要变更都记录在此文件中。版本号遵循 [Semantic Versioning](https://semver.org/)。
 
+## [0.4.3] - 2026-09-24
+
+### Changed
+
+- 单条沙箱命令预算由 900 秒提高到 3000 秒（`SKILLGO_SANDBOX_COMMAND_TIMEOUT_SECONDS`，config 默认值、`.env.example`、`deploy/ecs.env.example` 同步）：图纸批量校验等任务单批实际需要 30-45 分钟。命令工具的模型 schema 上限、参数校验、系统提示、超时恢复提示全部改为从该配置动态取值，消除此前散落的 900 硬编码；`run_python` 600 秒上限保持不变。
+
 ## [0.4.2] - 2026-09-24
 
 ### Changed

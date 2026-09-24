@@ -383,17 +383,19 @@ SANDBOX_AGENT_TOOLS: list[dict[str, Any]] = [
                     "timeout_seconds": {
                         "type": "integer",
                         "minimum": 1,
-                        "maximum": 900,
+                        "maximum": settings.sandbox_command_timeout_seconds,
                         "description": (
-                            "Wall-clock limit for this single command, 1-900 seconds; "
-                            "when omitted the platform applies 900. When the command runs a "
+                            f"Wall-clock limit for this single command, "
+                            f"1-{settings.sandbox_command_timeout_seconds} seconds; "
+                            f"when omitted the platform applies {settings.sandbox_command_timeout_seconds}. "
+                            "When the command runs a "
                             "Skill script that declares its own budget (for example --budget 240), "
                             "set this value to budget + 30. At the deadline the process is stopped "
                             "but the sandbox and /workspace (including saved batch progress) are "
                             "preserved, so resume the script from its saved state instead of "
                             "restarting it. For long per-file batches use the script's concurrency "
-                            "flag (for example --workers). Work needing more than 900 seconds must "
-                            "be split into smaller resumable calls."
+                            "flag (for example --workers). Work needing more than the platform "
+                            "limit must be split into smaller resumable calls."
                         ),
                     },
                     "reason": {"type": "string", "description": "Short progress description."},
@@ -436,8 +438,9 @@ SANDBOX_AGENT_TOOLS: list[dict[str, Any]] = [
                         "minimum": 1,
                         "maximum": 600,
                         "description": (
-                            "Wall-clock limit for this single execution, 1-600 seconds; when "
-                            "omitted the platform applies 900. Raise it for long batch processing "
+                            f"Wall-clock limit for this single execution, 1-600 seconds; when "
+                            f"omitted the platform applies {settings.sandbox_command_timeout_seconds}. "
+                            "Raise it for long batch processing "
                             "(rendering, OCR, large-file transforms). At the deadline the process "
                             "is stopped but the sandbox and /workspace, including saved progress, "
                             "are preserved; resume from that state rather than restarting."

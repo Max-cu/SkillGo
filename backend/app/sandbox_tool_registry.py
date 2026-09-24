@@ -3,6 +3,8 @@ from __future__ import annotations
 from pathlib import PurePosixPath
 from typing import Any
 
+from .config import settings
+
 
 BINARY_DOCUMENT_SUFFIXES = frozenset(
     {
@@ -222,8 +224,9 @@ def validate_agent_action(action: dict[str, Any]) -> str | None:
             not isinstance(timeout, int) or isinstance(timeout, bool)
         ):
             return "command timeout_seconds must be an integer"
-        if isinstance(timeout, int) and not 1 <= timeout <= 900:
-            return "command timeout_seconds must be between 1 and 900"
+        command_budget = settings.sandbox_command_timeout_seconds
+        if isinstance(timeout, int) and not 1 <= timeout <= command_budget:
+            return f"command timeout_seconds must be between 1 and {command_budget}"
     elif action_name == "run_python":
         code = action.get("code")
         if not isinstance(code, str) or not code.strip():
