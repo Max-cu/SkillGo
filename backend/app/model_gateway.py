@@ -1472,8 +1472,6 @@ def _parse_agent_tool_response(
         terminal_actions = {call.action.get("action") for call in parsed_calls}
         if "finish" in terminal_actions:
             raise ValueError("finish must be the only tool call in its turn")
-        if "ask_user" in terminal_actions:
-            raise ValueError("ask_user must be the only tool call in its turn")
         if "block" in terminal_actions:
             raise ValueError("block must be the only tool call in its turn")
 

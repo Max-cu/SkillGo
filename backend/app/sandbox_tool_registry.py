@@ -41,7 +41,6 @@ TOOL_NAMES = frozenset(
         "finish",
         "run_verifier",
         "run_fixed_skill",
-        "ask_user",
         "inspect_image",
         "inspect_document",
     }
@@ -56,6 +55,12 @@ def validate_agent_action(action: dict[str, Any]) -> str | None:
 
     action_name = action.get("action")
     if not isinstance(action_name, str) or action_name not in TOOL_NAMES:
+        if action_name == "ask_user":
+            return (
+                "Asking the user is not supported: tasks run unattended end-to-end. "
+                "Choose the most reasonable assumption for the missing detail, state it, "
+                "and continue to completion instead of pausing."
+            )
         return f"Unknown sandbox tool: {action_name}"
     if "reason" in action and not isinstance(action.get("reason"), str):
         return "reason must be text"
@@ -80,9 +85,6 @@ def validate_agent_action(action: dict[str, Any]) -> str | None:
         return validate_agent_action({**action, "action": "command"})
     if action_name == "run_fixed_skill":
         return validate_agent_action({**action, "action": "read_skill"})
-    if action_name == "ask_user":
-        if not isinstance(action.get("question"), str) or not 1 <= len(action['question'].strip()) <= 2000:
-            return "question must contain 1-2000 characters"
     if action_name == "inspect_image":
         if not isinstance(action.get("path"), str) or not isinstance(action.get("question"), str) or not action['question'].strip():
             return "inspect_image requires path and question"

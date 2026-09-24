@@ -24,7 +24,6 @@ def extend_tools(tools: list[dict]) -> None:
     fixed['description'] = 'Execute the selected Skill immutable entrypoint and verifier. Load it first. Earlier output files are available as inputs. Never reimplement a fixed Skill in model-authored code.'
     tools.append({'type': 'function', 'function': fixed})
     for name, description, properties in [
-        ('ask_user', 'Pause when a material requirement or input is missing. The sandbox is released; the answer starts a fresh attempt with original inputs and all answers. Ask before expensive work. Never fabricate a required business parameter.', {'question': {'type': 'string', 'maxLength': 2000}}),
         ('inspect_image', 'Inspect a generated PNG/JPEG/WebP using the configured vision model. Render document pages to images first. Returns observations, not automatic validation.', {'path': {'type': 'string'}, 'question': {'type': 'string', 'maxLength': 2000}}),
         ('inspect_document', (
             'Understand an uploaded PDF/image on demand. Use intent "structure" (MinerU layout OCR) when you need the actual text WITH positions - '

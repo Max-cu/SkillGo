@@ -84,13 +84,9 @@ GET  /api/v1/workflow-endpoints/{slug}/jobs/{job_id}
 POST /api/v1/workflow-endpoints/{slug}/jobs/{job_id}/cancel
 ```
 
-任务状态：`queued`、`running`、`waiting_user`、`producing_artifacts`、`verifying`、`succeeded`、`failed`、`cancelled`、`blocked`。终态为 `succeeded`、`failed`、`cancelled`、`blocked`，建议外部系统每 2-5 秒轮询一次。
+任务状态：`queued`、`running`、`waiting_user`（仅历史任务，见下）、`producing_artifacts`、`verifying`、`succeeded`、`failed`、`cancelled`、`blocked`。终态为 `succeeded`、`failed`、`cancelled`、`blocked`，建议外部系统每 2-5 秒轮询一次。
 
-**关于 `waiting_user`**：Agent 在沙箱中可以向用户追问。外部 API 任务进入该状态后：
-
-- 任务对象的 `pending_question` 字段会携带 `id` 与问题内容；
-- 当前版本**不提供用 Endpoint 密钥回答追问的接口**：需要由 Endpoint 拥有者在网页端回答（任务挂在拥有者账号下），外部调用方也可以调用上面的 `cancel` 放弃任务；
-- 因此无人值守的外部集成应把 `waiting_user` 视为需要人工介入的停滞状态处理（示例客户端会在该状态退出而非无限轮询）。为外部系统设计 Skill 时，应尽量让指令与输入一次齐备，减少追问。
+**无人值守，不会追问**：当前版本的任务一口气执行到底，Agent 无法向用户提问；信息不足时它必须自行采用最合理的假设继续，并在最终摘要中说明该假设。因此新任务不会再进入 `waiting_user`，外部集成也不需要实现问答回调。该状态值仅为 v0.4.3 之前的历史任务保留。
 
 取消返回 `{"message": ...}`，对终态任务取消返回 `409`。
 
@@ -174,7 +170,7 @@ Content-Type: application/json
 
 ## 7. Python 完整示例
 
-仓库提供可直接运行的 [workflow_api_client.py](../examples/workflow_api_client.py)：创建任务、轮询状态（正确处理 `waiting_user` 与失败终态），并下载全部已验证产物。
+仓库提供可直接运行的 [workflow_api_client.py](../examples/workflow_api_client.py)：创建任务、轮询状态（识别失败终态与历史 `waiting_user` 任务），并下载全部已验证产物。
 
 ```powershell
 pip install requests

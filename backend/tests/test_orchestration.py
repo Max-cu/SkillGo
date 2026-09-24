@@ -763,7 +763,7 @@ def test_retry_preserves_confirmed_answers_but_resets_attempt_accounting(client,
 def test_mixed_loop_runs_immutable_fixed_entrypoint(client, user_headers, fake_model_gateway):
     from app.database import SessionLocal
     from app.models import WorkflowJob
-    from app.sandbox_agent_loop import _run_agent_loop, AgentNeedsInput
+    from app.sandbox_agent_loop import _run_agent_loop
     from app.skill_execution_spec import FixedExecutionSpec
     from test_workflow_jobs import create_version, sandbox_skill_zip
     _, version = create_version(client, user_headers, slug='mixed-loop', package=sandbox_skill_zip())
@@ -783,18 +783,20 @@ def test_mixed_loop_runs_immutable_fixed_entrypoint(client, user_headers, fake_m
         {'action': 'complete_skill', 'skill_index': 1, 'evidence': 'not actually executed'},
         {'action': 'run_fixed_skill', 'skill_index': 1},
         {'action': 'complete_skill', 'skill_index': 1, 'evidence': 'fixed result.txt'},
-        {'action': 'read_skill', 'skill_index': 2},
-        {'action': 'ask_user', 'question': 'Which report title?'}]
+        {'action': 'read_skill', 'skill_index': 2}]
+    class Done(Exception): pass
     class Gateway:
         connection = SimpleNamespace(context_tokens=48000)
         async def agent_step(self, *, messages):
+            if not actions:
+                raise Done()
             action = actions.pop(0)
             if action['action'] == 'run_fixed_skill':
                 assert 'FIXED_SKILL_NOT_EXECUTED' in json.dumps(messages)
             return ModelResult(action, 'scripted', {})
     with SessionLocal() as db:
         job = db.get(WorkflowJob, created['id'])
-        with pytest.raises(AgentNeedsInput, match='Which report title'):
+        with pytest.raises(Done):
             asyncio.run(_run_agent_loop(db, job, sandbox, skill_contexts=contexts, gateway=Gateway(), job_cancelled=lambda: False))
     assert sandbox.calls == [['python3', 'scripts/calculate.py']]
     assert contexts[0]['fixed_executed']
@@ -832,7 +834,10 @@ def test_model_transport_retry_is_bounded_and_does_not_retry_bad_arguments(monke
     assert len(calls) == 4
 
 
-def test_worker_releases_sandbox_and_resumes_answer_without_spending_crash_budget(client, user_headers, fake_model_gateway, monkeypatch):
+def test_worker_fails_instead_of_waiting_when_model_keeps_asking(client, user_headers, fake_model_gateway, monkeypatch):
+    # ask_user was removed: tasks run unattended. A model that keeps emitting
+    # it gets a recoverable "make an assumption and continue" payload, and the
+    # repeated-action guard then fails the job honestly instead of suspending it.
     from dataclasses import replace
     from app import config, sandbox_worker
     from app.database import SessionLocal
@@ -840,7 +845,7 @@ def test_worker_releases_sandbox_and_resumes_answer_without_spending_crash_budge
     from test_workflow_jobs import create_version, sandbox_skill_zip
     monkeypatch.setattr(config, 'settings', replace(config.settings, sandbox_worker_enabled=True))
     monkeypatch.setattr(sandbox_worker, 'settings', replace(sandbox_worker.settings, sandbox_worker_max_attempts=1))
-    _, version = create_version(client, user_headers, slug='worker-question', package=sandbox_skill_zip())
+    _, version = create_version(client, user_headers, slug='worker-no-questions', package=sandbox_skill_zip())
     created = client.post('/api/v1/jobs', headers=user_headers, data={'version_id': version['id'], 'instruction': 'generate report'}).json()
     class Sandbox(MemorySandbox):
         closed = False
@@ -863,16 +868,12 @@ def test_worker_releases_sandbox_and_resumes_answer_without_spending_crash_budge
     assert Sandbox.closed
     with SessionLocal() as db:
         job = db.get(WorkflowJob, first.job_id)
-        assert job.status == JobStatus.WAITING_USER
-        assert job.agent_run.status == RunStatus.WAITING_USER
-        assert job.agent_run.lease_token is None
-        question_id = job.pending_question['id']
+        assert job.status == JobStatus.FAILED
+        assert job.agent_run.status == RunStatus.FAILED
+        assert job.error_code == 'SANDBOX_AGENT_STALLED'
+        assert job.pending_question is None
+        assert not any(e.event_type == 'question' for e in job.events)
     assert sandbox_worker._claim_job('other-worker') is None
-    answered = client.post(f'/api/v1/jobs/{first.job_id}/answer', headers=user_headers, json={'question_id': question_id, 'answer': 'mm'})
-    assert answered.status_code == 200, answered.text
-    second = sandbox_worker._claim_job('test-worker')
-    assert second.attempt == 2
-    assert second.execution_id != first.execution_id
 
 @pytest.mark.parametrize('code', ['SANDBOX_ARTIFACT_SIZE', 'SANDBOX_ARTIFACT_INVALID'])
 def test_artifact_failure_is_recoverable_and_repair_can_be_verified(code):

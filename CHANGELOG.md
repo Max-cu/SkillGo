@@ -2,6 +2,17 @@
 
 所有重要变更都记录在此文件中。版本号遵循 [Semantic Versioning](https://semver.org/)。
 
+## [0.4.4] - 2026-09-24
+
+### Changed
+
+- 任务改为完全无人值守、一口气执行到底：移除 Agent 的 `ask_user` 工具（工具表、参数校验、模型响应解析的独占规则、系统提示全部同步）。信息不足时 Agent 必须采用与输入和用户目标最一致的合理假设继续，记录并在最终摘要中披露假设；只有输入不可用或无法消除的矛盾才允许 `block`。模型若因旧习惯发出 `ask_user`，收到的是可恢复的"自行假设并继续"指引，重复停留则由既有卡死保护（`SANDBOX_AGENT_STALLED`）如实失败，任务不再进入挂起状态。
+- 系统提示新增"Unattended execution"规则，并把"用 ask_user 暴露矛盾"改为"自行假设并在摘要说明"。
+
+### Compatibility
+
+- `waiting_user` 状态、`pending_question` 字段与 `POST /api/v1/jobs/{id}/answer` 保留，仅供 v0.4.3 之前的历史任务；新任务不会再进入该状态。外部 API 客户端示例保留对历史状态的防御性处理。
+
 ## [0.4.3] - 2026-09-24
 
 ### Changed

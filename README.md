@@ -267,7 +267,7 @@ curl "$SKILLGO_BASE_URL/api/v1/workflow-endpoints/your-slug/jobs" \
   -F "instruction=检查日期、金额和前后矛盾，生成检查报告"
 ```
 
-提交后查询任务状态，再下载产物；外部接口仍执行 Endpoint 与任务归属校验。同步调用的请求/响应契约、Endpoint 的创建与密钥轮换（平台 JWT）、错误码与 `waiting_user` 行为见 [任务 API](docs/workflow-api.md)，可运行示例见 [Python 客户端](examples/workflow_api_client.py)。开发环境 API 文档位于 `http://127.0.0.1:8000/api/docs`。
+提交后查询任务状态，再下载产物；外部接口仍执行 Endpoint 与任务归属校验。任务无人值守一口气执行到底，不会向用户追问（信息不足时 Agent 自行采用合理假设并在结果中说明）。同步调用的请求/响应契约、Endpoint 的创建与密钥轮换（平台 JWT）、错误码见 [任务 API](docs/workflow-api.md)，可运行示例见 [Python 客户端](examples/workflow_api_client.py)。开发环境 API 文档位于 `http://127.0.0.1:8000/api/docs`。
 
 ## 数据与运维
 
