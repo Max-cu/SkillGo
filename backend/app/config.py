@@ -76,6 +76,19 @@ class Settings:
     model_stream_stall_timeout_seconds: float = float(
         os.getenv("SKILLGO_MODEL_STREAM_STALL_TIMEOUT_SECONDS", "600")
     )
+    # Attachment analysis (vision/OCR) is a single non-streaming POST: even
+    # when the overall model budget is unlimited (model_timeout_seconds=0,
+    # reserved for long streaming generations), a hung attachment request
+    # must never block a task forever. Read timeout = wait for the response
+    # body; keep it generous so slow-but-alive services are never killed.
+    # Defaults: images measured ~60s in production (10x margin); document
+    # parsing (MinerU on large scanned PDFs) is the heaviest legitimate call.
+    attachment_vision_timeout_seconds: float = float(
+        os.getenv("SKILLGO_ATTACHMENT_VISION_TIMEOUT_SECONDS", "600")
+    )
+    attachment_document_timeout_seconds: float = float(
+        os.getenv("SKILLGO_ATTACHMENT_DOCUMENT_TIMEOUT_SECONDS", "1800")
+    )
     skill_analysis_timeout_seconds: float = float(
         os.getenv("SKILLGO_SKILL_ANALYSIS_TIMEOUT_SECONDS", "45")
     )

@@ -118,6 +118,27 @@ class ModelConnection:
         """httpx-friendly overall timeout; None means no per-call deadline."""
         return self.timeout_seconds or None
 
+    def _attachment_http_timeout(self, read_seconds: float) -> httpx.Timeout:
+        """Bounded per-stage deadline for one-shot attachment requests.
+
+        Attachment analysis (vision/OCR) is a single non-streaming POST, so
+        `read` bounds the total wait for the response body: it must stay
+        generous for slow-but-alive services and only fires when the server
+        stops sending anything at all. The unlimited overall budget
+        (timeout_seconds=0) deliberately does not apply here — a hung
+        attachment POST must never block a task forever.
+        """
+        connect = self.connect_timeout_seconds
+        return httpx.Timeout(connect=connect, read=read_seconds, write=read_seconds, pool=connect)
+
+    @property
+    def vision_http_timeout(self) -> httpx.Timeout:
+        return self._attachment_http_timeout(settings.attachment_vision_timeout_seconds)
+
+    @property
+    def document_http_timeout(self) -> httpx.Timeout:
+        return self._attachment_http_timeout(settings.attachment_document_timeout_seconds)
+
 
 def environment_model_connection() -> ModelConnection:
     models = (settings.model_name,) if settings.model_name else ()
@@ -751,7 +772,7 @@ class OpenAICompatibleGateway:
         started_at = time.perf_counter()
         try:
             async with httpx.AsyncClient(
-                timeout=self.connection.http_timeout,
+                timeout=self.connection.vision_http_timeout,
                 verify=self.connection.tls_verify,
             ) as client:
                 response = await client.post(
@@ -762,6 +783,13 @@ class OpenAICompatibleGateway:
             raise ModelGatewayError(
                 "ATTACHMENT_MODEL_HTTP_ERROR",
                 f"附件分析模型返回 HTTP {exc.response.status_code}",
+            ) from exc
+        except httpx.TimeoutException as exc:
+            raise ModelGatewayError(
+                "ATTACHMENT_MODEL_TIMEOUT",
+                f"附件分析模型 {self.connection.model_name} 超过 "
+                f"{settings.attachment_vision_timeout_seconds:g} 秒未返回任何响应，本次请求已中止；"
+                "服务可能过载或该次请求已挂起，可重试本次检查或先跳过",
             ) from exc
         except httpx.HTTPError as exc:
             raise ModelGatewayError(
@@ -877,7 +905,7 @@ class OpenAICompatibleGateway:
         started_at = time.perf_counter()
         try:
             async with httpx.AsyncClient(
-                timeout=self.connection.http_timeout,
+                timeout=self.connection.document_http_timeout,
                 verify=self.connection.tls_verify,
             ) as client:
                 response = await client.post(
@@ -891,6 +919,12 @@ class OpenAICompatibleGateway:
             raise ModelGatewayError(
                 "ATTACHMENT_MODEL_HTTP_ERROR",
                 f"MinerU 服务返回 HTTP {exc.response.status_code}",
+            ) from exc
+        except httpx.TimeoutException as exc:
+            raise ModelGatewayError(
+                "ATTACHMENT_MODEL_TIMEOUT",
+                f"MinerU 服务超过 {settings.attachment_document_timeout_seconds:g} 秒未返回任何响应，"
+                "本次请求已中止；服务可能过载或该次请求已挂起，可重试或先跳过该文档",
             ) from exc
         except httpx.HTTPError as exc:
             raise ModelGatewayError(

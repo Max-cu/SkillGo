@@ -4,8 +4,10 @@ import asyncio
 import pytest
 import httpx
 
+from app.config import settings
 from app.model_gateway import (
     ModelConnection,
+    ModelGatewayError,
     OpenAICompatibleGateway,
     _parse_agent_tool_response,
     _parse_json_object,
@@ -355,3 +357,65 @@ def test_parse_document_mineru_rejects_missing_content_list(monkeypatch):
             gateway.parse_document_mineru(data=b"x", media_type="application/pdf")
         )
     assert exc_info.value.code == "ATTACHMENT_MODEL_RESPONSE_INVALID"
+
+
+def test_attachment_timeouts_stay_bounded_when_model_budget_is_unlimited():
+    connection = ModelConnection(
+        base_url="http://vision.example.com",
+        api_key=None,
+        model_name="vision-model",
+        timeout_seconds=0,
+    )
+    # the unlimited overall budget (chosen for long streaming generations) is preserved...
+    assert connection.http_timeout is None
+    # ...but attachment analysis is a single-shot POST and gets bounded read deadlines
+    assert connection.vision_http_timeout == httpx.Timeout(
+        connect=settings.model_connect_timeout_seconds,
+        read=settings.attachment_vision_timeout_seconds,
+        write=settings.attachment_vision_timeout_seconds,
+        pool=settings.model_connect_timeout_seconds,
+    )
+    assert connection.document_http_timeout == httpx.Timeout(
+        connect=settings.model_connect_timeout_seconds,
+        read=settings.attachment_document_timeout_seconds,
+        write=settings.attachment_document_timeout_seconds,
+        pool=settings.model_connect_timeout_seconds,
+    )
+
+
+def test_hung_vision_request_maps_to_recoverable_timeout_error(monkeypatch):
+    observed: dict[str, object] = {}
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ReadTimeout("server accepted the request but never responded")
+
+    transport = httpx.MockTransport(handler)
+    async_client = httpx.AsyncClient
+
+    def client_factory(**kwargs):
+        observed["timeout"] = kwargs.get("timeout")
+        return async_client(transport=transport, timeout=kwargs.get("timeout"))
+
+    monkeypatch.setattr("app.model_gateway.httpx.AsyncClient", client_factory)
+    gateway = OpenAICompatibleGateway(
+        ModelConnection(
+            base_url="http://vision.example.com",
+            api_key=None,
+            model_name="vision-model",
+            capabilities=("chat", "vision"),
+        )
+    )
+    with pytest.raises(ModelGatewayError) as exc_info:
+        asyncio.run(
+            gateway.analyze_image(
+                data=b"image-bytes",
+                media_type="image/png",
+                prompt="describe the page",
+                purpose="vision",
+            )
+        )
+    # a hung attachment request surfaces as a recoverable payload the agent
+    # can retry or skip, never an infinite await
+    assert exc_info.value.code == "ATTACHMENT_MODEL_TIMEOUT"
+    assert "重试" in str(exc_info.value)
+    assert isinstance(observed["timeout"], httpx.Timeout)
