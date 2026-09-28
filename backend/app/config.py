@@ -138,7 +138,7 @@ class Settings:
     sandbox_nano_cpus: int = int(os.getenv("SKILLGO_SANDBOX_NANO_CPUS", "1000000000"))
     sandbox_pids_limit: int = int(os.getenv("SKILLGO_SANDBOX_PIDS_LIMIT", "128"))
     sandbox_max_artifact_bytes: int = int(
-        os.getenv("SKILLGO_SANDBOX_MAX_ARTIFACT_BYTES", str(50 * 1024 * 1024))
+        os.getenv("SKILLGO_SANDBOX_MAX_ARTIFACT_BYTES", str(500 * 1024 * 1024))
     )
     platform_document_tools_enabled: bool = _bool(
         "SKILLGO_PLATFORM_DOCUMENT_TOOLS_ENABLED", False
