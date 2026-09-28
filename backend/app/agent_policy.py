@@ -286,6 +286,10 @@ class AgentExecutionState:
 
     def update_plan(self, action: dict[str, Any], *, files: dict[str, str] | None = None) -> dict[str, Any]:
         goal = str(action.get("goal") or "").strip()
+        if not goal:
+            # The model may omit goal when it only refines steps mid-run:
+            # keep the current goal instead of burning a correction round-trip.
+            goal = str((self.plan or {}).get("goal") or "").strip()
         raw_steps = action.get("steps")
         success_criteria = action.get("success_criteria")
         validation_step_id = str(action.get("validation_step_id") or "").strip()[:40]

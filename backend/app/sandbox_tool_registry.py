@@ -118,8 +118,14 @@ def validate_agent_action(action: dict[str, Any]) -> str | None:
         ).strip():
             return "complete_skill evidence must be non-empty text"
     elif action_name == "update_plan":
-        if not isinstance(action.get("goal"), str):
-            return "update_plan goal must be text"
+        goal = action.get("goal")
+        # A missing/null goal is resolved against the previous plan by the
+        # update_plan handler; a list of goal phrases is joined by the
+        # normalizer. Only uninterpretable shapes are rejected here.
+        if goal is not None and not isinstance(goal, str):
+            if not (isinstance(goal, list) and goal
+                    and all(isinstance(part, str) and part.strip() for part in goal)):
+                return "update_plan goal must be text"
         if not isinstance(action.get("steps"), list):
             return "update_plan steps must be an array"
         for step in action['steps']:
@@ -267,8 +273,12 @@ def validate_agent_action(action: dict[str, Any]) -> str | None:
 def normalize_agent_action(action: dict[str, Any]) -> dict[str, Any]:
     """Only unambiguous shape repairs; never discard checks or infer evidence."""
     normalized = dict(action)
-    if action.get('action') == 'update_plan' and isinstance(action.get('success_criteria'), str):
-        normalized['success_criteria'] = [action['success_criteria']]
+    if action.get('action') == 'update_plan':
+        if isinstance(action.get('success_criteria'), str):
+            normalized['success_criteria'] = [action['success_criteria']]
+        goal = action.get('goal')
+        if isinstance(goal, list) and goal and all(isinstance(part, str) and part.strip() for part in goal):
+            normalized['goal'] = '；'.join(part.strip() for part in goal)[:800]
     if action.get('action') == 'record_validation' and isinstance(action.get('checks'), str):
         normalized['checks'] = [action['checks']]
     return normalized

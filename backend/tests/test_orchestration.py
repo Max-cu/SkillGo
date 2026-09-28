@@ -83,6 +83,51 @@ def test_verifier_report_can_contain_more_than_twenty_checks():
     assert normalize_agent_action(action)['checks'] == action['checks']
 
 
+def _plan_action(**overrides):
+    action = {'action': 'update_plan', 'goal': 'translate the report', 'steps': [
+        {'id': 'work', 'title': 'Work', 'status': 'in_progress'},
+        {'id': 'verify', 'title': 'Verify', 'status': 'pending'}],
+        'success_criteria': ['done'], 'validation_step_id': 'verify'}
+    action.update(overrides)
+    return action
+
+
+def test_update_plan_goal_shape_repairs_do_not_burn_a_turn():
+    # missing / null goal passes validation (resolved against the previous plan)
+    assert validate_agent_action(_plan_action(**{'goal': None})) is None
+    no_goal = _plan_action()
+    del no_goal['goal']
+    assert validate_agent_action(no_goal) is None
+    # a list of goal phrases is joined by the normalizer
+    listed = _plan_action(goal=['翻译为中文', '保持版式'])
+    assert validate_agent_action(listed) is None
+    assert normalize_agent_action(listed)['goal'] == '翻译为中文；保持版式'
+    # uninterpretable shapes still fail fast
+    assert validate_agent_action(_plan_action(goal={'text': 'x'})) == 'update_plan goal must be text'
+    assert validate_agent_action(_plan_action(goal=[])) == 'update_plan goal must be text'
+    assert validate_agent_action(_plan_action(goal=['ok', 2])) == 'update_plan goal must be text'
+
+
+def test_update_plan_without_goal_keeps_previous_goal():
+    state = AgentExecutionState(skill_count=1)
+    assert state.update_plan(_plan_action())['ok']
+    refined = _plan_action()
+    del refined['goal']
+    refined['steps'] = [
+        {'id': 'work', 'title': 'Work', 'status': 'completed', 'evidence': '/workspace/output/out.cn.pdf'},
+        {'id': 'verify', 'title': 'Verify', 'status': 'in_progress'}]
+    assert state.update_plan(refined)['ok']
+    assert state.plan['goal'] == 'translate the report'
+
+
+def test_first_update_plan_still_requires_a_goal():
+    state = AgentExecutionState(skill_count=1)
+    action = _plan_action()
+    del action['goal']
+    result = state.update_plan(action)
+    assert result['error_code'] == 'PLAN_INVALID'
+
+
 def test_failed_write_invalidates_cached_read_and_verification():
     state = AgentExecutionState(skill_count=1)
     read = {'action': 'read_file', 'path': '/workspace/value.txt'}
