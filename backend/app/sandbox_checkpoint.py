@@ -12,6 +12,8 @@ import tarfile
 from pathlib import PurePosixPath
 from uuid import uuid4
 
+import docker
+
 from .sandbox_runtime import DockerSandbox, SandboxRuntimeError
 
 logger = logging.getLogger(__name__)
@@ -163,15 +165,32 @@ def _remove_helper(helper) -> None:
     Cleanup runs in ``export_workspace``'s ``finally``; a Docker transport
     stall here must never replace the export's primary exception (it once hid
     a Snapshot-exceeds-size-limit ValueError behind a ReadTimeout). A helper
-    that survives is picked up by later workspace cleanup.
+    that survives is picked up by the Worker's startup sweep.
     """
     for attempt in (1, 2):
         try:
-            helper.remove(force=True, timeout=HELPER_REMOVE_TIMEOUT)
+            _remove_container_bounded(helper)
             return
         except Exception:
             logger.warning(
                 "checkpoint helper remove failed (attempt %d/2)", attempt, exc_info=True)
+
+
+def _remove_container_bounded(helper) -> None:
+    """Remove the helper through a client with an explicit request timeout.
+
+    ``Container.remove()`` only forwards keyword arguments to
+    ``APIClient.remove_container()``, whose signature has no ``timeout``
+    parameter — passing one raised ``TypeError`` on every call (the v0.4.2
+    helper-container leak: one stranded container per checkpoint). Build a
+    short-lived client with a request-level timeout instead, the same way the
+    Worker builds its own docker client.
+    """
+    client = docker.from_env(timeout=HELPER_REMOVE_TIMEOUT)
+    try:
+        client.api.remove_container(helper.id, force=True)
+    finally:
+        client.close()
 
 
 def export_workspace(sandbox):

@@ -208,33 +208,88 @@ def _oversized_export_sandbox(helper, monkeypatch):
     return sandbox
 
 
+class _BoundedRemoveApi:
+    """Fake ``APIClient`` carrying the real ``remove_container`` signature.
+
+    Any kwarg the docker SDK does not support raises ``TypeError`` here too:
+    the v0.4.2 helper-container leak shipped precisely because ``Mock()``
+    silently accepted ``timeout=``.
+    """
+
+    def __init__(self, outcomes=None):
+        self.calls = []
+        self.outcomes = list(outcomes or [])
+        self.client_kwargs = []
+        self.closed = False
+
+    def remove_container(self, container, v=False, link=False, force=False):
+        self.calls.append((container, force))
+        if self.outcomes:
+            outcome = self.outcomes.pop(0)
+            if outcome is not None:
+                raise outcome
+
+
+def _patch_bounded_remove(monkeypatch, outcomes=None):
+    api = _BoundedRemoveApi(outcomes)
+
+    class _Client:
+        def __init__(self, **kwargs):
+            api.client_kwargs.append(kwargs)
+            self.api = api
+
+        def close(self):
+            api.closed = True
+
+    monkeypatch.setattr(cp.docker, 'from_env', lambda **kwargs: _Client(**kwargs))
+    return api
+
+
 def test_helper_cleanup_retries_and_keeps_primary_error(monkeypatch):
     # First delete stalls (the 60s ReadTimeout from the live incident); the
     # retry succeeds. The export's size-cap ValueError must be what propagates.
+    api = _patch_bounded_remove(
+        monkeypatch, outcomes=[requests.exceptions.ReadTimeout('docker stalled')])
     helper = Mock()
-    attempts = []
-
-    def remove(**kwargs):
-        attempts.append(kwargs)
-        if len(attempts) == 1:
-            raise requests.exceptions.ReadTimeout('docker stalled')
-
-    helper.remove.side_effect = remove
     sandbox = _oversized_export_sandbox(helper, monkeypatch)
     with pytest.raises(ValueError, match='Snapshot exceeds size limit'):
         cp.export_workspace(sandbox)
-    assert len(attempts) == 2
-    assert attempts[0]['timeout'] == cp.HELPER_REMOVE_TIMEOUT
+    assert api.calls == [(helper.id, True), (helper.id, True)]
     helper.start.assert_called_once()
 
 
 def test_helper_cleanup_failure_never_masks_primary_error(monkeypatch):
+    api = _patch_bounded_remove(
+        monkeypatch,
+        outcomes=[requests.exceptions.ReadTimeout('docker stalled')] * 2,
+    )
     helper = Mock()
-    helper.remove.side_effect = requests.exceptions.ReadTimeout('docker stalled')
     sandbox = _oversized_export_sandbox(helper, monkeypatch)
     with pytest.raises(ValueError, match='Snapshot exceeds size limit'):
         cp.export_workspace(sandbox)
-    assert helper.remove.call_count == 2
+    assert len(api.calls) == 2
+
+
+def test_helper_remove_uses_bounded_client_with_request_timeout(monkeypatch):
+    # Regression: v0.4.2 passed ``timeout`` straight to Container.remove(),
+    # which the docker SDK rejects with TypeError on every call.
+    api = _patch_bounded_remove(monkeypatch)
+    helper = Mock(id='helper-id')
+    cp._remove_helper(helper)
+    assert api.client_kwargs == [{'timeout': cp.HELPER_REMOVE_TIMEOUT}]
+    assert api.calls == [('helper-id', True)]
+    assert api.closed
+
+
+def test_bounded_remove_fake_matches_installed_docker_sdk():
+    # Keep the fake's signature in lockstep with the installed docker-py so
+    # unsupported kwargs fail in tests exactly like they do in production.
+    import inspect
+
+    from docker.api.container import ContainerApiMixin
+
+    assert (inspect.signature(_BoundedRemoveApi.remove_container)
+            == inspect.signature(ContainerApiMixin.remove_container))
 
 
 @pytest.mark.parametrize('failure', ['none', 'copy', 'verify', 'cancel'])
