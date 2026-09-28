@@ -80,9 +80,14 @@ services:
     security_opt: ["no-new-privileges:true"]
     read_only: true
     tmpfs:
-      - /tmp:rw,nosuid,nodev,noexec,size=64m
+      # Starlette spools uploaded files >1 MiB to /tmp before the endpoint
+      # reads them: one maxed request is 5 x 200 MiB = ~1 GiB, so 2g gives
+      # 2x headroom (RAM-backed, vanishes on restart).
+      - /tmp:rw,nosuid,nodev,noexec,size=2g
     pids_limit: 256
-    mem_limit: 768m
+    # Spool (tmpfs counts here) + in-memory file bytes + transients + baseline
+    # for one maxed 5x200 MiB upload request: ~2.5g. 4g keeps headroom.
+    mem_limit: 4g
     cpus: 1.0
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=2)"]
