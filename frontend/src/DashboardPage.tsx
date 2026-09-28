@@ -734,9 +734,9 @@ export function DashboardPage() {
   }
 
   function addLocalFiles(files: File[]) {
-    const oversized = files.find((file) => file.size > 10 * 1024 * 1024);
+    const oversized = files.find((file) => file.size > 200 * 1024 * 1024);
     if (oversized) {
-      setLaunchError(`《${oversized.name}》超过 10 MB`);
+      setLaunchError(`《${oversized.name}》超过 200 MB`);
       return;
     }
     const existingNames = new Set([
