@@ -108,6 +108,21 @@ def test_update_plan_goal_shape_repairs_do_not_burn_a_turn():
     assert validate_agent_action(_plan_action(goal=['ok', 2])) == 'update_plan goal must be text'
 
 
+def test_update_plan_criteria_shape_repairs_do_not_burn_a_turn():
+    # missing / null criteria passes validation (resolved against the previous plan)
+    assert validate_agent_action(_plan_action(**{'success_criteria': None})) is None
+    no_criteria = _plan_action()
+    del no_criteria['success_criteria']
+    assert validate_agent_action(no_criteria) is None
+    # a bare string is wrapped by the normalizer
+    textual = _plan_action(success_criteria='deliver a Chinese report')
+    assert validate_agent_action(textual) is None
+    assert normalize_agent_action(textual)['success_criteria'] == ['deliver a Chinese report']
+    # uninterpretable shapes still fail fast
+    assert validate_agent_action(_plan_action(success_criteria={'r1': 'x'})) == 'update_plan success_criteria must be an array'
+    assert validate_agent_action(_plan_action(success_criteria=42)) == 'update_plan success_criteria must be an array'
+
+
 def test_update_plan_without_goal_keeps_previous_goal():
     state = AgentExecutionState(skill_count=1)
     assert state.update_plan(_plan_action())['ok']
@@ -118,6 +133,26 @@ def test_update_plan_without_goal_keeps_previous_goal():
         {'id': 'verify', 'title': 'Verify', 'status': 'in_progress'}]
     assert state.update_plan(refined)['ok']
     assert state.plan['goal'] == 'translate the report'
+
+
+def test_update_plan_without_criteria_keeps_previous_criteria():
+    state = AgentExecutionState(skill_count=1)
+    assert state.update_plan(_plan_action())['ok']
+    refined = _plan_action()
+    del refined['success_criteria']
+    refined['steps'] = [
+        {'id': 'work', 'title': 'Work', 'status': 'completed', 'evidence': '/workspace/output/out.cn.pdf'},
+        {'id': 'verify', 'title': 'Verify', 'status': 'in_progress'}]
+    assert state.update_plan(refined)['ok']
+    assert state.plan['success_criteria'] == ['done']
+
+
+def test_first_update_plan_still_requires_criteria():
+    state = AgentExecutionState(skill_count=1)
+    action = _plan_action()
+    del action['success_criteria']
+    result = state.update_plan(action)
+    assert result['error_code'] == 'PLAN_INVALID'
 
 
 def test_first_update_plan_still_requires_a_goal():

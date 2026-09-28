@@ -292,6 +292,11 @@ class AgentExecutionState:
             goal = str((self.plan or {}).get("goal") or "").strip()
         raw_steps = action.get("steps")
         success_criteria = action.get("success_criteria")
+        if success_criteria is None:
+            # The model may omit criteria when it only refines steps mid-run:
+            # keep the recorded criteria (they embed the requirements ledger)
+            # instead of burning a correction round-trip.
+            success_criteria = (self.plan or {}).get("success_criteria")
         validation_step_id = str(action.get("validation_step_id") or "").strip()[:40]
         if not goal or len(goal) > 800:
             return {"ok": False, "error_code": "PLAN_INVALID", "message": "goal must contain 1-800 characters"}
