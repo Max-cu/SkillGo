@@ -99,11 +99,14 @@ def project_context(messages: list[dict[str, Any]], *, checkpoint: str,
     selected = [latest] if latest else []
     for group in reversed(groups[:-1]):
         candidate = [group, *selected]
-        projected = [*pinned, memory, *(message for exchange in candidate for message in exchange)]
+        projected = [*pinned, *(message for exchange in candidate for message in exchange), memory]
         if estimate_tokens(projected) + tool_tokens > max_tokens:
             break
         selected = candidate
-    projected = [*pinned, memory, *(message for exchange in selected for message in exchange)]
+    # The mutable state message goes LAST: history is append-only between
+    # turns, so [pinned + history] stays a stable token prefix and providers
+    # with prefix caching skip re-prefilling the whole exchange log each turn.
+    projected = [*pinned, *(message for exchange in selected for message in exchange), memory]
     if diagnostics is not None:
         diagnostics.update({
             'state_estimated_tokens': estimate_tokens([memory]),

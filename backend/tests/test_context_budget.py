@@ -31,12 +31,12 @@ def test_large_observation_history_cannot_evict_latest_tool_result():
     before = copy.deepcopy(messages)
     diagnostics = {}
     result = project(messages, checkpoint, 5000, diagnostics=diagnostics)
-    assert result[-2:] == messages[-2:]
+    assert result[-3:-1] == messages[-2:]
     assert result[:2] == messages[:2]
     assert messages == before
     assert estimate_tokens(result) <= 5000
-    assert 'Check every record' in result[2]['content']
-    assert '中文' not in result[2]['content']
+    assert 'Check every record' in result[-1]['content']
+    assert '中文' not in result[-1]['content']
     assert diagnostics['dropped_exchange_count'] > 0
     for index, message in enumerate(result):
         if message['role'] == 'tool':
@@ -63,10 +63,10 @@ def test_small_budget_preserves_multi_tool_exchange_and_legacy_json_results():
         *exchange('old', 10000), native,
         {'role': 'tool', 'tool_call_id': 'a', 'content': 'first'},
         {'role': 'tool', 'tool_call_id': 'b', 'content': 'second'}]
-    assert project(messages, {}, 1500)[-3:] == messages[-3:]
+    assert project(messages, {}, 1500)[-4:-1] == messages[-3:]
     legacy = messages[:2] + [{'role': 'assistant', 'content': '{"action":"read_file"}'},
                              {'role': 'user', 'content': '{"tool_result":"read_file","payload":"important"}'}]
-    assert project(legacy, {}, 1500)[-2:] == legacy[-2:]
+    assert project(legacy, {}, 1500)[-3:-1] == legacy[-2:]
 
 
 def test_recent_command_output_below_52k_stays_fully_inline():
@@ -194,7 +194,7 @@ def test_reference_shelf_is_pinned_after_old_exchanges_drop():
     checkpoint = {'requirements': ['Follow the spec'], 'plan': {'goal': 'report'},
                   'reference_shelf': [_shelf_entry('/workspace/skills/01-demo/demo/references/spec.md', spec)]}
     result = project(messages, checkpoint, 6000)
-    memory = result[2]['content']
+    memory = result[-1]['content']
     # Pinned even though the original read exchange was projected out.
     assert 'PHASE_ONE_SPEC_' in memory
     assert spec in memory
@@ -210,7 +210,7 @@ def test_reference_shelf_drops_oldest_when_budget_is_tight_keeps_newest():
                       _shelf_entry('/workspace/skills/01-demo/demo/references/old.md', old_spec),
                       _shelf_entry('/workspace/skills/01-demo/demo/references/new.md', new_spec)]}
     result = project(messages, checkpoint, 1800)
-    memory = result[2]['content']
+    memory = result[-1]['content']
     assert 'NEW_SPEC_MARKER' in memory
     assert 'OLD_SPEC_MARKER' not in memory
 

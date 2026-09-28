@@ -126,7 +126,7 @@ def test_message_compaction_keeps_assistant_tool_pair_together():
         )
 
     compacted = _trim_messages(messages)
-    tail = compacted[3:]
+    tail = compacted[2:-1]
 
     assert tail[0]["role"] == "assistant"
     assert tail[1]["role"] == "tool"
@@ -157,12 +157,12 @@ def test_message_compaction_keeps_all_results_from_one_multi_tool_turn():
         )
 
     compacted = _trim_messages(messages)
-    first_assistant = compacted[3]
+    first_assistant = compacted[2]
     assert first_assistant["role"] == "assistant"
     expected_ids = {item["id"] for item in first_assistant["tool_calls"]}
     actual_ids = {
         compacted[index]["tool_call_id"]
-        for index in range(4, min(7, len(compacted)))
+        for index in range(3, min(6, len(compacted)))
         if compacted[index]["role"] == "tool"
     }
     assert actual_ids == expected_ids
@@ -183,8 +183,8 @@ def test_message_compaction_includes_trusted_execution_checkpoint():
 
     compacted = _trim_messages(messages, '{"loaded_skill_indexes":[1]}')
 
-    assert "Execution state" in compacted[2]["content"]
-    assert '"loaded_skill_indexes": [1]' in compacted[2]["content"]
+    assert "Execution state" in compacted[-1]["content"]
+    assert '"loaded_skill_indexes": [1]' in compacted[-1]["content"]
 
 
 def test_message_projection_preserves_provider_reasoning_and_arguments():
@@ -214,7 +214,7 @@ def test_message_projection_preserves_provider_reasoning_and_arguments():
 
     compacted = _trim_messages(messages)
 
-    old_assistant = compacted[3]
+    old_assistant = compacted[2]
     assert old_assistant["reasoning_content"] == "private reasoning"
     assert json.loads(old_assistant["tool_calls"][0]["function"]["arguments"])["code"] == old_code
     assert messages[2]["reasoning_content"] == "private reasoning"
