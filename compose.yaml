@@ -208,8 +208,9 @@ services:
     security_opt: ["no-new-privileges:true"]
     read_only: true
     tmpfs:
-      # nginx spools proxied upload bodies here (read_only rootfs); must hold
-      # the 51 MiB skill-package cap plus concurrent 10 MiB attachment uploads.
+      # nginx scratch space (read_only rootfs). API bodies are streamed through
+      # (proxy_request_buffering/proxy_buffering off in nginx.conf), so this no
+      # longer needs to hold spooled upload bodies.
       - /var/cache/nginx:rw,nosuid,nodev,noexec,size=96m,uid=101,gid=101,mode=0750
       - /var/run:rw,nosuid,nodev,noexec,size=4m,uid=101,gid=101,mode=0750
     pids_limit: 128
