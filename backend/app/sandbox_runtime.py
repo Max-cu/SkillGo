@@ -70,6 +70,10 @@ class SandboxCommandResult:
     stdout: str
     stderr: str
     timed_out: bool = False
+    # Measured wall-clock of the exec, reported to the agent so it can
+    # distinguish "died instantly" (bad args/missing dependency) from
+    # "died mid-work" (killed/resource exhaustion).
+    elapsed_seconds: float = 0.0
 
 
 def _workspace_path(value: str, *, allow_root: bool = True) -> str:
@@ -353,6 +357,7 @@ class DockerSandbox:
             stdout=_decode(stdout),
             stderr=_decode(stderr),
             timed_out=timed_out,
+            elapsed_seconds=elapsed,
         )
 
     async def list_files(self, path: str = "/workspace") -> list[dict]:

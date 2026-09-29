@@ -56,5 +56,26 @@ def test_timed_out_result_maps_to_recoverable_payload_with_resume_hint():
 def test_normal_payload_keeps_exit_code_and_no_error_marker():
     ok = _command_result_payload(SandboxCommandResult(0, "ok", ""), timeout_seconds=300)
     assert ok == {"exit_code": 0, "stdout": "ok", "stderr": ""}
-    bad = _command_result_payload(SandboxCommandResult(2, "", "boom"), timeout_seconds=300)
-    assert bad == {"exit_code": 2, "stdout": "", "stderr": "boom"}
+
+
+def test_silent_nonzero_exit_reports_measured_facts():
+    # Facts only: exit code, elapsed vs budget, no-output note. No cause
+    # attribution — the model interprets, the platform reports.
+    result = SandboxCommandResult(137, "", "", elapsed_seconds=4.5)
+    payload = _command_result_payload(result, timeout_seconds=300)
+    assert payload["ok"] is False
+    assert payload["error_code"] == "SANDBOX_COMMAND_NONZERO_EXIT"
+    assert "137" in payload["message"] and "4.5s" in payload["message"]
+    assert "not a timeout" in payload["message"]
+    assert "no stdout/stderr output" in payload["message"]
+    assert "intact" in payload["message"]
+    assert payload["elapsed_seconds"] == 4.5
+    assert payload["timeout_seconds"] == 300
+
+
+def test_nonzero_exit_with_output_does_not_claim_silence():
+    result = SandboxCommandResult(2, "", "boom", elapsed_seconds=1.2)
+    payload = _command_result_payload(result, timeout_seconds=300)
+    assert payload["ok"] is False
+    assert "no stdout/stderr output" not in payload["message"]
+    assert payload["stderr"] == "boom"

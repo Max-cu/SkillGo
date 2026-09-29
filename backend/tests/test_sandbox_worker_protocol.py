@@ -377,6 +377,30 @@ def test_recoverable_tool_error_keeps_diagnostic_out_of_primary_detail():
     assert "Traceback" in event.data["diagnostic"]
 
 
+def test_silent_tool_failure_event_records_exit_and_elapsed_facts():
+    # A failure with no message/stderr must still be classifiable from
+    # job_events alone: exit code + elapsed wall-clock land in event.data,
+    # and the diagnostic fallback states them.
+    event = SimpleNamespace(status="running", detail="", data={"tool": "command"})
+
+    _finish_tool_event(
+        event,
+        {
+            "ok": False,
+            "exit_code": 137,
+            "elapsed_seconds": 4.5,
+            "error_code": "SANDBOX_COMMAND_NONZERO_EXIT",
+            "stdout": "",
+            "stderr": "",
+        },
+    )
+
+    assert event.status == "failed"
+    assert event.data["exit_code"] == 137
+    assert event.data["elapsed_seconds"] == 4.5
+    assert event.data["diagnostic"] == "工具执行未完成（exit 137, 4.5s）"
+
+
 def test_long_inline_command_is_recoverable_before_sandbox_execution():
     error = _validate_agent_action(
         {

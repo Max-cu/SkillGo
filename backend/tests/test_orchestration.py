@@ -8,7 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 from app.agent_context import project_context
-from app.agent_policy import AgentExecutionState
+from app.agent_policy import AgentExecutionState, _compact_observation
 from app.model_adapter import request_options
 from app.model_gateway import ModelConnection, ModelResult
 from app.runtime_profile import detect_runtime_profile
@@ -81,6 +81,27 @@ def test_verifier_report_can_contain_more_than_twenty_checks():
     action = {'action': 'record_validation', 'status': 'passed', 'summary': 'observed', 'evidence': 'report', 'checks': [str(i) for i in range(30)]}
     assert validate_agent_action(action) is None
     assert normalize_agent_action(action)['checks'] == action['checks']
+
+
+def test_compact_observation_keeps_facts_for_silent_failures():
+    # A failure with no message/stderr keeps the stdout tail as diagnostic
+    # (errors are sometimes printed to stdout only) and records the measured
+    # elapsed wall-clock so projected history stays diagnosable.
+    action = {'action': 'command', 'argv': ['python3', 'batch.py']}
+    payload = {
+        'ok': False,
+        'exit_code': 137,
+        'stdout': 'progress 3/11 done\nkilled',
+        'stderr': '',
+        'elapsed_seconds': 4.5,
+        'error_code': 'SANDBOX_COMMAND_NONZERO_EXIT',
+    }
+    item = _compact_observation(action, payload, operation=3, mutation_epoch=1)
+    assert item['ok'] is False
+    assert item['exit_code'] == 137
+    assert item['elapsed_seconds'] == 4.5
+    assert item['error_code'] == 'SANDBOX_COMMAND_NONZERO_EXIT'
+    assert item['diagnostic'] == 'progress 3/11 done\nkilled'
 
 
 def _plan_action(**overrides):

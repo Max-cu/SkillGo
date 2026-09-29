@@ -133,15 +133,28 @@ def _finish_tool_event(event: JobEvent, payload: object) -> None:
     event.status = "failed" if failed else "succeeded"
     if isinstance(payload, dict):
         if failed:
-            diagnostic = str(
-                payload.get("message") or payload.get("stderr") or "工具执行未完成"
-            )[:1600]
+            # Facts-only fallback so monitoring can classify silent failures
+            # (no message/stderr) from job_events alone.
+            fallback_facts: list[str] = []
+            exit_code = payload.get("exit_code")
+            if isinstance(exit_code, int):
+                fallback_facts.append(f"exit {exit_code}")
+            elapsed = payload.get("elapsed_seconds")
+            if isinstance(elapsed, (int, float)):
+                fallback_facts.append(f"{elapsed:g}s")
+            fallback = "工具执行未完成"
+            if fallback_facts:
+                fallback += f"（{', '.join(fallback_facts)}）"
+            diagnostic = str(payload.get("message") or payload.get("stderr") or fallback)[:1600]
             event.data = {
                 **(event.data or {}),
                 "recoverable": True,
                 "error_code": payload.get("error_code"),
                 "diagnostic": diagnostic,
             }
+            for key in ("exit_code", "elapsed_seconds"):
+                if key in payload:
+                    event.data[key] = payload[key]
             event.detail = "本次工具操作未完成，Agent 正在根据诊断自动调整"
         elif "exit_code" in payload:
             event.data = {**(event.data or {}), "exit_code": payload.get("exit_code")}
@@ -204,6 +217,29 @@ def _command_result_payload(command_result, *, timeout_seconds: int) -> dict[str
                 f"Work that genuinely exceeds {settings.sandbox_command_timeout_seconds} "
                 "seconds must be split into smaller resumable per-file batches."
             ),
+        }
+    if command_result.exit_code != 0:
+        # Facts only: the measured exit code, elapsed wall-clock vs the
+        # budget, and whether the process said anything at all. No cause
+        # attribution — the model interprets; the platform reports.
+        elapsed = float(getattr(command_result, "elapsed_seconds", 0.0) or 0.0)
+        message = (
+            f"Command exited with code {command_result.exit_code} after "
+            f"{elapsed:.1f}s of its {timeout_seconds}s budget; the deadline "
+            "was not reached, so this is not a timeout."
+        )
+        if not command_result.stdout.strip() and not command_result.stderr.strip():
+            message += " The command produced no stdout/stderr output."
+        message += " The sandbox and /workspace are intact."
+        return {
+            "ok": False,
+            "exit_code": command_result.exit_code,
+            "stdout": command_result.stdout,
+            "stderr": command_result.stderr,
+            "elapsed_seconds": round(elapsed, 1),
+            "timeout_seconds": timeout_seconds,
+            "error_code": "SANDBOX_COMMAND_NONZERO_EXIT",
+            "message": message,
         }
     return {
         "exit_code": command_result.exit_code,
@@ -1277,7 +1313,10 @@ async def _run_agent_loop(
                     if command_result.timed_out:
                         progress_detail = "命令达到时限被停止（沙箱保留），Agent 正在从断点续跑"
                     elif command_result.exit_code != 0:
-                        progress_detail = "工具执行未完成，Agent 正在根据诊断自动调整"
+                        progress_detail = (
+                            f"命令以退出码 {command_result.exit_code} 失败（非超时），"
+                            "Agent 正在根据诊断自动调整"
+                        )
                 except SandboxRuntimeError as exc:
                     if exc.code != "SANDBOX_COMMAND_INVALID":
                         raise
@@ -1328,7 +1367,10 @@ async def _run_agent_loop(
                     if command_result.timed_out:
                         progress_detail = "Python 工作流达到时限被停止（沙箱保留），Agent 正在续跑"
                     elif command_result.exit_code != 0:
-                        progress_detail = "Python 工作流未完成，Agent 正在根据诊断自动调整"
+                        progress_detail = (
+                            f"Python 工作流以退出码 {command_result.exit_code} 失败（非超时），"
+                            "Agent 正在根据诊断自动调整"
+                        )
                 except SandboxRuntimeError as exc:
                     if exc.code not in {
                         "SANDBOX_WRITE_FAILED",

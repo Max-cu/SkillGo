@@ -119,12 +119,18 @@ def _compact_observation(
         argv = action.get('argv')
         item["argv"] = [str(value)[:120] for value in argv[:6]] if isinstance(argv, list) else []
     if isinstance(payload, dict):
-        for key in ("exit_code", "error_code", "path", "bytes", "full_result_path"):
+        for key in ("exit_code", "error_code", "elapsed_seconds", "path", "bytes", "full_result_path"):
             value = payload.get(key)
-            if isinstance(value, (str, int, bool)):
+            if isinstance(value, (str, int, float, bool)):
                 item[key] = value
         if not item["ok"]:
             message = payload.get("message") or payload.get("stderr")
+            if not (isinstance(message, str) and message.strip()):
+                # Errors are sometimes printed to stdout only; keep its tail
+                # so a silent-looking failure stays diagnosable in the
+                # projected history.
+                stdout = payload.get("stdout")
+                message = stdout[-240:] if isinstance(stdout, str) and stdout.strip() else None
             if isinstance(message, str) and message:
                 item["diagnostic"] = message[:320]
         else:
