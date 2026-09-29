@@ -123,6 +123,17 @@ def test_update_plan_criteria_shape_repairs_do_not_burn_a_turn():
     assert validate_agent_action(_plan_action(success_criteria=42)) == 'update_plan success_criteria must be an array'
 
 
+def test_update_plan_validation_step_shape_repairs_do_not_burn_a_turn():
+    # missing / null validation_step_id passes validation (resolved against the previous plan)
+    assert validate_agent_action(_plan_action(**{'validation_step_id': None})) is None
+    no_step = _plan_action()
+    del no_step['validation_step_id']
+    assert validate_agent_action(no_step) is None
+    # uninterpretable shapes still fail fast
+    assert validate_agent_action(_plan_action(validation_step_id={'id': 'verify'})) == 'update_plan validation_step_id must be text'
+    assert validate_agent_action(_plan_action(validation_step_id=7)) == 'update_plan validation_step_id must be text'
+
+
 def test_update_plan_without_goal_keeps_previous_goal():
     state = AgentExecutionState(skill_count=1)
     assert state.update_plan(_plan_action())['ok']
@@ -147,12 +158,32 @@ def test_update_plan_without_criteria_keeps_previous_criteria():
     assert state.plan['success_criteria'] == ['done']
 
 
+def test_update_plan_without_validation_step_keeps_previous_step():
+    state = AgentExecutionState(skill_count=1)
+    assert state.update_plan(_plan_action())['ok']
+    refined = _plan_action()
+    del refined['validation_step_id']
+    refined['steps'] = [
+        {'id': 'work', 'title': 'Work', 'status': 'completed', 'evidence': '/workspace/output/out.cn.pdf'},
+        {'id': 'verify', 'title': 'Verify', 'status': 'in_progress'}]
+    assert state.update_plan(refined)['ok']
+    assert state.validation_step_id == 'verify'
+
+
 def test_first_update_plan_still_requires_criteria():
     state = AgentExecutionState(skill_count=1)
     action = _plan_action()
     del action['success_criteria']
     result = state.update_plan(action)
     assert result['error_code'] == 'PLAN_INVALID'
+
+
+def test_first_update_plan_still_requires_validation_step():
+    state = AgentExecutionState(skill_count=1)
+    action = _plan_action()
+    del action['validation_step_id']
+    result = state.update_plan(action)
+    assert result['error_code'] == 'PLAN_VALIDATION_STEP_REQUIRED'
 
 
 def test_first_update_plan_still_requires_a_goal():

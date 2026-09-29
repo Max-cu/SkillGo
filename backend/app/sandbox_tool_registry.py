@@ -141,7 +141,11 @@ def validate_agent_action(action: dict[str, Any]) -> str | None:
         # normalizer. Only uninterpretable shapes are rejected here.
         if criteria is not None and not isinstance(criteria, (list, str)):
             return "update_plan success_criteria must be an array"
-        if not isinstance(action.get("validation_step_id"), str):
+        step_id = action.get("validation_step_id")
+        # A missing/null validation_step_id is resolved against the previous
+        # plan by the update_plan handler. Only uninterpretable shapes are
+        # rejected here.
+        if step_id is not None and not isinstance(step_id, str):
             return "update_plan validation_step_id must be text"
     elif action_name == "record_validation":
         if action.get("status") not in {"passed", "failed"}:

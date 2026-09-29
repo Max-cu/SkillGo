@@ -298,6 +298,11 @@ class AgentExecutionState:
             # instead of burning a correction round-trip.
             success_criteria = (self.plan or {}).get("success_criteria")
         validation_step_id = str(action.get("validation_step_id") or "").strip()[:40]
+        if not validation_step_id:
+            # The model may omit the validation step id when it only refines
+            # steps mid-run: keep the recorded one instead of burning a
+            # correction round-trip.
+            validation_step_id = str(self.validation_step_id or "").strip()[:40]
         if not goal or len(goal) > 800:
             return {"ok": False, "error_code": "PLAN_INVALID", "message": "goal must contain 1-800 characters"}
         if not isinstance(raw_steps, list) or not 2 <= len(raw_steps) <= 8:
