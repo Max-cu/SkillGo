@@ -211,11 +211,11 @@ cp deploy/ecs.env.example deploy/ecs.env
 # 编辑 deploy/ecs.env：填写 Docker GID、访问地址和端口
 docker compose --env-file .env --env-file deploy/ecs.env --profile build-only build sandbox-runtime
 bash deploy/preflight.sh
-docker compose --env-file .env --env-file deploy/ecs.env --profile sandbox up -d --build --scale worker=1
+docker compose --env-file .env --env-file deploy/ecs.env --profile sandbox up -d --build --scale worker=12
 SKILLGO_INSTALL_ROOT="$PWD" bash deploy/verify-ecs.sh
 ```
 
-上例以 **1 个 Worker** 起步；仓库 Compose 配置为 5 个副本，可按宿主资源使用 `--scale worker=N` 调整。Worker 本身与每个任务沙箱都会占用资源，应根据任务文件大小和并发量规划容量。
+上例启动 **12 个 Worker**；仓库 Compose 默认配置为 12 个副本，可按宿主资源使用 `--scale worker=N` 调整。Worker 本身与每个任务沙箱都会占用资源，应根据任务文件大小和并发量规划容量。
 
 `deploy/ecs.env.example` 默认对外监听 80 端口，需填写实际访问地址；它覆盖根目录 `.env` 的同名配置。部署示例给任务沙箱配置 2 GiB 内存、1 CPU、128 PIDs 和 900 秒单命令超时，任务总时限默认关闭；这些是可调整的预算，不是性能承诺。
 
@@ -238,7 +238,7 @@ SKILLGO_DURABLE_CHECKPOINTS_ENABLED=true
 两个功能可以独立启用。启用环境准备时启动对应服务，并保持 API、Worker 与环境服务配置一致：
 
 ```bash
-docker compose --env-file .env --env-file deploy/ecs.env --profile sandbox --profile environments up -d --build --scale worker=1 api worker environment-worker
+docker compose --env-file .env --env-file deploy/ecs.env --profile sandbox --profile environments up -d --build --scale worker=12 api worker environment-worker
 # API 重建后同步重建 Web，刷新 Nginx 的后端地址
 docker compose --env-file .env --env-file deploy/ecs.env up -d --no-deps --force-recreate web
 ```
