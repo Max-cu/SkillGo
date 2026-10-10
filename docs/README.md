@@ -2,6 +2,9 @@
 
 ## 当前文档
 
+- [Skill 包说明](skill-packages.md)：包结构、扩展声明、上传限制与示例。
+- [执行环境与隔离](execution-and-isolation.md)：Agent、环境准备、验证、权限、恢复与数据保留。
+
 - [开发与部署](development.md)：本机开发、模型配置、测试、Compose 和沙箱 Worker。
 - [产品与技术架构](PRODUCT_ARCHITECTURE.md)：产品边界、执行分层、隔离模型和演进方向。
 - [Agent 内核](agent-kernel.md)：计划、工具、上下文、验证和产物门禁。
