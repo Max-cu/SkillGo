@@ -36,7 +36,7 @@ SkillGo 是一个可私有化部署的多用户 Skill 平台。上传现有的 `
 
 **第一次了解 SkillGo？建议先观看这段 1 分 41 秒的产品演示。**
 
-以 PPT 制作为例，直观了解 SkillGo 如何将 Skill 转化为可执行、可交付、可供业务调用的能力。视频配有中文配音与字幕。
+以 PPT 制作为例，直观了解 SkillGo 如何将 Skill 转化为可执行、可交付、可供业务调用的能力。视频配有中文配音与中英双语字幕。
 
 https://github.com/user-attachments/assets/ee2e33b2-52b5-4b2e-832d-0780166dfb95
 
