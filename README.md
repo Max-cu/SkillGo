@@ -47,17 +47,52 @@ https://github.com/user-attachments/assets/eb3e6cdf-cda6-434b-a0a9-4cc0d37262f4
 > **说明：** 视频展示 SkillGo 的产品流程。具体文档、表格、演示稿及图像处理能力取决于所上传的 Skill 和配置的模型。
 ## 核心能力
 
-| 沙箱隔离 | 成果交付 | 外部调用 |
-| --- | --- | --- |
-| 每次任务尝试使用独立容器与工作卷；运行联网按版本授权。 | 检查真实文件、验证证据与哈希，通过网页下载产物。 | 将已发布的 Skill 版本绑定 Endpoint，使用独立密钥接入业务。 |
+<table>
+  <tr>
+    <td align="center" width="33%">
+      <img src="docs/assets/feature-icons/shield-check.svg" width="26" height="26" alt="" /><br />
+      <strong>沙箱隔离</strong><br />
+      <sub>独立容器与工作卷，隔离任务执行环境</sub>
+    </td>
+    <td align="center" width="34%">
+      <img src="docs/assets/feature-icons/package-check.svg" width="26" height="26" alt="" /><br />
+      <strong>成果交付</strong><br />
+      <sub>验证真实文件与执行证据，交付可靠产物</sub>
+    </td>
+    <td align="center" width="33%">
+      <img src="docs/assets/feature-icons/plug.svg" width="26" height="26" alt="" /><br />
+      <strong>外部调用</strong><br />
+      <sub>将 Skill 发布为 Endpoint，通过 API 接入业务</sub>
+    </td>
+  </tr>
+</table>
 
-| 平台能力 | 可以做什么 |
-| --- | --- |
-| Skill 管理 | ZIP 导入、元数据分析、版本管理、审核发布、社区展示、收藏与下载 |
-| 对话工作台 | 流式对话、历史会话、附件及历史文件复用；在会话中发起 Skill 任务 |
-| Agent 执行 | 协调所选 Skill，执行 Python / 命令，展示计划、进度、日志和产物 |
-| 模型与环境 | 多模型连接，配置对话、视觉与 OCR；按需启用环境准备和依赖解析 |
-| 团队与运维 | 成员与管理员权限、资源归属、审计、文件保留与清理、备份与恢复 |
+### 平台功能
+
+<p>
+  <img src="docs/assets/feature-icons/layers.svg" width="18" height="18" alt="" /> <strong>Skill 管理</strong><br />
+  &emsp;&ensp;<sub>ZIP 导入、元数据分析、版本管理、审核发布、社区展示、收藏与下载</sub>
+</p>
+
+<p>
+  <img src="docs/assets/feature-icons/messages-square.svg" width="18" height="18" alt="" /> <strong>对话工作台</strong><br />
+  &emsp;&ensp;<sub>流式对话、历史会话、附件与历史文件复用；在会话中发起 Skill 任务</sub>
+</p>
+
+<p>
+  <img src="docs/assets/feature-icons/workflow.svg" width="18" height="18" alt="" /> <strong>Agent 执行</strong><br />
+  &emsp;&ensp;<sub>多 Skill 协调、Python / 命令执行、计划与进度追踪、日志与成果交付</sub>
+</p>
+
+<p>
+  <img src="docs/assets/feature-icons/cpu.svg" width="18" height="18" alt="" /> <strong>模型与环境</strong><br />
+  &emsp;&ensp;<sub>多模型连接、视觉与 OCR；按需准备环境、解析依赖</sub>
+</p>
+
+<p>
+  <img src="docs/assets/feature-icons/users-round.svg" width="18" height="18" alt="" /> <strong>团队与运维</strong><br />
+  &emsp;&ensp;<sub>成员与管理员权限、资源归属、审计、文件保留与清理、备份与恢复</sub>
+</p>
 
 <p align="center">
   <img src="docs/assets/skillgo-workbench.png" width="100%" alt="SkillGo 工作台：对话、执行进度与文件交付" />
