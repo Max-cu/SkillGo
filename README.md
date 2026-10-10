@@ -47,64 +47,65 @@ https://github.com/user-attachments/assets/eb3e6cdf-cda6-434b-a0a9-4cc0d37262f4
 > **说明：** 视频展示 SkillGo 的产品流程。具体文档、表格、演示稿及图像处理能力取决于所上传的 Skill 和配置的模型。
 ## 核心能力
 
-<table>
-  <tr>
-    <td align="center" width="33%">
-      <img src="docs/assets/feature-icons/shield-check.svg" width="26" height="26" alt="" /><br />
-      <strong>沙箱隔离</strong><br />
-      <sub>独立容器与工作卷，隔离任务执行环境</sub>
-    </td>
-    <td align="center" width="34%">
-      <img src="docs/assets/feature-icons/package-check.svg" width="26" height="26" alt="" /><br />
-      <strong>成果交付</strong><br />
-      <sub>验证真实文件与执行证据，交付可靠产物</sub>
-    </td>
-    <td align="center" width="33%">
-      <img src="docs/assets/feature-icons/plug.svg" width="26" height="26" alt="" /><br />
-      <strong>外部调用</strong><br />
-      <sub>将 Skill 发布为 Endpoint，通过 API 接入业务</sub>
-    </td>
-  </tr>
-</table>
+<p align="center">
+  <img
+    src="docs/assets/skillgo-core-capabilities.svg"
+    width="100%"
+    alt="SkillGo 核心能力：沙箱隔离、成果交付、外部调用"
+  />
+</p> 
 
 ### 平台功能
 
 <p>
-  <img src="docs/assets/feature-icons/layers.svg" width="18" height="18" alt="" /> <strong>Skill 管理</strong><br />
-  &emsp;&ensp;<sub>ZIP 导入、元数据分析、版本管理、审核发布、社区展示、收藏与下载</sub>
+  <img src="docs/assets/feature-icons/layers.svg" width="18" height="18" alt="" />&nbsp;&nbsp;
+  <strong>Skill 管理</strong> — 技能导入、版本管理、审核发布、社区共享
 </p>
 
 <p>
-  <img src="docs/assets/feature-icons/messages-square.svg" width="18" height="18" alt="" /> <strong>对话工作台</strong><br />
-  &emsp;&ensp;<sub>流式对话、历史会话、附件与历史文件复用；在会话中发起 Skill 任务</sub>
+  <img src="docs/assets/feature-icons/messages-square.svg" width="18" height="18" alt="" />&nbsp;&nbsp;
+  <strong>对话工作台</strong> — 自然语言交互、附件处理、历史文件复用
 </p>
 
 <p>
-  <img src="docs/assets/feature-icons/workflow.svg" width="18" height="18" alt="" /> <strong>Agent 执行</strong><br />
-  &emsp;&ensp;<sub>多 Skill 协调、Python / 命令执行、计划与进度追踪、日志与成果交付</sub>
+  <img src="docs/assets/feature-icons/workflow.svg" width="18" height="18" alt="" />&nbsp;&nbsp;
+  <strong>Agent 执行</strong> — 多 Skill 协调、Python / 命令执行、进度追踪与成果交付
 </p>
 
 <p>
-  <img src="docs/assets/feature-icons/cpu.svg" width="18" height="18" alt="" /> <strong>模型与环境</strong><br />
-  &emsp;&ensp;<sub>多模型连接、视觉与 OCR；按需准备环境、解析依赖</sub>
+  <img src="docs/assets/feature-icons/cpu.svg" width="18" height="18" alt="" />&nbsp;&nbsp;
+  <strong>模型与环境</strong> — 多模型连接、视觉与 OCR、环境准备及依赖解析
 </p>
 
 <p>
-  <img src="docs/assets/feature-icons/users-round.svg" width="18" height="18" alt="" /> <strong>团队与运维</strong><br />
-  &emsp;&ensp;<sub>成员与管理员权限、资源归属、审计、文件保留与清理、备份与恢复</sub>
+  <img src="docs/assets/feature-icons/users-round.svg" width="18" height="18" alt="" />&nbsp;&nbsp;
+  <strong>团队与运维</strong> — 权限管理、操作审计、文件保留、备份与恢复
 </p>
 
-<p align="center">
-  <img src="docs/assets/skillgo-workbench.png" width="100%" alt="SkillGo 工作台：对话、执行进度与文件交付" />
-</p>
+### 界面预览
 
 <details>
-<summary>查看 Skill 管理与存储界面</summary>
+<summary>任务工作台与执行过程</summary>
+
+<p align="center">
+  <img src="docs/assets/skillgo-workbench.png" width="100%" alt="SkillGo 任务工作台与执行过程" />
+</p>
+
+</details>
+
+<details>
+<summary>Skill 管理与存储界面</summary>
 
 <table>
   <tr>
-    <td width="50%"><img src="docs/assets/skillgo-skills.png" alt="Skill 管理与版本状态" /><br /><sub>Skill 管理与发布</sub></td>
-    <td width="50%"><img src="docs/assets/skillgo-storage.png" alt="文件占用与存储保留期限" /><br /><sub>存储与生命周期管理</sub></td>
+    <td width="50%">
+      <img src="docs/assets/skillgo-skills.png" alt="Skill 管理界面" /><br />
+      <sub>Skill 管理与发布</sub>
+    </td>
+    <td width="50%">
+      <img src="docs/assets/skillgo-storage.png" alt="存储管理界面" /><br />
+      <sub>存储与生命周期管理</sub>
+    </td>
   </tr>
 </table>
 
