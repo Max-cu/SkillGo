@@ -114,21 +114,21 @@ https://github.com/user-attachments/assets/eb3e6cdf-cda6-434b-a0a9-4cc0d37262f4
 ## 使用流程
 
 <p align="center">
-  <img src="docs/assets/skillgo-workflow.png" width="100%" alt="SkillGo 使用流程：准备并发布 Skill，提交任务，Agent 编排独立沙箱执行，验证成果后通过网页或 API 交付" />
+  <img src="docs/assets/skillgo-workflow.png" width="100%" alt="SkillGo 使用流程：准备并发布 Skill，提交任务，独立沙箱执行，验证并交付成果" />
 </p>
 
-1. **准备能力**：上传 Skill ZIP，解析说明、执行画像与依赖；需要环境准备的版本先完成构建与探测，再审核发布。
-2. **提出任务**：选择 Skill、描述目标并添加附件。普通对话与 Skill 任务可以出现在同一会话中。
-3. **跟踪执行**：查看计划、关键进度和生成文件，按需展开完整工具记录；交互任务缺少关键输入时可以等待用户回答。
-4. **获得结果**：下载验证通过的真实文件。失败、取消或受阻会保留状态与原因，支持查看和重试。
+1. **准备 Skill**：导入 ZIP，按需准备运行环境并完成审核发布。
+2. **发起任务**：选择一个或多个 Skill，输入目标并添加附件。
+3. **跟踪执行**：查看计划、进度与日志；交互任务缺少关键信息时可随时补充。
+4. **获取成果**：下载验证通过的文件；失败或取消时可查看原因并重试。
 
-一个任务可以选择多个 Skill，由一个 Agent 在该任务工作区内协调执行；不同任务使用独立工作卷。Skill 格式、限制与示例见 [Skill 包说明](docs/skill-packages.md) 和 [`examples/`](examples/)。
+同一任务由一个 Agent 协调所选 Skill，共享该任务工作区；不同任务使用独立工作卷。详细格式和示例参见 [Skill 包说明](docs/skill-packages.md) 与 [`examples/`](examples/)。
 
 ## 快速开始
 
-### 先体验界面与对话
+### 体验界面与对话
 
-准备 Git、Docker Engine / Docker Desktop 和 Docker Compose v2：
+准备 **Git、Docker Engine / Docker Desktop 和 Docker Compose v2**，克隆项目并创建环境文件：
 
 ```bash
 git clone https://github.com/Max-cu/SkillGo.git
@@ -136,41 +136,47 @@ cd SkillGo
 cp .env.example .env
 ```
 
-编辑 `.env`，替换 `POSTGRES_PASSWORD`、`SKILLGO_JWT_SECRET`、`SKILLGO_BOOTSTRAP_EMAIL` 和 `SKILLGO_BOOTSTRAP_PASSWORD`，然后启动：
+在 `.env` 中设置 `POSTGRES_PASSWORD`、`SKILLGO_JWT_SECRET`、`SKILLGO_BOOTSTRAP_EMAIL`、`SKILLGO_BOOTSTRAP_PASSWORD`，然后启动：
 
 ```bash
 docker compose up -d --build
 ```
 
-打开 **http://127.0.0.1:8080**，使用配置的 Bootstrap 超级管理员账号登录，并在平台设置中配置模型。Windows PowerShell 可以用 `Copy-Item .env.example .env` 替代 `cp`。
+打开 **http://127.0.0.1:8080**，使用 Bootstrap 管理员账号登录，并在平台设置中配置模型。Windows PowerShell 请用 `Copy-Item .env.example .env` 代替 `cp`。
 
-**基础模式启动 Web、API 和数据库，可管理 Skill 与进行普通对话；运行脚本任务还需要下面的沙箱模式。**
+> **基础模式**仅启动 Web、API 和数据库，适合体验界面、Skill 管理与普通对话。要执行脚本、处理附件或生成文件，请继续启用沙箱模式。
 
-### 启用沙箱执行
+### 启用沙箱执行（Linux）
 
-需要 **Linux + Docker Engine + 已注册到 Docker 的 gVisor `runsc`**。先按 [部署指南](deploy/README.md) 安装运行时、配置 Docker Socket GID 和访问地址，再执行：
+需要 **Docker Engine + 已注册到 Docker 的 gVisor `runsc`**。先按 [部署指南](deploy/README.md) 完成安装与 Docker Socket GID 配置，再执行：
 
 ```bash
 cp deploy/ecs.env.example deploy/ecs.env
-# 编辑 deploy/ecs.env：填写 Docker GID、访问地址和端口
-docker compose --env-file .env --env-file deploy/ecs.env --profile build-only build sandbox-runtime
+# 编辑 deploy/ecs.env：配置 Docker GID、访问地址与端口
+
+# 构建沙箱镜像并完成预检
+docker compose --env-file .env --env-file deploy/ecs.env \
+  --profile build-only build sandbox-runtime
 bash deploy/preflight.sh
-docker compose --env-file .env --env-file deploy/ecs.env --profile sandbox up -d --build --scale worker=12
+
+# 启动沙箱模式（示例：2 个 Worker）
+docker compose --env-file .env --env-file deploy/ecs.env \
+  --profile sandbox up -d --build --scale worker=2
+
+# 验证服务、Worker 和 gVisor 隔离
 SKILLGO_INSTALL_ROOT="$PWD" bash deploy/verify-ecs.sh
 ```
 
-示例启动 12 个 Worker，可按宿主资源用 `--scale worker=N` 调整。`deploy/ecs.env.example` 默认监听 80 端口，并覆盖根目录 `.env` 的同名配置。环境准备和持久化恢复默认关闭，可分别按 [执行环境与隔离](docs/execution-and-isolation.md) 启用。
+Worker 数量可按宿主资源调整：`--scale worker=N`。`deploy/ecs.env.example` 默认监听 **80 端口**，并覆盖根目录 `.env` 的同名配置；环境准备与持久化恢复默认关闭，启用方法见 [执行环境与隔离](docs/execution-and-isolation.md)。
 
 ## API 接入
 
-为已审核、可运行的 Skill 版本创建 Endpoint，使用其独立密钥调用。密钥只在创建或轮换时完整展示，请妥善保存。
+**同一项已发布的 Skill 能力，也可以通过独立 Endpoint 接入业务系统。** Endpoint 必须绑定已审核、可运行的 Skill 版本；密钥仅在创建或轮换时完整展示。
 
-| 调用方式 | 接口 | 返回 |
-| --- | --- | --- |
-| 纯指令同步调用 | `POST /api/v1/invoke/{slug}` | 结构化结果与 `run_id` |
-| 沙箱异步任务 | `POST /api/v1/workflow-endpoints/{slug}/jobs` | `202 Accepted`、任务 ID 与查询地址 |
+- **同步指令调用**：`POST /api/v1/invoke/{slug}` — 适用于纯指令处理，返回结构化结果与 `run_id`。
+- **异步沙箱任务**：`POST /api/v1/workflow-endpoints/{slug}/jobs` — 适用于文件与工具任务，返回 `202 Accepted`、任务 ID 和查询地址。
 
-以下示例提交文件与制作要求，并通过 `Idempotency-Key` 避免重复创建任务：
+### 示例：提交文件处理任务
 
 ```bash
 export SKILLGO_BASE_URL="https://skillgo.example.com"
@@ -183,45 +189,40 @@ curl "$SKILLGO_BASE_URL/api/v1/workflow-endpoints/your-slug/jobs" \
   -F "instruction=根据资料制作项目汇报 PPT，突出关键进展与下一步计划"
 ```
 
-提交后查询任务状态，再下载产物。外部任务无人值守执行，不向用户追问；信息不足时，Agent 采用合理假设并在结果中说明。完整请求契约、错误码和密钥管理见 [任务 API](docs/workflow-api.md)，可运行示例见 [Python 客户端](examples/workflow_api_client.py)。开发环境交互文档：`http://127.0.0.1:8000/api/docs`。
+请求成功后，查询任务状态并下载产物。`Idempotency-Key` 可避免同一 Endpoint 下重复提交相同请求键时重复创建任务。外部任务无人值守执行，不会中途追问；信息不足时，Agent 会采用合理假设并在结果中说明。
+
+[完整 API 文档](docs/workflow-api.md) · [Python 客户端示例](examples/workflow_api_client.py) · 开发环境交互文档：`http://127.0.0.1:8000/api/docs`
 
 ## 架构与边界
 
 <p align="center">
-  <img src="docs/assets/skillgo-flow.png" width="100%" alt="SkillGo 运行架构与执行闭环：用户请求、控制平面、任务队列、独立沙箱、Agent 执行与成果交付" />
+  <img src="docs/assets/skillgo-flow.png" width="100%" alt="SkillGo 运行架构与执行闭环：控制平面、任务队列、Worker、gVisor 沙箱与成果交付" />
 </p>
 
-```text
-浏览器 / 业务系统 → Web + FastAPI → PostgreSQL / 文件存储
-                          ↓
-                 可信 Worker + 模型编排
-                          ↓
-               独立任务容器（gVisor runsc）
-```
+SkillGo 由 **Web / FastAPI 控制面、PostgreSQL 与文件存储、可信 Worker、独立 gVisor 任务沙箱**构成。控制面负责授权、任务管理与交付，Worker 协调模型和沙箱中的执行过程。
 
-- 沙箱采用非 root、只读根文件系统、独立工作卷及可配置资源预算；任务容器不注入平台密钥或挂载 Docker Socket。
-- 运行联网默认关闭。多 Skill 任务中，只要一个选中版本获准联网，整个任务沙箱即可联网；当前不限制目标域名。
-- 多 Skill 协调执行不等于通用并行 DAG 或多 Agent 调度；快照恢复的是工作文件和 Agent 状态，不是进程内存。
-- Worker 与环境准备服务属于可信控制面，gVisor 不能替代宿主机维护、权限控制和 HTTPS 配置。
+**关键边界：**
 
-隔离、工具、验证、依赖、恢复和数据保留策略见 [执行环境与隔离](docs/execution-and-isolation.md)；安全问题见 [SECURITY.md](SECURITY.md)。
+- **执行隔离**：每次任务尝试使用独立容器与工作卷；沙箱以非 root 身份运行，使用只读根文件系统和可配置资源预算，不注入平台密钥或挂载 Docker Socket。
+- **网络授权**：运行联网默认关闭。多 Skill 任务中，只要一个所选版本获得联网授权，整个任务沙箱就可联网；当前不限制目标域名。
+- **编排与恢复**：多 Skill 协调不等于通用并行 DAG 或多 Agent 调度；快照只恢复工作文件与 Agent 状态，不恢复进程内存。
+- **信任边界**：Worker 与环境准备服务属于可信控制面；gVisor 不能代替宿主机维护、权限治理与 HTTPS。
+
+更多细节见 [执行环境与隔离](docs/execution-and-isolation.md)；漏洞报告方式见 [SECURITY.md](SECURITY.md)。
 
 ## 开发与文档
 
 本地开发使用 **Python 3.12 + Node.js 24**；后端为 FastAPI，前端为 React / TypeScript。
 
-| 入口 | 内容 |
-| --- | --- |
-| [部署指南](deploy/README.md) | Linux / gVisor、安装、升级、备份、恢复与自检 |
-| [开发指南](docs/development.md) | 本地环境、模型配置、测试与构建 |
-| [Skill 包说明](docs/skill-packages.md) | `SKILL.md`、扩展声明、上传限制与示例 |
-| [任务 API](docs/workflow-api.md) | Endpoint、异步调用、状态查询与产物下载 |
-| [执行环境与隔离](docs/execution-and-isolation.md) | Agent、验证、依赖、权限、恢复与数据保留 |
-| [产品与技术架构](docs/PRODUCT_ARCHITECTURE.md) | 产品边界与系统分层 |
-| [Agent 内核](docs/agent-kernel.md) | 编排、工具、上下文与验证设计 |
-| [文档索引](docs/README.md) | 当前文档与历史阶段资料 |
+**部署与接入**
 
-本文描述当前 `main`。生产部署请选择经过验证的提交或 [Release](https://github.com/Max-cu/SkillGo/releases)，结合对应版本文档；历史设计记录不代表当前功能开关或部署状态。
+[部署指南](deploy/README.md) · [开发指南](docs/development.md) · [Skill 包说明](docs/skill-packages.md) · [任务 API](docs/workflow-api.md)
+
+**架构与进阶**
+
+[执行环境与隔离](docs/execution-and-isolation.md) · [产品与技术架构](docs/PRODUCT_ARCHITECTURE.md) · [Agent 内核](docs/agent-kernel.md) · [文档索引](docs/README.md)
+
+本文描述当前 `main`。生产部署请选择经过验证的提交或 [Release](https://github.com/Max-cu/SkillGo/releases)，并参考对应版本文档；历史设计记录不代表当前功能开关或部署状态。
 
 ## 参与项目
 
