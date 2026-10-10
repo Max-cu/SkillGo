@@ -150,6 +150,10 @@ curl "$SKILLGO_BASE_URL/api/v1/workflow-endpoints/your-slug/jobs" \
 
 ## 架构与边界
 
+<p align="center">
+  <img src="docs/assets/skillgo-flow.png" width="100%" alt="SkillGo 运行架构与执行闭环：用户请求、控制平面、任务队列、独立沙箱、Agent 执行与成果交付" />
+</p>
+
 ```text
 浏览器 / 业务系统 → Web + FastAPI → PostgreSQL / 文件存储
                           ↓
