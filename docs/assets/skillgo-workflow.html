@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>SkillGo · 从 Skill 到交付</title>
+<style>
+:root{color-scheme:light;--ink:#252a37;--muted:#6f788b;--purple:#6659d8;--line:#dde1ef;--paper:#f4f6fa}
+*{box-sizing:border-box}body{margin:0;background:#eceff5;color:var(--ink);font-family:"Segoe UI","Microsoft YaHei UI","PingFang SC",sans-serif;-webkit-font-smoothing:antialiased}
+.toolbar{max-width:1440px;margin:22px auto 16px;display:flex;justify-content:flex-end;gap:14px;align-items:center;font-size:14px;color:var(--muted)}button{border:1px solid #d6dbea;border-radius:10px;padding:9px 15px;background:white;color:#5950ac;font:inherit;cursor:pointer}button:hover{background:#faf9ff}button:focus-visible{outline:3px solid #a69bff;outline-offset:3px}
+.viewport{width:100%;overflow:auto;padding:0 24px 28px}.diagram{position:relative;width:1440px;height:650px;margin:0 auto;overflow:hidden;border:1px solid #e1e5f0;border-radius:26px;background:linear-gradient(130deg,#f9faff 0%,#f4f6fa 60%,#f7f8fc 100%)}
+.diagram:before{content:"";position:absolute;left:660px;top:148px;width:460px;height:360px;pointer-events:none;background:radial-gradient(ellipse,rgba(119,111,228,.085),transparent 68%)}
+.heading{position:absolute;left:62px;top:40px;margin:0;font-size:32px;line-height:1.4;font-weight:650;letter-spacing:-.7px}.intro{position:absolute;left:63px;top:89px;margin:0;font-size:21px;color:var(--muted);letter-spacing:.05px}.wordmark{position:absolute;right:64px;top:51px;font-size:24px;letter-spacing:-1px;font-weight:650;color:#5e5885}
+.stage{position:absolute;top:170px;width:292px;height:368px;text-align:center}.stage-1{left:58px}.stage-2{left:403px}.stage-3{left:748px}.stage-4{left:1093px}.visual{position:relative;height:248px;display:flex;align-items:center;justify-content:center}.stage h2{margin:22px 0 12px;font-size:27px;font-weight:620;line-height:1.5;letter-spacing:-.6px}.stage p{margin:0;font-size:21px;line-height:1.65;color:var(--muted);white-space:nowrap}
+.document{width:210px;height:136px;padding:21px 22px;text-align:left;border:1px solid #dce0ed;border-radius:17px;background:#fff;box-shadow:0 14px 34px rgba(51,62,110,.045)}.document header{display:flex;align-items:center;gap:12px;font-size:21px;font-weight:600;color:#46445f}.document svg{width:28px;height:34px;color:#8072ca}.document .rules{margin-top:20px;display:flex;flex-direction:column;gap:9px}.rules i{display:block;height:3px;border-radius:8px;background:#e6e7f2}.rules i:nth-child(1){width:92%}.rules i:nth-child(2){width:73%}.rules i:nth-child(3){width:49%;background:#d8d2f2}
+.skill-document{position:relative;z-index:2}.skill-back{position:absolute;width:196px;height:128px;border:1px solid #e0e3f1;border-radius:17px;background:#fff;transform:translate(-5px,9px) rotate(-4deg)}
+.request{width:250px;padding:21px 20px 18px;border:1px solid #dce0ed;background:#fff;border-radius:18px;text-align:left;box-shadow:0 14px 34px rgba(51,62,110,.045)}.request-label{font-size:14px;color:#9994b7;margin-bottom:13px;letter-spacing:.2px}.request-prompt{font-size:21px;letter-spacing:-.5px;color:#393d50;line-height:1.55;font-weight:550}.attachment{display:flex;align-items:center;gap:8px;margin-top:16px;padding-top:13px;border-top:1px solid #edf0f7;font-size:15px;color:#8990a4}.attachment svg{width:16px;height:20px;color:#9e98ba}
+.agent-label{position:absolute;left:0;right:0;top:-9px;font-size:21px;color:#7262c0;letter-spacing:.2px}.cube-aura{position:absolute;left:12px;top:12px;width:266px;height:238px;background:radial-gradient(ellipse,rgba(114,105,216,.1),transparent 67%)}.ground{position:absolute;left:50%;bottom:21px;width:244px;height:52px;transform:translateX(-50%);border:1px solid rgba(128,141,196,.13);border-radius:50%;background:radial-gradient(ellipse,rgba(138,141,199,.08),transparent 70%)}
+.cube-scene{position:relative;width:164px;height:164px;perspective:850px;transform-style:preserve-3d}.cube-motion,.cube-impact,.fluent-wire-cube{position:relative;width:100%;height:100%;transform-style:preserve-3d}.fluent-wire-cube{--cube-half:82px;transform:rotateX(-11deg) rotateY(-25deg)}
+/* Six-face sandbox and core reuse the accepted SkillGo homepage/promo geometry. */
+.cube-face{position:absolute;inset:0;backface-visibility:visible;border:1.3px solid rgba(70,105,193,.42);background:linear-gradient(145deg,rgba(255,255,255,.12),rgba(112,142,220,.025));box-shadow:inset 0 0 28px rgba(81,126,220,.025),0 0 14px rgba(93,119,199,.045)}
+.cube-face-front{transform:translateZ(var(--cube-half));border-color:rgba(91,76,218,.53)}.cube-face-back{transform:rotateY(180deg) translateZ(var(--cube-half));border-color:rgba(70,152,221,.25)}.cube-face-right{transform:rotateY(90deg) translateZ(var(--cube-half));border-color:rgba(41,166,200,.48)}.cube-face-left{transform:rotateY(-90deg) translateZ(var(--cube-half));border-color:rgba(114,93,224,.35)}.cube-face-top{transform:rotateX(90deg) translateZ(var(--cube-half));border-color:rgba(69,132,225,.45)}.cube-face-bottom{transform:rotateX(-90deg) translateZ(var(--cube-half));border-color:rgba(89,112,197,.25)}
+.cube-core{position:absolute;left:50%;top:50%;width:110px;height:88px;transform:translate(-50%,-50%) translateZ(1px);display:flex;flex-direction:column;align-items:center;justify-content:center;border:1px solid rgba(255,255,255,.95);border-radius:18px;background:linear-gradient(145deg,rgba(255,255,255,.91),rgba(247,248,255,.62));box-shadow:0 14px 38px rgba(57,69,139,.10),inset 0 1px rgba(255,255,255,.96);backdrop-filter:blur(12px);color:#5a518c}.cube-core strong{font-size:26px;letter-spacing:-.8px;font-weight:650}.cube-core span{font-size:11px;margin-top:7px;color:#9b96b2;letter-spacing:.5px}
+.result{z-index:2;position:relative;width:218px;height:148px;transform:translate(3px,1px);padding:20px 20px 16px;text-align:left;border:1px solid #dddff0;border-radius:17px;background:#fff;box-shadow:0 14px 34px rgba(51,62,110,.045)}.result-back{position:absolute;width:214px;height:139px;border:1px solid #e1e3ef;border-radius:17px;background:#fff;transform:translate(-5px,-7px) rotate(-5deg)}.result-top{display:flex;align-items:center;justify-content:space-between;font-size:14px;color:#8b849f}.result-top svg{width:23px;height:28px;color:#8b7dca}.verified{color:#7b6baa}.result-title{font-size:20px;letter-spacing:-.4px;margin-top:13px;font-weight:580}.result-types{font-size:14px;color:#999db0;margin-top:12px;letter-spacing:.2px}
+.arrows{position:absolute;inset:0;width:1440px;height:650px;pointer-events:none}.connector{fill:none;stroke:#9c96c5;stroke-width:2;stroke-linecap:round;stroke-linejoin:round;opacity:.7}
+.foot{position:absolute;left:64px;right:64px;bottom:37px;padding-top:23px;border-top:1px solid #e2e5ef;display:flex;align-items:center;justify-content:space-between;color:#959bad;font-size:18px}.foot strong{font-weight:520;color:#73708e}.foot .divide{margin:0 12px;color:#c3c4d4}.export .toolbar{display:none}.export .viewport{padding:0}.export .diagram{margin:0}
+@media(prefers-reduced-motion:reduce){button{transition:none}}
+</style>
+</head>
+<body>
+<div class="toolbar"><span>SkillGo · 任务流程演示</span><button type="button" id="play">播放流程</button></div>
+<div class="viewport">
+<main class="diagram" id="diagram" aria-label="SkillGo 从准备 Skill 到任务执行和成果交付的流程">
+  <h1 class="heading">从 Skill，到可交付的成果。</h1>
+  <p class="intro">发布可用的 Skill，让任务在独立沙箱中执行并交付。</p>
+  <span class="wordmark" aria-hidden="true">SkillGo</span>
+  <svg class="arrows" viewBox="0 0 1440 650" aria-hidden="true">
+    <g class="connector" data-order="0"><path d="M335 294H382M375 288l7 6-7 6" /></g>
+    <g class="connector" data-order="1"><path d="M697 294H762M755 288l7 6-7 6" /></g>
+    <g class="connector" data-order="2"><path d="M1024 294H1075M1068 288l7 6-7 6" /></g>
+  </svg>
+  <article class="stage stage-1">
+    <div class="visual"><div class="skill-back"></div><div class="document skill-document"><header><svg viewBox="0 0 28 34" fill="none" aria-hidden="true"><path d="M4 1.8h13l7 7v23.4H4zM17 2v7h7M9 16h10M9 21h10M9 26h7" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round" /></svg><span>SKILL.md</span></header><div class="rules"><i></i><i></i><i></i></div></div></div>
+    <h2>准备并发布 Skill</h2><p>导入技能 · 准备环境 · 审核发布</p>
+  </article>
+  <article class="stage stage-2">
+    <div class="visual"><div class="request"><div class="request-label">自然语言 + 附件</div><div class="request-prompt">根据项目资料，<br />制作一份汇报 PPT。</div><div class="attachment"><svg viewBox="0 0 16 20" fill="none" aria-hidden="true"><path d="M2 1h8l4 4v14H2zM10 1v4h4M5 9h6M5 12h6M5 15h4" stroke="currentColor" stroke-width="1.1" /></svg><span>项目资料.docx</span></div></div></div>
+    <h2>提交你的任务</h2><p>选择 Skill，说明目标与输入</p>
+  </article>
+  <article class="stage stage-3">
+    <div class="visual"><div class="cube-aura"></div><div class="ground"></div><span class="agent-label">Agent 编排</span><div class="cube-scene"><div class="cube-motion"><div class="cube-impact"><div class="fluent-wire-cube"><div class="cube-face cube-face-front"></div><div class="cube-face cube-face-back"></div><div class="cube-face cube-face-right"></div><div class="cube-face cube-face-left"></div><div class="cube-face cube-face-top"></div><div class="cube-face cube-face-bottom"></div><div class="cube-core"><strong>Skill</strong><span>独立工作区</span></div></div></div></div></div></div>
+    <h2>独立沙箱执行</h2><p>运行任务，保留执行与验证记录</p>
+  </article>
+  <article class="stage stage-4">
+    <div class="visual"><div class="result-back"></div><div class="result"><div class="result-top"><svg viewBox="0 0 28 34" fill="none" aria-hidden="true"><path d="M4 1.8h13l7 7v23.4H4zM17 2v7h7M9 16h10M9 21h10M9 26h7" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round" /></svg><span class="verified">已验证</span></div><div class="result-title">可交付的成果</div><div class="result-types">PPT / 文档 / 表格</div></div></div>
+    <h2>验证并交付成果</h2><p>网页下载 · API 取回</p>
+  </article>
+  <div class="foot"><span><strong>同一项 Skill</strong><span class="divide">/</span>一次准备，反复使用</span><span>不同任务，独立工作空间</span></div>
+</main>
+</div>
+<script>
+(()=>{
+  const stages=[...document.querySelectorAll('.stage')];
+  function settle(){document.getAnimations().forEach(a=>a.cancel())}
+  function play(){
+    settle();if(matchMedia('(prefers-reduced-motion: reduce)').matches)return;
+    const start=document.timeline.currentTime;
+    stages.forEach((stage,index)=>{
+      const target=index===2?stage.querySelector('.cube-motion'):stage.querySelector('.visual');
+      const frames=index===2?[{transform:'translateY(16px)'},{transform:'translateY(0px)'}]:[{opacity:0,transform:'translateY(16px)'},{opacity:1,transform:'translateY(0px)'}];
+      const a=target.animate(frames,{duration:650,delay:index*850,easing:'cubic-bezier(.22,.61,.36,1)',fill:'both'});a.startTime=start;
+      for(const label of stage.querySelectorAll('h2,p')){const a=label.animate([{opacity:0,transform:'translateY(8px)'},{opacity:1,transform:'translateY(0px)'}],{duration:550,delay:index*850+100,easing:'ease-out',fill:'both'});a.startTime=start}
+    });
+    document.querySelectorAll('.connector').forEach((line,index)=>{const a=line.animate([{opacity:0},{opacity:.7}],{duration:500,delay:index*850+600,fill:'both'});a.startTime=start});
+    const impact=document.querySelector('.cube-impact').animate([{transform:'scale(1)'},{transform:'scale(1.04)'},{transform:'scale(1)'}],{duration:600,delay:2200,easing:'ease-in-out'});impact.startTime=start;
+  }
+  document.querySelector('#play').addEventListener('click',play);
+  window.skillgoFlow={play,settle,ready:true};
+})();
+</script>
+</body>
+</html>
