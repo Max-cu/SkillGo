@@ -38,10 +38,10 @@ SkillGo 是一个可私有化部署的多用户 Skill 平台。上传现有的 `
 
 以 PPT 制作为例，直观了解 SkillGo 如何将 Skill 转化为可执行、可交付、可供业务调用的能力。视频配有中文配音与中英双语字幕。
 
-https://github.com/user-attachments/assets/ee2e33b2-52b5-4b2e-832d-0780166dfb95
+https://github.com/user-attachments/assets/eb3e6cdf-cda6-434b-a0a9-4cc0d37262f4
 
 <p align="center">
-  <a href="https://github.com/user-attachments/assets/ee2e33b2-52b5-4b2e-832d-0780166dfb95">下载演示视频</a> · 1080p · 60 fps
+  <a href="https://github.com/user-attachments/assets/eb3e6cdf-cda6-434b-a0a9-4cc0d37262f4">下载演示视频</a> · 1080p · 60 fps
 </p>
 
 > **说明：** 视频展示 SkillGo 的产品流程。具体文档、表格、演示稿及图像处理能力取决于所上传的 Skill 和配置的模型。
