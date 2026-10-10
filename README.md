@@ -76,13 +76,9 @@ https://github.com/user-attachments/assets/ee2e33b2-52b5-4b2e-832d-0780166dfb95
 
 ## 使用流程
 
-```text
-导入 Skill → 准备环境与审核发布 → 自然语言 + 附件
-                                      ↓
-                         Agent 编排 → 独立沙箱执行
-                                      ↓
-                         验证真实文件 → 网页 / API 交付
-```
+<p align="center">
+  <img src="docs/assets/skillgo-workflow.png" width="100%" alt="SkillGo 使用流程：准备并发布 Skill，提交任务，Agent 编排独立沙箱执行，验证成果后通过网页或 API 交付" />
+</p>
 
 1. **准备能力**：上传 Skill ZIP，解析说明、执行画像与依赖；需要环境准备的版本先完成构建与探测，再审核发布。
 2. **提出任务**：选择 Skill、描述目标并添加附件。普通对话与 Skill 任务可以出现在同一会话中。
