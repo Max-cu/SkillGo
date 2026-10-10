@@ -225,6 +225,6 @@ curl "$SKILLGO_BASE_URL/api/v1/workflow-endpoints/your-slug/jobs" \
 
 ## 参与项目
 
-欢迎提交问题、改进建议与 Pull Request。若 SkillGo 对你有帮助，也欢迎点一个 Star。
+欢迎提交问题、改进建议与 Pull Request。如果你也认可 SkillGo ，欢迎点一个 Star⭐，这对我们很重要 ^_^
 
 开发约定见 [CONTRIBUTING.md](CONTRIBUTING.md)，安全问题请按 [SECURITY.md](SECURITY.md) 私下报告。SkillGo 使用 [MIT License](LICENSE)。
