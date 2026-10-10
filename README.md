@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="frontend/public/skillgo-logo.png" width="128" alt="SkillGo Logo" />
+  <img src="frontend/public/skillgo-logo.png" width="100" alt="SkillGo Logo" />
 </p>
 
 <h1 align="center">SkillGo</h1>
@@ -34,16 +34,17 @@ SkillGo 是一个可私有化部署的多用户 Skill 平台。上传现有的 `
 
 ## 产品演示
 
-**1 分 41 秒，了解 Skill 如何从任务执行走向成果交付与业务调用。** 视频包含中文配音和字幕，以 PPT 制作为例。
+**第一次了解 SkillGo？建议先观看这段 1 分 41 秒的产品演示。**
+
+以 PPT 制作为例，直观了解 SkillGo 如何将 Skill 转化为可执行、可交付、可供业务调用的能力。视频配有中文配音与字幕。
 
 https://github.com/user-attachments/assets/ee2e33b2-52b5-4b2e-832d-0780166dfb95
 
 <p align="center">
-  <a href="https://github.com/user-attachments/assets/ee2e33b2-52b5-4b2e-832d-0780166dfb95">下载宣传片</a> · 1080p · 60 fps · H.264
+  <a href="https://github.com/user-attachments/assets/ee2e33b2-52b5-4b2e-832d-0780166dfb95">下载演示视频</a> · 1080p · 60 fps
 </p>
 
-演示展示产品流程；具体文档、表格、演示稿或图像能力，由上传的 Skill 与所配置模型决定。
-
+> **说明：** 视频展示 SkillGo 的产品流程。具体文档、表格、演示稿及图像处理能力取决于所上传的 Skill 和配置的模型。
 ## 核心能力
 
 | 沙箱隔离 | 成果交付 | 外部调用 |
