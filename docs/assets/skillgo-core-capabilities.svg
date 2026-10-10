@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="190" viewBox="0 0 1200 190" role="img" aria-labelledby="svg-title svg-desc">
+  <title id="svg-title">SkillGo 核心能力</title>
+  <desc id="svg-desc">沙箱隔离、成果交付与外部调用</desc>
+  <style>
+    .symbol { fill: none; stroke: #6558F5; stroke-width: 2.5; stroke-linecap: round; stroke-linejoin: round; }
+    .heading { font-family: 'Noto Sans CJK SC', 'PingFang SC', 'Microsoft YaHei', sans-serif; font-size: 27px; font-weight: 650; fill: #202331; }
+    .detail { font-family: 'Noto Sans CJK SC', 'PingFang SC', 'Microsoft YaHei', sans-serif; font-size: 18px; font-weight: 400; fill: #667085; }
+    @media (prefers-color-scheme: dark) {
+      .heading { fill: #F0F2F8; }
+      .detail { fill: #ADB5C4; }
+      .symbol { stroke: #8C83FF; }
+    }
+  </style>
+  <!-- Three open, evenly spaced groups. No frames, separators or backgrounds. -->
+  <g class="symbol" transform="translate(200 45)">
+    <path d="M0 -19 L18 -11 V0 C18 14 9 24 0 29 C-9 24 -18 14 -18 0 V-11 Z"/>
+    <path d="M-8 2 L-2 8 L10 -5"/>
+  </g>
+  <text class="heading" x="200" y="111" text-anchor="middle">沙箱隔离</text>
+  <text class="detail" x="200" y="151" text-anchor="middle">独立容器与工作卷，隔离任务执行</text>
+
+  <g class="symbol" transform="translate(600 45)">
+    <path d="M0 -19 L18 -9 V11 L0 21 L-18 11 V-9 Z"/>
+    <path d="M-18 -9 L0 1 L18 -9 M0 1 V21"/>
+    <path d="M-7 3 L-1 9 L9 -2"/>
+  </g>
+  <text class="heading" x="600" y="111" text-anchor="middle">成果交付</text>
+  <text class="detail" x="600" y="151" text-anchor="middle">验证文件与执行证据，交付可靠产物</text>
+
+  <g class="symbol" transform="translate(1000 45)">
+    <path d="M-9 -19 V-6 M9 -19 V-6"/>
+    <path d="M-18 -6 H18 V2 C18 14 10 22 0 22 C-10 22 -18 14 -18 2 Z"/>
+    <path d="M0 22 V32"/>
+  </g>
+  <text class="heading" x="1000" y="111" text-anchor="middle">外部调用</text>
+  <text class="detail" x="1000" y="151" text-anchor="middle">发布 Skill Endpoint，供业务系统调用</text>
+</svg>
