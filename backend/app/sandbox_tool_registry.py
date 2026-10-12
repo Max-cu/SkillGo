@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import PurePosixPath
 from typing import Any
+import json
 
 from .config import settings
 
@@ -36,6 +37,7 @@ TOOL_NAMES = frozenset(
         "read_file",
         "read_files",
         "write_file",
+        "write_json",
         "command",
         "run_commands",
         "run_skill_workflow",
@@ -112,7 +114,16 @@ def validate_agent_action(action: dict[str, Any]) -> str | None:
             return 'reason must contain 1-500 characters'
         return None
     if action_name == "run_verifier":
-        return validate_agent_action({**action, "action": "command"})
+        if 'artifacts' in action:
+            artifacts=action['artifacts']
+            if (not isinstance(artifacts,list) or not 1<=len(artifacts)<=50
+                    or any(not isinstance(path,str) or not path or len(path)>1024 or '\x00' in path for path in artifacts)):
+                return 'run_verifier artifacts must declare 1-50 exact file paths'
+        return validate_agent_action({**{k:v for k,v in action.items() if k!='artifacts'}, "action": "command"})
+    if action_name == 'write_json':
+        normalized=_json_write_action(action)
+        if normalized is None:return 'write_json data must be a finite JSON object'
+        return validate_agent_action(normalized)
     if action_name == "run_fixed_skill":
         return validate_agent_action({**action, "action": "read_skill"})
     if action_name == "inspect_image":
@@ -308,9 +319,19 @@ def validate_agent_action(action: dict[str, Any]) -> str | None:
     return None
 
 
+def _json_write_action(action: dict[str, Any]) -> dict[str, Any] | None:
+    if not isinstance(action.get('data'),dict):return None
+    try:
+        content=json.dumps(action['data'],ensure_ascii=False,indent=2,allow_nan=False)
+        content.encode('utf-8')
+    except (ValueError,TypeError,RecursionError,UnicodeError):return None
+    return {**{k:v for k,v in action.items() if k!='data'},'action':'write_file','content':content}
+
+
 def normalize_agent_action(action: dict[str, Any]) -> dict[str, Any]:
     """Only unambiguous shape repairs; never discard checks or infer evidence."""
     normalized = dict(action)
+    if action.get('action')=='write_json':return _json_write_action(action) or normalized
     if action.get('action') == 'update_plan':
         if isinstance(action.get('success_criteria'), str):
             normalized['success_criteria'] = [action['success_criteria']]

@@ -8,6 +8,7 @@ from uuid import uuid4
 from typing import Any
 
 from .artifact_validation import snapshot_sandbox_artifacts
+from .artifact_collection import receive_declared_artifacts
 from .sandbox_runtime import SandboxRuntimeError
 
 
@@ -96,19 +97,27 @@ async def snapshot_step_files(sandbox, paths: list[str]) -> dict[str, str]:
     return files
 
 
-async def run_verifier(sandbox, action: dict[str, Any], *, requirements: list[str]) -> dict[str, Any]:
+async def run_verifier(sandbox, action: dict[str, Any], *, requirements: list[str], collection: dict | None = None) -> dict[str, Any]:
     verification_id = uuid4().hex
     snapshot_error = None
+    if collection is None and action.get('artifacts'):
+        collection = await receive_declared_artifacts(sandbox, action['artifacts'], cwd=action.get('cwd') or '/workspace')
+        if not collection['ok']:
+            return {**collection, 'verification_id':verification_id, 'artifacts':{}}
     async def snapshot():
         nonlocal snapshot_error
         try:
-            return await snapshot_sandbox_artifacts(sandbox)
+            return await snapshot_sandbox_artifacts(sandbox, paths=collection['artifacts'] if collection else None)
         except SandboxRuntimeError as exc:
             if exc.code not in {'ARTIFACT_CONTENT_INVALID', 'SANDBOX_ARTIFACT_MISSING', 'SANDBOX_ARTIFACT_SIZE', 'SANDBOX_ARTIFACT_INVALID'}:
                 raise
             snapshot_error = str(exc)
             return {}
     before = await snapshot()
+    if not before and snapshot_error is None:
+        return {'ok':False,'verification_id':verification_id,'error_code':'VERIFIER_ARTIFACTS_REQUIRED',
+                'artifacts':{},'message':'No deliverables are registered for verification.',
+                'hint':'Call run_verifier with artifacts containing exact original export paths inside /workspace. The platform collects them before verification; do not copy or regenerate files manually.'}
     verifier_files = {}
     for argument in action['argv']:
         path = PurePosixPath(argument)
@@ -118,7 +127,15 @@ async def run_verifier(sandbox, action: dict[str, Any], *, requirements: list[st
             verifier_files.update(await snapshot_step_files(sandbox, [str(path)]))
     result = await sandbox.command(action['argv'], cwd=action.get('cwd') or '/workspace',
                                    timeout_seconds=action.get('timeout_seconds', 120))
-    after = await snapshot()
+    after_execution = await snapshot()
+    if collection:
+        # Verify originals as well as delivery copies. A verifier that mutates
+        # an export cannot pass by leaving its earlier copied bytes untouched.
+        refreshed = await receive_declared_artifacts(sandbox,list(collection['artifact_sources']),
+                                                    cwd=action.get('cwd') or '/workspace')
+        if not refreshed['ok']:
+            snapshot_error = refreshed['message']
+    after = await snapshot() if collection else after_execution
     checks = []
     error = None
     try:
@@ -139,13 +156,16 @@ async def run_verifier(sandbox, action: dict[str, Any], *, requirements: list[st
     except (ValueError, KeyError, TypeError) as exc:
         error = str(exc)
     error = snapshot_error or error
-    ok = bool(before) and before == after and result.exit_code == 0 and error is None and all(item['passed'] for item in checks)
+    unchanged = before == after_execution == after
+    ok = bool(before) and unchanged and result.exit_code == 0 and error is None and all(item['passed'] for item in checks)
     payload = {'ok': ok, 'verification_id': verification_id, 'artifacts': after,
                'verifier_files': verifier_files,
                'checks': checks, 'exit_code': result.exit_code,
                'argv': action['argv'], 'stdout': result.stdout, 'stderr': result.stderr,
                'error_code': None if ok else 'VERIFIER_FAILED',
-               'message': error or ('Verifier changed output bytes' if before != after else 'Verification passed' if ok else 'Verification failed')}
+               'message': error or ('Verifier changed output bytes or original export bytes' if not unchanged else 'Verification passed' if ok else 'Verification failed')}
+    if collection:
+        payload['artifact_sources'] = collection['artifact_sources']
     report_path = f'/workspace/work/verification/{verification_id}.json'
     await sandbox.write_text(report_path, json.dumps(payload, ensure_ascii=False))
     return {**payload, 'full_result_path': report_path}
