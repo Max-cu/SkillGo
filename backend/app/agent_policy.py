@@ -180,6 +180,15 @@ class AgentExecutionState:
     # Completed command cursor for framework-declared stage workflows. Kept in
     # durable state so a recoverable failure does not replay successful exports.
     workflow_runs: dict[str, dict[str, Any]] = field(default_factory=dict)
+    # Anti-loop counters (durable). Private path cache is mid-run only.
+    duplicate_observation_streak: int = 0
+    verifier_fail_streak: int = 0
+    last_verifier_fail_signature: str = ""
+    verifier_anchor_progress_epoch: int = -1
+    verifier_anchor_mutation_epoch: int = -1
+    _stable_path_cache: dict[str, object] = field(default_factory=dict, repr=False)
+    observation_accesses: dict[str, dict[str, Any]] = field(default_factory=dict)
+    failed_operations: dict[str, dict[str, Any]] = field(default_factory=dict)
 
     def read_skill(self, index: int, contexts: list[dict[str, Any]]) -> dict[str, Any]:
         if index < 1 or index > len(contexts):
@@ -693,6 +702,237 @@ class AgentExecutionState:
             return "Current artifact bytes differ from the files bound to the latest validation; rerun verification."
         return None
 
+    @staticmethod
+    def _observation_path_key(action: dict[str, Any]) -> str | None:
+        """Stable key for read_file/list_files; ignores reason/timeout."""
+        name = str(action.get("action") or "")
+        if name not in OBSERVATION_TOOLS:
+            return None
+        path = str(action.get("path") or "").strip()
+        if not path:
+            return None
+        identity = {"action": name, "path": str(PurePosixPath(path))}
+        if name == "read_file":
+            identity["offset"] = int(action.get("offset") or 0)
+            # Omitting both controls permits automatic reference completion;
+            # it is a different operation from a bounded first-page read.
+            identity["limit"] = int(action.get("limit") or 30_000)
+            identity["auto_complete"] = action.get("offset") is None and action.get("limit") is None
+        return action_fingerprint(identity)
+
+    def _invalidate_stable_path(self, path: str) -> None:
+        path = str(path or "").strip()
+        if not path:
+            return
+        target = PurePosixPath(path)
+        doomed = []
+        for key in self._stable_path_cache:
+            identity = json.loads(key)
+            observed = PurePosixPath(identity["path"])
+            if observed == target or (identity["action"] == "list_files" and target.is_relative_to(observed)):
+                doomed.append(key)
+        for key in doomed:
+            self._stable_path_cache.pop(key, None)
+
+    def _invalidate_stable_prefix(self, prefix: str) -> None:
+        prefix = str(prefix or "").rstrip("/")
+        if not prefix:
+            return
+        doomed = [key for key in self._stable_path_cache
+                  if PurePosixPath(json.loads(key)["path"]).is_relative_to(prefix)]
+        for key in doomed:
+            self._stable_path_cache.pop(key, None)
+
+    def note_stable_observation(self, action: dict[str, Any], payload: object) -> None:
+        """Remember successful observations across write_file to unrelated paths."""
+        if not _payload_succeeded(payload):
+            return
+        key = self._observation_path_key(action)
+        if key is None:
+            return
+        # Bound this transient optimization independently of durable history.
+        if len(json.dumps(payload, ensure_ascii=False).encode("utf-8")) > 1_048_576:
+            return
+        self._stable_path_cache.pop(key, None)
+        self._stable_path_cache[key] = deepcopy(payload)
+        while (len(self._stable_path_cache) > 32 or
+               len(json.dumps(self._stable_path_cache, ensure_ascii=False).encode("utf-8")) > 1_048_576):
+            self._stable_path_cache.pop(next(iter(self._stable_path_cache)))
+
+    def stable_cached_observation(self, action: dict[str, Any], *, allow_eof: bool = True) -> object | None:
+        """Return a prior observation when the same path was not invalidated.
+
+        Survives write_file to other paths (mutation_epoch cache does not).
+        """
+        key = self._observation_path_key(action)
+        if key is None:
+            return None
+        value = self._stable_path_cache.get(key)
+        if value is None and allow_eof and action.get('action') == 'read_file':
+            # An unchanged file cannot acquire more text by increasing an
+            # offset beyond its measured EOF. Reuse that proof across windows.
+            offset = int(action.get('offset') or 0)
+            path = str(PurePosixPath(str(action.get('path') or '')))
+            for old_key, old in reversed(list(self._stable_path_cache.items())):
+                if json.loads(old_key).get('path') != path or not isinstance(old, dict):
+                    continue
+                total = old.get('total_chars')
+                if type(total) is int and offset >= total:
+                    value = {**old, 'content': '', 'offset': offset,
+                             'limit': int(action.get('limit') or 30_000),
+                             'returned_chars': 0, 'eof': True, 'complete': offset == 0,
+                             'truncated': False, 'next_offset': None}
+                    value.pop('auto_completed', None)
+                    break
+        if value is None:
+            return None
+        cached = deepcopy(value)
+        if isinstance(cached, dict):
+            cached["cached"] = True
+            cached["stable_cache"] = True
+            cached["hint"] = (
+                "This exact read window is unchanged. Use its content to decide "
+                "the next operation. Read a different window if truncated; do not "
+                "write files merely to satisfy a progress counter."
+            )
+            if cached.get('eof') is True and cached.get('content') == '':
+                cached['hint'] = f"EOF: this file has {cached.get('total_chars')} characters. Increasing the offset cannot reveal more text; use the existing result or read from 0 if it is unavailable."
+        return cached
+
+    def register_observation_access(self, action: dict[str, Any], *, reused: bool,
+                                    payload: object = None, content_available: bool = True) -> dict[str, Any] | None:
+        """Detect identical, available information, never ordinary pagination.
+
+        Only proven cache hits can be blocked. If context projection removed
+        the earlier full result, supply it again rather than deny recovery.
+        """
+        key = self._observation_path_key(action)
+        if key is None:
+            self.duplicate_observation_streak = 0
+            return None
+        path = str(action.get("path") or "")
+        if not reused or not content_available:
+            self.duplicate_observation_streak = 0
+            self.observation_accesses.pop(key, None)
+            return None
+        if isinstance(payload, dict):
+            identity = {name: payload.get(name) for name in
+                        ("path", "content", "offset", "limit", "total_chars", "eof", "complete")}
+            # Advancing beyond EOF is still the same empty information. Return
+            # an explicit EOF diagnosis instead of rewarding unbounded offsets.
+            if payload.get("eof") is True and payload.get("content") == "":
+                key = action_fingerprint({"action": "read_file", "path": path, "past_eof": True})
+                identity.pop("offset", None)
+                identity.pop("limit", None)
+        else:
+            identity = payload
+        signature = hashlib.sha256(json.dumps(identity, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+        previous = self.observation_accesses.get(key, {})
+        count = (previous.get("count", 0) + 1
+                 if previous.get("signature") == signature and previous.get("mutation_epoch") == self.mutation_epoch else 1)
+        self.observation_accesses.pop(key, None)
+        self.observation_accesses[key] = {"signature": signature, "count": count, "mutation_epoch": self.mutation_epoch}
+        while len(self.observation_accesses) > 32:
+            self.observation_accesses.pop(next(iter(self.observation_accesses)))
+        self.duplicate_observation_streak = count
+        if self.duplicate_observation_streak >= 3:
+            return {
+                "ok": False,
+                "error_code": "OBSERVATION_LOOP_BREAK",
+                "message": (
+                    f"This exact unchanged read result for {path[:240]} is already in the model context. "
+                    "Repeated requests do not provide additional information."
+                ),
+                "path": path[:500],
+                "duplicate_streak": self.duplicate_observation_streak,
+                "hint": (
+                    "Use the retained result. If it reaches EOF, there is no next page. "
+                    "Choose the next task operation, read a genuinely different window, "
+                    "or finish only when the task and its checks are fulfilled."
+                ),
+            }
+        return None
+
+    def observation_loop_nudge(self) -> str | None:
+        if self.duplicate_observation_streak >= 2:
+            return (
+                "The same unchanged read window is already available. Use that result; "
+                "read further only if truncated, or choose the next task operation. "
+                "Do not create artificial mutations to bypass this diagnostic."
+            )
+        return None
+
+    def register_verifier_failure(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Track fail→edit→reverify thrashing; annotate payload with batch-fix guidance."""
+        checks = payload.get("checks")
+        signature_src = json.dumps(checks, ensure_ascii=False, sort_keys=True) if checks is not None else json.dumps(
+            {k: payload.get(k) for k in ("exit_code", "error_code", "message") if k in payload},
+            ensure_ascii=False, sort_keys=True,
+        )
+        signature = hashlib.sha256(signature_src.encode("utf-8")).hexdigest()
+        same_signature = bool(self.last_verifier_fail_signature) and signature == self.last_verifier_fail_signature
+        if self.progress_epoch == self.verifier_anchor_progress_epoch:
+            self.verifier_fail_streak += 1
+        else:
+            self.verifier_fail_streak = 1
+            self.verifier_anchor_progress_epoch = self.progress_epoch
+        # Same failing checks after intervening edits still count as thrashing.
+        if same_signature:
+            self.verifier_fail_streak = max(self.verifier_fail_streak, 2)
+        self.last_verifier_fail_signature = signature
+        self.verifier_anchor_mutation_epoch = self.mutation_epoch
+        annotated = dict(payload)
+        annotated["verifier_fail_streak"] = self.verifier_fail_streak
+        annotated["same_failure_signature"] = same_signature
+        if self.verifier_fail_streak >= 2 or same_signature:
+            annotated["hint"] = (
+                "Verifier thrash guard: the same checks are still failing. "
+                "Apply ALL remaining fixes in ONE cohesive write_file/run_python "
+                "batch, then call run_verifier once. Do not alternate tiny edits "
+                "with re-verify."
+            )
+        return annotated
+
+    def verifier_retry_blocked(self) -> dict[str, Any] | None:
+        """Block another run_verifier when artifacts did not progress after a failure."""
+        if self.verifier_fail_streak < 1:
+            return None
+        # A failed correction may still have changed files. Never deny a
+        # recheck merely because that corrective command exited nonzero.
+        if self.mutation_epoch != self.verifier_anchor_mutation_epoch:
+            return None
+        return {
+            "ok": False,
+            "error_code": "VERIFIER_RETRY_WITHOUT_PROGRESS",
+            "message": (
+                "run_verifier is blocked until the workspace/artifacts change after the "
+                "previous failure."
+            ),
+            "verifier_fail_streak": self.verifier_fail_streak,
+            "hint": (
+                "Batch every remaining verifier fix into one cohesive mutating turn "
+                "(write_file / run_python / run_skill_workflow), then rerun run_verifier."
+            ),
+        }
+
+    def register_verifier_success(self) -> None:
+        self.verifier_fail_streak = 0
+        self.last_verifier_fail_signature = ""
+        self.verifier_anchor_progress_epoch = -1
+        self.verifier_anchor_mutation_epoch = -1
+
+    def failure_recovery_hint(self, action: dict[str, Any]) -> str | None:
+        failure = self.failed_operations.get(action_fingerprint(action), {})
+        if failure.get('repeats', 0) < 2:
+            return None
+        return (
+            f"The same operation returned the same failure {failure['repeats']} times: "
+            f"{failure.get('diagnostic', '')}. Keep the required checks. Inspect the relevant "
+            "inputs/requirements and address the reported causes together before retrying; "
+            "do not regenerate already-correct outputs or blindly rerun a failed export. "
+            "For a transient external error, use its diagnosis to choose a bounded retry."
+        )
+
     def cached_observation(self, action: dict[str, Any]) -> object | None:
         if action.get("action") not in OBSERVATION_TOOLS:
             return None
@@ -718,11 +958,21 @@ class AgentExecutionState:
         succeeded = _payload_succeeded(payload)
         if action.get("action") in OBSERVATION_TOOLS and succeeded:
             self._observation_cache[(self.mutation_epoch, fingerprint)] = deepcopy(payload)
+            self.note_stable_observation(action, payload)
         elif action.get("action") in WORKSPACE_MUTATING_TOOLS and isinstance(payload, dict) and ("exit_code" in payload or succeeded or payload.get("execution_started")):
             self.mutation_epoch += 1
             self.validation = None
             self.verification = None
             self._observation_cache.clear()
+            self.duplicate_observation_streak = 0
+            self.observation_accesses.clear()
+            name = str(action.get("action") or "")
+            if name == "write_file":
+                self._invalidate_stable_path(str(action.get("path") or payload.get("path") or ""))
+            else:
+                # Scripts can change any mutable Skill package directory, not
+                # just work/output. Immutable reference_shelf remains separate.
+                self._stable_path_cache.clear()
             if self.plan:
                 for step in self.plan['steps']:
                     if step['id'] == self.validation_step_id and step['status'] == 'completed':
@@ -746,6 +996,24 @@ class AgentExecutionState:
             )
         )
         self.observations = self.observations[-24:]
+        if action.get('action') in {'command', 'run_python', 'run_verifier'}:
+            if succeeded:
+                self.failed_operations.pop(fingerprint, None)
+            elif isinstance(payload, dict) and ('exit_code' in payload or payload.get('execution_started')):
+                diagnostic = (payload.get('stderr') or payload.get('stdout') or payload.get('message') or '')
+                diagnostic = str(diagnostic)[-1600:]
+                signature = hashlib.sha256(json.dumps({
+                    'exit_code': payload.get('exit_code'), 'error_code': payload.get('error_code'),
+                    'diagnostic': diagnostic}, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+                previous = self.failed_operations.pop(fingerprint, {})
+                self.failed_operations[fingerprint] = {
+                    'tool': action['action'], 'argv': action.get('argv', [])[:6],
+                    'diagnostic': diagnostic[-640:], 'signature': signature,
+                    'repeats': previous.get('repeats', 0) + 1 if previous.get('signature') == signature else 1,
+                    'operation': operation or len(self.observations),
+                }
+                while len(self.failed_operations) > 16:
+                    self.failed_operations.pop(next(iter(self.failed_operations)))
 
     def repeated_count(self, action: dict[str, Any]) -> int:
         return self.action_counts.get(action_fingerprint(action), 0)
@@ -759,6 +1027,7 @@ class AgentExecutionState:
             "validation": {key: value for key, value in self.validation.items() if key != 'checks'} if self.validation else None,
             "loaded_skill_indexes": sorted(self.loaded_skills),
             "workflow_runs": self.workflow_runs,
+            "unresolved_failures": list(self.failed_operations.values())[-3:],
             "completed_skill_indexes": sorted(self.completed_skill_indexes),
             "skill_evidence": self.skill_evidence,
             "requirements": self.requirements,

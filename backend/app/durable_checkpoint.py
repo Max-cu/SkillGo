@@ -54,14 +54,15 @@ def _is_size_limit_error(exc: BaseException) -> bool:
 
 
 def state_to_json(state):
-    result = {f.name: getattr(state, f.name) for f in fields(state) if f.name != '_observation_cache'}
+    result = {f.name: getattr(state, f.name) for f in fields(state) if f.name not in {'_observation_cache', '_stable_path_cache'}}
     for name in ('loaded_skills', 'completed_skill_indexes'):
         result[name] = sorted(result[name])
     return result
 
 
 def state_from_json(data):
-    values = dict(data)
+    known = {f.name for f in fields(AgentExecutionState)}
+    values = {key: value for key, value in dict(data).items() if key in known and key not in {'_observation_cache', '_stable_path_cache'}}
     for name in ('loaded_skills', 'completed_skill_indexes'):
         values[name] = set(values[name])
     values['skill_evidence'] = {int(k): v for k, v in values['skill_evidence'].items()}
