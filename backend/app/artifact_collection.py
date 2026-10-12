@@ -19,11 +19,12 @@ def delivery_only_job(job) -> bool:
 # Executed inside the job sandbox. Directory descriptors and O_NOFOLLOW keep
 # both source reads and destination writes safe against symlink races.
 COPY_ARTIFACTS_PROGRAM = r'''
-import errno, json, os, stat, sys, uuid
+import errno, hashlib, json, os, stat, sys, uuid
 
 items = json.loads(sys.argv[1])
 limit = int(sys.argv[2])
 root_fd = os.open('/workspace', os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+copied, unchanged = [], []
 
 def directory(parts, create=False):
     fd = os.dup(root_fd)
@@ -62,6 +63,7 @@ try:
                 target_fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
                                     0o600, dir_fd=target_dir)
                 size = 0
+                digest = hashlib.sha256()
                 with os.fdopen(target_fd, 'wb') as writer:
                     while True:
                         chunk = reader.read(1024 * 1024)
@@ -71,10 +73,31 @@ try:
                         if size > limit:
                             raise OverflowError('Artifact exceeded the size limit during collection: ' + source)
                         writer.write(chunk)
+                        digest.update(chunk)
                 after = os.fstat(reader.fileno())
                 if size != info.st_size or (after.st_size, after.st_mtime_ns) != (info.st_size, info.st_mtime_ns):
                     raise ValueError('Artifact changed during collection: ' + source)
-                os.replace(temporary, target_parts[-1], src_dir_fd=target_dir, dst_dir_fd=target_dir)
+                same = False
+                try:
+                    existing_fd = os.open(target_parts[-1], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=target_dir)
+                except FileNotFoundError:
+                    pass
+                else:
+                    with os.fdopen(existing_fd, 'rb') as existing:
+                        existing_info = os.fstat(existing.fileno())
+                        if not stat.S_ISREG(existing_info.st_mode):
+                            raise ValueError('Delivery target is not a regular file: ' + target)
+                        if existing_info.st_size == size:
+                            old_digest = hashlib.sha256()
+                            for chunk in iter(lambda: existing.read(1024 * 1024), b''):
+                                old_digest.update(chunk)
+                            same = old_digest.digest() == digest.digest()
+                if same:
+                    os.unlink(temporary, dir_fd=target_dir)
+                    unchanged.append(target)
+                else:
+                    os.replace(temporary, target_parts[-1], src_dir_fd=target_dir, dst_dir_fd=target_dir)
+                    copied.append(target)
                 temporary = None
         finally:
             os.close(source_dir)
@@ -82,7 +105,7 @@ try:
                 if temporary is not None:
                     os.unlink(temporary, dir_fd=target_dir)
                 os.close(target_dir)
-    print(json.dumps({'ok': True}))
+    print(json.dumps({'ok': True, 'copied': copied, 'unchanged': unchanged}))
 except FileNotFoundError as exc:
     print(json.dumps({'ok': False, 'error_code': 'SANDBOX_ARTIFACT_MISSING', 'message': str(exc)}))
 except OverflowError as exc:
@@ -143,7 +166,7 @@ async def collect_declared_artifacts(sandbox, paths: list[str], *, cwd: str = '/
         if result.exit_code != 0 or report.get('ok') is not True:
             raise SandboxRuntimeError(report.get('error_code') or 'SANDBOX_ARTIFACT_COLLECTION_FAILED',
                                       report.get('message') or 'Could not collect declared artifact files')
-    return {'artifacts': list(mapping.values()), 'artifact_sources': mapping}
+    return {'artifacts': list(dict.fromkeys(mapping.values())), 'artifact_sources': mapping}
 
 
 async def receive_declared_artifacts(sandbox, paths: list[str], *, cwd: str = '/workspace') -> dict:

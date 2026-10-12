@@ -189,6 +189,8 @@ class AgentExecutionState:
     _stable_path_cache: dict[str, object] = field(default_factory=dict, repr=False)
     observation_accesses: dict[str, dict[str, Any]] = field(default_factory=dict)
     failed_operations: dict[str, dict[str, Any]] = field(default_factory=dict)
+    managed_artifacts: dict[str, str] = field(default_factory=dict)
+    artifact_sources: dict[str, str] = field(default_factory=dict)
 
     def read_skill(self, index: int, contexts: list[dict[str, Any]]) -> dict[str, Any]:
         if index < 1 or index > len(contexts):
@@ -920,6 +922,23 @@ class AgentExecutionState:
         self.last_verifier_fail_signature = ""
         self.verifier_anchor_progress_epoch = -1
         self.verifier_anchor_mutation_epoch = -1
+
+    def register_artifact_collection(self, snapshot: dict[str,str], sources: dict[str,str]) -> bool:
+        """Track real byte changes from framework collection, not dummy writes."""
+        reference = (self.validation or self.verification or {}).get('artifacts', self.managed_artifacts)
+        changed = any(reference.get(path) != digest for path,digest in snapshot.items())
+        self.managed_artifacts.update(snapshot)
+        self.artifact_sources.update(sources)
+        if changed:
+            self.mutation_epoch += 1
+            self.progress_epoch += 1
+            self.validation = self.verification = None
+            self._observation_cache.clear()
+            self._stable_path_cache.clear()
+            self.observation_accesses.clear()
+            self.duplicate_observation_streak = 0
+            self.register_verifier_success()
+        return changed
 
     def failure_recovery_hint(self, action: dict[str, Any]) -> str | None:
         failure = self.failed_operations.get(action_fingerprint(action), {})

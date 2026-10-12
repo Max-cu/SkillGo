@@ -309,12 +309,13 @@ Mandatory rules:
    {{"action":"list_files","path":"/workspace/...","reason":"..."}}
    {{"action":"read_file","path":"/workspace/...","reason":"..."}}  // omit offset/limit to auto-read immutable references up to 60000 chars; follow next_offset for larger files
    {{"action":"write_file","path":"/workspace/...","content":"...","reason":"..."}}
+   {{"action":"write_json","path":"/workspace/.../plan.json","data":{{"schema":"example","items":[]}},"reason":"Write structured plan"}}
    {{"action":"command","argv":["python3","script.py"],"cwd":"{primary_root}","timeout_seconds":120,"reason":"..."}}
    {{"action":"run_python","code":"complete Python source","args":[],"cwd":"{primary_root}","timeout_seconds":180,"reason":"..."}}
    {{"action":"read_skill","skill_index":1,"reason":"..."}}
    {{"action":"complete_skill","skill_index":1,"evidence":"real paths/findings from tool results","reason":"..."}}
    {{"action":"update_plan","goal":"...","steps":[{{"id":"inspect","title":"...","status":"in_progress","evidence":""}},{{"id":"verify","title":"集中验证最终结果","status":"pending","evidence":""}}],"success_criteria":["..."],"validation_step_id":"verify","reason":"..."}}
-   {{"action":"run_verifier","argv":["python3","/workspace/work/verify.py"],"cwd":"/workspace","timeout_seconds":120,"reason":"..."}}
+   {{"action":"run_verifier","artifacts":["/workspace/skills/.../exports/report.docx"],"argv":["python3","/workspace/work/verify.py"],"cwd":"/workspace","timeout_seconds":120,"reason":"..."}}
    {{"action":"record_validation","verification_id":"ID returned by run_verifier","status":"passed","summary":"...","evidence":"verifier path and observed output","checks":["observed result 1","observed result 2"],"reason":"..."}}
    {{"action":"run_fixed_skill","skill_index":1,"reason":"..."}}
    {{"action":"inspect_image","path":"/workspace/work/page.png","question":"..."}}
@@ -335,7 +336,7 @@ Mandatory rules:
 21. Do not repeat XML, style, or document inspections whose answer is already present in a tool result or saved work file. Once the required artifacts exist and validation passes, call finish immediately.
 22. {plan_rule}
 23. On multi-Skill tasks, load each selected Skill with read_skill only when its phase is reached and call complete_skill with concrete evidence after each Skill phase is fulfilled. Follow explicit skill_ref order and let later Skills consume earlier outputs. For a single Skill, call finish directly when its work is done; the platform marks the Skill completed after accepting the deliverables, without a separate complete_skill call.
-24. Plan step statuses do not gate completion. After generating all final artifacts, use run_verifier to execute one concentrated read-only verification program. Prefer the Skill's own checks, wrapping its results in the required JSON when needed; otherwise derive checks directly from the user request and SKILL.md. Inspect the promised content, presentation, and deliverables and report observed values, not only PASS.
+24. Plan step statuses do not gate completion. After generating all final artifacts, use run_verifier with artifacts naming their exact original workspace paths, including Skill exports. The framework collects them before verifying; do not make manual copies or dummy writes. Execute one concentrated read-only verification program. Prefer the Skill's own checks, wrapping its results in the required JSON when needed; otherwise derive checks directly from the user request and SKILL.md. Inspect the promised content, presentation, and deliverables and report observed values, not only PASS.
 25. A successful run_verifier automatically records validation; do not call record_validation again. The platform binds the verifier operation to SHA-256 hashes of every current file under /workspace/output. If validation fails, make only the smallest targeted correction and rerun it. At most two correction cycles are allowed; after that, fail honestly instead of looping. Any later artifact mutation invalidates the previous validation, and finish must declare every file under /workspace/output.
 26. Reopen or re-inspect generated artifacts when their internal content, formatting, correctness, citations, or other promised properties matter. A file that merely exists or opens proves only existence or basic validity. Use a conditional fallback only when a tool result proves its condition.
 27. finish means the user's requested outcome was actually achieved. A failure explanation, diagnostic JSON, or placeholder file is not a successful substitute unless the user explicitly requested a diagnostic report. When real failed operations prove the core goal cannot be completed, call block with that evidence instead of complete_skill, passed validation, or finish.
@@ -1271,8 +1272,26 @@ async def _run_agent_loop(
                                    'upgraded': bool(payload.get('upgraded'))}
                 _append_tool_result(messages, result, action_name, payload, tool_call_id=tool_call_id)
             elif action_name == "run_verifier":
-                blocked = None if execution_state.delivery_only else execution_state.verifier_retry_blocked()
-                if blocked is not None:
+                collection = None
+                preparation_error = None
+                if action.get('artifacts'):
+                    collection = await receive_declared_artifacts(sandbox,action['artifacts'],cwd=action.get('cwd') or skill_root)
+                    if not collection['ok']:
+                        preparation_error = collection
+                    else:
+                        try:
+                            prepared_snapshot = await snapshot_sandbox_artifacts(sandbox,paths=collection['artifacts'],
+                                                        validate_content=not execution_state.delivery_only)
+                            execution_state.register_artifact_collection(prepared_snapshot,collection['artifact_sources'])
+                        except SandboxRuntimeError as exc:
+                            preparation_error = {'ok':False,'error_code':exc.code,'message':str(exc)[:1000],
+                                'hint':'Correct the declared deliverable before verification; never regenerate correct files solely to satisfy a progress counter.'}
+                blocked = None if execution_state.delivery_only or preparation_error else execution_state.verifier_retry_blocked()
+                if preparation_error is not None:
+                    payload = preparation_error
+                    progress_detail = "交付文件尚未就绪，正在按诊断修正"
+                    _append_tool_result(messages,result,action_name,payload,tool_call_id=tool_call_id)
+                elif blocked is not None:
                     payload = blocked
                     progress_detail = "验证被防抖拦截，需先批量修正"
                     payload = await _append_tool_result_with_offload(
@@ -1297,7 +1316,9 @@ async def _run_agent_loop(
                     progress_detail = "无需额外框架验证，正在准备接收文件"
                     _append_tool_result(messages, result, action_name, payload, tool_call_id=tool_call_id)
                 else:
-                    payload = await run_verifier(sandbox, action, requirements=execution_state.requirements)
+                    payload = await run_verifier(sandbox, action, requirements=execution_state.requirements, collection=collection)
+                    if collection and payload.get('artifacts'):
+                        execution_state.register_artifact_collection(payload['artifacts'],collection['artifact_sources'])
                     execution_state.verification = {**payload, "mutation_epoch": execution_state.mutation_epoch, "operation": tool_operation_count, "tool": "run_verifier"}
                     if payload['ok']:
                         execution_state.register_verifier_success()
@@ -1323,8 +1344,9 @@ async def _run_agent_loop(
                     job.memory.data = {**job.memory.data, 'verification': {key: value for key, value in payload.items() if key not in {'stdout', 'stderr', 'full_result_path'}}}
                     if not payload['ok']:
                         execution_state.validation = None
-                        execution_state.validation_failures += 1
-                        payload = execution_state.register_verifier_failure(payload)
+                        if payload.get('error_code') == 'VERIFIER_FAILED':
+                            execution_state.validation_failures += 1
+                            payload = execution_state.register_verifier_failure(payload)
                         if execution_state.validation_failures > 2 or execution_state.verifier_fail_streak >= 3:
                             raise SandboxRuntimeError(
                                 "SKILL_VALIDATION_FAILED",
@@ -1779,6 +1801,7 @@ async def _run_agent_loop(
                             sandbox, paths=artifacts if execution_state.delivery_only else None,
                             validate_content=not execution_state.delivery_only,
                         )
+                        execution_state.register_artifact_collection(current_snapshot,collection['artifact_sources'])
                         undeclared = sorted(set(current_snapshot) - set(artifacts))
                         blocker = execution_state.finish_blocker(
                             current_artifacts=current_snapshot
@@ -1794,6 +1817,7 @@ async def _run_agent_loop(
                                 "error_code": "AGENT_PLAN_INCOMPLETE",
                                 "message": blocker,
                                 "artifact_sha256": current_snapshot,
+                                "artifact_sources": collection['artifact_sources'],
                                 "hint": (
                                     "Fulfill the Skill instructions and rerun one verifier against the exact "
                                     "current output bytes before finish."

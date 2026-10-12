@@ -3,6 +3,13 @@ from copy import deepcopy
 
 def extend_tools(tools: list[dict]) -> None:
     by_name = {item['function']['name']: item['function'] for item in tools}
+    structured=deepcopy(by_name['write_file'])
+    structured['name']='write_json'
+    structured['description']='Write a structured JSON object to a workspace file. Prefer this for schemas, page plans and configurations: pass data directly, without JSON-inside-a-string escaping. Uses the same plan, path, size and mutation guards as write_file.'
+    structured['parameters']['properties'].pop('content')
+    structured['parameters']['properties']['data']={'type':'object','additionalProperties':True}
+    structured['parameters']['required']=['data' if key=='content' else key for key in structured['parameters']['required']]
+    tools.append({'type':'function','function':structured})
     for name, single, field, description in (
         ('read_files', 'read_file', 'files',
          'Read 1-8 known text files in one call. Prefer this for related Skill references. '
@@ -61,9 +68,13 @@ def extend_tools(tools: list[dict]) -> None:
     validation['properties']['checks']['maxItems'] = 200
     verifier = deepcopy(by_name['command'])
     verifier['name'] = 'run_verifier'
+    verifier['parameters']['properties']['artifacts'] = {
+        'type':'array','minItems':1,'maxItems':50,'items':{'type':'string','maxLength':1024},
+        'description':'Exact deliverable paths inside /workspace, including Skill exports. The platform collects these before verification and returns canonical delivery paths.'}
     verifier['description'] = ('Run the final read-only verifier. stdout must be exactly JSON with checks: '
         '[{requirement_id:"r1",passed:true,observed:"actual value"}]. Cover every success_criteria as r1, r2, etc. '
         'The platform checks exit code and unchanged artifacts, automatically records successful validation, and returns verification_id and validation_recorded. Do not call record_validation after success. '
+        'Include artifacts with the original export paths; the platform collects them before running the verifier. Original sources and collected bytes must remain unchanged. Finish with those same declared paths; do not make manual delivery copies. '
         'Reuse a suitable existing Skill verifier. For short checks, pass python3 -c and the code directly in argv (each argument must fit 4096 characters); use write_file only for a longer program.')
     tools.append({'type': 'function', 'function': verifier})
     fixed = deepcopy(by_name['read_skill'])
