@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import json
+import hashlib
 from typing import Any
+from .skill_phase_contracts import reference_payloads
 
 
 def estimate_tokens(value: object) -> int:
@@ -11,10 +13,62 @@ def estimate_tokens(value: object) -> int:
     return len(json.dumps(value, ensure_ascii=False).encode("utf-8")) // 2 + 1
 
 
+def _deduplicate_reference_shelf(shelf, retained_messages):
+    """Remove only an identical full reference copy already in native history.
+
+    Original history and checkpoint data are never edited. If history was
+    dropped, changed, partial, mutable, or legacy/unrecognized, keep the full
+    shelf entry. This does not summarize instructions or trim extra exchanges.
+    """
+    references = {}
+    for message in retained_messages:
+        if message.get('role') != 'tool' or not isinstance(message.get('content'), str):
+            continue
+        try:
+            result = json.loads(message['content'])
+        except (ValueError, TypeError):
+            continue
+        if not isinstance(result, dict):
+            continue
+        payloads = reference_payloads(result)
+        for payload in payloads:
+            if (not isinstance(payload, dict) or payload.get('reference') is not True
+                    or not (payload.get('complete') is True or payload.get('retained') is True)
+                    or not isinstance(payload.get('path'), str) or not isinstance(payload.get('content'), str)):
+                continue
+            text = payload['content']
+            try:
+                digest = hashlib.sha256(text.encode('utf-8')).hexdigest()
+            except UnicodeEncodeError:
+                continue
+            if payload.get('sha256') not in (None, digest):
+                continue
+            references[(payload['path'], text, digest)] = message.get('tool_call_id')
+    view = []
+    removed = 0
+    removed_chars = 0
+    for entry in shelf:
+        text = entry.get('content')
+        key = (entry.get('path'), text, entry.get('sha256'))
+        if (isinstance(text, str) and isinstance(entry.get('path'), str)
+                and isinstance(entry.get('sha256'), str) and key in references):
+            metadata = {k: v for k, v in entry.items() if k != 'content'}
+            metadata.update(content_in_retained_tool_history=True,
+                            history_tool_call_id=references[key])
+            if estimate_tokens(metadata) < estimate_tokens(entry):
+                view.append(metadata)
+                removed += 1
+                removed_chars += len(text)
+                continue
+        view.append(entry)
+    return view, removed, removed_chars
+
+
 def project_context(messages: list[dict[str, Any]], *, checkpoint: str,
                     skill_contexts: list[dict[str, Any]], loaded: set[int],
                     completed: set[int], max_tokens: int,
                     tool_tokens: int = 0, initial_exchange_reserve: int = 1024,
+                    deduplicate_references: bool = True,
                     diagnostics: dict[str, Any] | None = None) -> list[dict[str, Any]]:
     pinned = messages[:2]
     # Single-Skill instructions already live in the pinned system message.
@@ -106,12 +160,19 @@ def project_context(messages: list[dict[str, Any]], *, checkpoint: str,
     # The mutable state message goes LAST: history is append-only between
     # turns, so [pinned + history] stays a stable token prefix and providers
     # with prefix caching skip re-prefilling the whole exchange log each turn.
-    projected = [*pinned, *(message for exchange in selected for message in exchange), memory]
+    history = [*pinned, *(message for exchange in selected for message in exchange)]
+    shelf_view, duplicate_count, duplicate_chars = (
+        _deduplicate_reference_shelf(shelf, history) if deduplicate_references else (shelf, 0, 0)
+    )
+    memory = memory_message(recent, shelf_view)
+    projected = [*history, memory]
     if diagnostics is not None:
         diagnostics.update({
             'state_estimated_tokens': estimate_tokens([memory]),
             'request_estimated_tokens': estimate_tokens(projected) + tool_tokens,
             'dropped_exchange_count': len(groups) - len(selected),
             'retained_observation_count': len(recent),
+            'reference_duplicate_copies_removed': duplicate_count,
+            'reference_duplicate_chars_removed': duplicate_chars,
         })
     return projected

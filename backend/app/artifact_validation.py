@@ -181,6 +181,7 @@ def validate_artifact_content(filename: str, data: bytes) -> None:
 async def snapshot_sandbox_artifacts(
     sandbox: "DockerSandbox",
     paths: list[str] | None = None,
+    *, validate_content: bool = True,
 ) -> dict[str, str]:
     """Return a verified path-to-SHA256 snapshot of current output artifacts.
 
@@ -204,7 +205,8 @@ async def snapshot_sandbox_artifacts(
     snapshot: dict[str, str] = {}
     for path in normalized:
         data = sandbox.download_file(path)
-        validate_artifact_content(PurePosixPath(path).name, data)
+        if validate_content:
+            validate_artifact_content(PurePosixPath(path).name, data)
         snapshot[path] = hashlib.sha256(data).hexdigest()
     return snapshot
 

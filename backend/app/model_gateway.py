@@ -27,6 +27,50 @@ class ModelGatewayError(RuntimeError):
         self.details = details
 
 
+def _model_http_error(exc: httpx.HTTPStatusError, connection: ModelConnection) -> ModelGatewayError:
+    """Keep bounded provider diagnostics without persisting headers or bodies."""
+    response = exc.response
+    secrets = [connection.api_key, exc.request.headers.get("Authorization")]
+
+    def clean(value: Any, limit: int) -> str | None:
+        if not isinstance(value, (str, int)) or isinstance(value, bool):
+            return None
+        rendered = str(value)
+        for secret in secrets:
+            if secret:
+                rendered = rendered.replace(secret, "[redacted]")
+        rendered = re.sub(r"(?i)\bBearer\s+[^\s\"',;]+", "Bearer [redacted]", rendered)
+        rendered = re.sub(r"(?i)\b(?:api[_-]?key|authorization|access[_-]?token|password|secret)\b[\"']?\s*[:=]\s*[\"']?[^\s,;\"'}]+", "[redacted]", rendered)
+        rendered = re.sub(r"\bsk-[A-Za-z0-9_-]+", "[redacted]", rendered)
+        rendered = re.sub(r"https?://[^\s\"'<>]+", "[url]", rendered)
+        return " ".join(rendered.split())[:limit]
+
+    details: dict[str, Any] = {"http_status": response.status_code}
+    if len(response.content) <= 16384:
+        try:
+            payload = response.json()
+        except (ValueError, UnicodeError):
+            payload = None
+        if isinstance(payload, dict):
+            error = payload.get("error", payload)
+            if isinstance(error, dict):
+                provider = {key: text for key in ("code", "type", "param", "message")
+                            if (text := clean(error.get(key), 512 if key == "message" else 128))}
+                if provider:
+                    details["provider_error"] = provider
+    for name in ("x-request-id", "request-id"):
+        request_id = clean(response.headers.get(name), 128)
+        if request_id and re.fullmatch(r"[A-Za-z0-9_.:-]{1,128}", request_id):
+            details["request_id"] = request_id
+            break
+    message = f"Private model returned HTTP {response.status_code}"
+    provider = details.get("provider_error", {})
+    reason = provider.get("message") or provider.get("code")
+    if reason:
+        message += ": " + reason[:256]
+    return ModelGatewayError("MODEL_HTTP_ERROR", message, details)
+
+
 def _transport_error(exc: httpx.HTTPError, timeout_seconds: float) -> ModelGatewayError:
     # Do not expose exception text: it can contain URLs or credentials.
     diagnostics = getattr(exc, "diagnostics", None)
@@ -337,13 +381,12 @@ SANDBOX_AGENT_TOOLS: list[dict[str, Any]] = [
             "description": (
                 "Read a UTF-8 text file. Never use this for DOCX, XLSX, PDF, images, "
                 "archives, or a directory; use command with an approved Skill parser instead. "
-                "The full requested window is always returned (never shortened to an excerpt): "
-                "for large files page once with increasing offset. "
-                "Skill package references/scripts and /workspace/input files are immutable: "
-                "read each ONCE from offset 0 (omit offset/limit); once the result carries "
-                "\"reference\":true its complete text is pinned for the whole task and later "
-                "reads are served from that pinned copy, so never re-read it. Do NOT copy files "
-                "into /workspace/work or split them into chunks to work around truncation."
+                "Returns content, total_chars, eof, complete, truncated and next_offset. "
+                "Read required references through eof=true; use next_offset when truncated=true. "
+                "Omit offset/limit to load an immutable reference in full up to 60000 characters. "
+                "Larger references require pagination. Only retained=true means the complete text "
+                "was pinned for cached rereads; reference=true alone does not imply retention. "
+                "Do not copy or split a file to bypass the read window."
             ),
             "parameters": {
                 "type": "object",
@@ -354,7 +397,7 @@ SANDBOX_AGENT_TOOLS: list[dict[str, Any]] = [
                         "type": "integer",
                         "minimum": 1,
                         "maximum": 30000,
-                        "description": "Maximum characters to return; default 30000. Omit for the single first read of an immutable reference.",
+                        "description": "Requested window size; default 30000. Omit offset/limit to auto-complete immutable references up to 60000 characters.",
                     },
                     "reason": {"type": "string", "description": "Short progress description."},
                 },
@@ -1024,10 +1067,7 @@ class OpenAICompatibleGateway:
             try:
                 response = await post_json(self.connection, self._chat_completions_url(), headers=headers, body=body)
             except httpx.HTTPStatusError as exc:
-                raise ModelGatewayError(
-                    "MODEL_HTTP_ERROR",
-                    f"Private model returned HTTP {exc.response.status_code}",
-                ) from exc
+                raise _model_http_error(exc, self.connection) from exc
             except httpx.HTTPError as exc:
                 raise _transport_error(exc, self.connection.timeout_seconds) from exc
 
@@ -1316,10 +1356,7 @@ Never invent an id and never return prose or Markdown."""
                         "MODEL_TOOL_CALL_UNSUPPORTED",
                         f"Configured model endpoint rejected native tools with HTTP {exc.response.status_code}",
                     ) from exc
-                raise ModelGatewayError(
-                    "MODEL_HTTP_ERROR",
-                    f"Private model returned HTTP {exc.response.status_code}",
-                ) from exc
+                raise _model_http_error(exc, self.connection) from exc
             except httpx.HTTPError as exc:
                 raise _transport_error(exc, self.connection.timeout_seconds) from exc
 
@@ -1337,6 +1374,8 @@ Never invent an id and never return prose or Markdown."""
                         {
                             "role": "user",
                             "content": (
+                                "Native function arguments must be one complete JSON object: escape "
+                                "quotes, include no trailing text, and preserve the full outer object. "
                                 "Call one or more provided functions now. Do not answer in prose. "
                                 "Batch independent reads when useful, preserve dependency order, and call "
                                 "finish by itself only after all work is complete; call block by itself when "
@@ -1495,7 +1534,10 @@ def _parse_agent_tool_response(
             raise ValueError(f"unknown tool call: {name}")
         if not isinstance(arguments, str):
             raise TypeError("tool call arguments must be JSON text")
-        parsed_arguments = _parse_json_object(arguments)
+        # Native arguments are a wire-format object, not a prose answer. Never
+        # salvage a nested object or accept trailing tokens: the original string
+        # is retained in history and sent back to the provider on the next turn.
+        parsed_arguments = _parse_tool_arguments(arguments)
         parsed_calls.append(
             AgentToolCall(
                 id=tool_call_id,
@@ -1520,6 +1562,24 @@ def _parse_agent_tool_response(
             raise TypeError("reasoning_content must be text or null")
         assistant_message["reasoning_content"] = reasoning_content
     return parsed_calls, assistant_message
+
+
+def _parse_tool_arguments(arguments: str) -> dict[str, Any]:
+    def object_pairs(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError("native tool arguments contain duplicate object keys")
+            result[key] = value
+        return result
+
+    def invalid_constant(value):
+        raise ValueError("native tool arguments contain a non-JSON numeric constant")
+
+    parsed = json.loads(arguments, object_pairs_hook=object_pairs, parse_constant=invalid_constant)
+    if not isinstance(parsed, dict):
+        raise ValueError("native tool arguments must be a JSON object")
+    return parsed
 
 
 def _merge_usage(total: dict[str, Any], usage: dict[str, Any]) -> None:

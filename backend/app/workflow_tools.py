@@ -24,7 +24,11 @@ MAX_DIRECTORY_MEMBERS = 500
 def _validated_workspace_path(path: str) -> str:
     parsed = PurePosixPath(path)
     if not parsed.is_absolute() or not parsed.is_relative_to('/workspace') or '..' in parsed.parts:
-        raise SandboxRuntimeError('PLAN_PATH_INVALID', 'Step files must be absolute paths below /workspace')
+        raise SandboxRuntimeError(
+            'PLAN_PATH_INVALID',
+            f'Plan reference {path[:300]!r} must be an exact absolute path below /workspace. '
+            'Resolve Skill-relative paths against the selected Skill Root, then resubmit the plan.',
+        )
     return str(parsed)
 
 

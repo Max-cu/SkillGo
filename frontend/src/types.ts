@@ -183,7 +183,7 @@ export interface WorkflowJob {
   trigger: string;
   instruction: string;
   pending_question?: { id: string; question: string } | null;
-  execution_plan?: { goal: string; steps: Array<{ id: string; title: string; status: string; evidence: string; depends_on: string[]; input_refs: string[]; output_refs: string[] }> } | null;
+  execution_plan?: { tracking_mode?: "outline"; goal: string; steps: Array<{ id: string; title: string; status: string; evidence: string; depends_on: string[]; input_refs: string[]; output_refs: string[] }> } | null;
   network_enabled: boolean;
   network_enabled_by: Array<{
     skill_id: string;

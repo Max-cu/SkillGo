@@ -393,12 +393,13 @@ def test_agent_loop_executes_platform_verifier_before_finish(client, user_header
         result = asyncio.run(_run_agent_loop(db, job, MemorySandbox(), skill_contexts=contexts, gateway=ScriptedGateway(), job_cancelled=lambda: False))
         assert result[1] == ['/workspace/output/result.txt']
         assert result[2] == 6
-        assert job.execution_plan['steps'][0]['status'] == 'completed'
+        assert job.execution_plan['tracking_mode'] == 'outline'
+        assert all(step['status'] == 'pending' for step in job.execution_plan['steps'])
 
 
 @pytest.mark.parametrize("legacy_registration", [False, True])
 @pytest.mark.parametrize("tamper_before_finish", [False, True])
-def test_agent_loop_syncs_verification_plan_and_finishes_without_replan(client, user_headers, fake_model_gateway, legacy_registration, tamper_before_finish):
+def test_agent_loop_records_verification_and_finishes_without_status_updates(client, user_headers, fake_model_gateway, legacy_registration, tamper_before_finish):
     from app.database import SessionLocal
     from app.models import WorkflowJob
     from app.sandbox_agent_loop import _run_agent_loop
@@ -417,7 +418,7 @@ def test_agent_loop_syncs_verification_plan_and_finishes_without_replan(client, 
             if self.turn == 3:
                 proof = next(json.loads(item['content'])['payload'] for item in reversed(messages) if isinstance(item.get('content'), str) and item['content'].startswith('{"tool_result": "run_verifier"'))
                 assert proof['validation_recorded'] is True
-                assert proof['validation_step_completed'] is True
+                assert proof['validation_step_completed'] is False
             step = self.turn if legacy_registration or self.turn < 3 else self.turn + 1
             if step == 6 and tamper_before_finish:
                 rejected = next(json.loads(item['content'])['payload'] for item in reversed(messages) if isinstance(item.get('content'), str) and item['content'].startswith('{"tool_result": "finish"'))
@@ -460,13 +461,12 @@ def test_agent_loop_syncs_verification_plan_and_finishes_without_replan(client, 
         assert result[1] == ['/workspace/output/result.txt']
         assert result[2] == (5 if legacy_registration else 4)
         assert sandbox.downloads == (4 if legacy_registration else 3)
-        assert job.execution_plan['steps'][0]['status'] == 'completed'
+        assert job.execution_plan['tracking_mode'] == 'outline'
+        assert all(step['status'] == 'pending' for step in job.execution_plan['steps'])
+        assert json.loads(sandbox.files['/workspace/work/skillgo-plan.json'])['steps'][-1]['status'] == 'pending'
 
-        assert job.execution_plan['steps'][-1]['status'] == 'completed'
-        assert json.loads(sandbox.files['/workspace/work/skillgo-plan.json'])['steps'][-1]['status'] == 'completed'
 
-
-def test_agent_loop_auto_activates_unique_ready_step_without_rejecting_work(client, user_headers, fake_model_gateway):
+def test_agent_loop_executes_outline_without_activating_steps(client, user_headers, fake_model_gateway):
     from app.database import SessionLocal
     from app.models import WorkflowJob
     from app.sandbox_agent_loop import _run_agent_loop
@@ -491,8 +491,7 @@ def test_agent_loop_auto_activates_unique_ready_step_without_rejecting_work(clie
             elif self.turn == 2:
                 action = {'action': 'command', 'argv': ['python3', 'build.py']}
             elif self.turn == 3:
-                # The mutating call must have run (no SANDBOX_ACTION_INVALID)
-                # and make must now show in_progress in the state memory.
+                # The mutating call must run without requiring a status update.
                 payloads = [json.loads(item['content'])['payload'] for item in messages
                             if isinstance(item.get('content'), str) and '"tool_result"' in item['content']]
                 assert not any(p.get('error_code') == 'SANDBOX_ACTION_INVALID' for p in payloads)
@@ -525,10 +524,10 @@ def test_agent_loop_auto_activates_unique_ready_step_without_rejecting_work(clie
         assert result[2] == 7
         # The gated command actually executed instead of being rejected.
         assert ['python3', 'build.py'] in sandbox.calls
-        # A neutral status event (not a red failed tool event) recorded it.
-        assert any(event.title == '自动激活计划步骤' for event in job.events)
+        assert not any(event.title == '自动激活计划步骤' for event in job.events)
         assert not any(event.event_type == 'tool' and event.status == 'failed' for event in job.events)
-        assert job.execution_plan['steps'][0]['status'] == 'completed'
+        assert job.execution_plan['tracking_mode'] == 'outline'
+        assert all(step['status'] == 'pending' for step in job.execution_plan['steps'])
 
 
 def test_agent_loop_allows_pre_plan_binary_inspection_but_blocks_writes(client, user_headers, fake_model_gateway):
@@ -560,8 +559,8 @@ def test_agent_loop_allows_pre_plan_binary_inspection_but_blocks_writes(client, 
             elif self.turn == 3:
                 payloads = [json.loads(item['content'])['payload'] for item in messages
                             if isinstance(item.get('content'), str) and '"tool_result"' in item['content']]
-                blocked = next(p for p in payloads if p.get('error_code') == 'SANDBOX_ACTION_INVALID')
-                assert 'plan' in blocked['message']
+                blocked = next(p for p in payloads if p.get('error_code') == 'PLAN_REQUIRED')
+                assert 'outline' in blocked['message']
                 steps = [{'id': 'make', 'title': 'Make', 'status': 'in_progress', 'evidence': '', 'output_refs': ['/workspace/output/result.txt']}, {'id': 'verify', 'title': 'Verify', 'status': 'pending', 'evidence': '', 'depends_on': ['make']}]
                 action = {**base, 'steps': steps}
             elif self.turn == 4:

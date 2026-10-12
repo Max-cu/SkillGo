@@ -3,9 +3,56 @@ from copy import deepcopy
 
 def extend_tools(tools: list[dict]) -> None:
     by_name = {item['function']['name']: item['function'] for item in tools}
+    for name, single, field, description in (
+        ('read_files', 'read_file', 'files',
+         'Read 1-8 known text files in one call. Prefer this for related Skill references. '
+         'Each file retains its completeness metadata. Call this tool alone in the turn.'),
+        ('run_commands', 'command', 'commands',
+         'Run 1-8 already-decided commands in order after a valid plan exists. '
+         'Stops on the first failure and returns every executed result plus skipped indexes. '
+         'Use only when later argv do not depend on unseen results. Skill checks remain required. '
+         'Call this tool alone; never rerun successful commands blindly after a failure.'),
+    ):
+        item = deepcopy(by_name[single]['parameters'])
+        item['required'] = [key for key in item.get('required', []) if key != 'reason']
+        tools.append({'type': 'function', 'function': {
+            'name': name, 'description': description,
+            'parameters': {'type': 'object', 'properties': {
+                field: {'type': 'array', 'minItems': 1, 'maxItems': 8, 'items': item},
+                'reason': {'type': 'string', 'description': 'Short description of this batch.'},
+            }, 'required': [field, 'reason'], 'additionalProperties': False},
+        }})
+    by_name['finish']['description'] = (
+        'Finish after fulfilling the task and the applicable platform acceptance policy. '
+        'Declare exact existing regular files inside /workspace, including Skill exports directories. '
+        'The platform safely collects declared files into its delivery area; no manual output-directory copy is required.'
+    )
+    tools.append({'type':'function','function':{
+        'name':'run_skill_workflow',
+        'description': ('Run an available immutable workflow declared in the approved Skill stage catalog. '
+            'After creating its required inputs, prefer this over deciding each known build/export script again. '
+            'The framework loads complete stage references, runs all declared commands/checks in order, '
+            'and stops on the first failure. Successful commands are not replayed on a retry. '
+            'Set restart=true only after upstream inputs changed and the whole workflow really must rerun. '
+            'After a failure, inspect diagnostics and perform recovery before explicitly setting retry_failed=true. '
+            'Call alone; inspect failure diagnostics before retrying, especially exports that may already exist.'),
+        'parameters': {'type':'object','properties': {
+            'skill_index':{'type':'integer','minimum':1},
+            'workflow_id':{'type':'string','description':'Exact ID from the Skill stage catalog, e.g. steps-3-5'},
+            'restart':{'type':'boolean','description':'Explicitly restart after upstream changes; omitted defaults to false'},
+            'retry_failed':{'type':'boolean','description':'Explicitly retry the failed command after diagnosing/correcting its cause; never blindly retry an export'},
+            'reason':{'type':'string'}},'required':['skill_index','workflow_id','reason'],'additionalProperties':False}}})
+    by_name['update_plan']['description'] = ('Create the initial execution outline with 2-8 steps and success criteria. '
+        'Only revise it when the workflow or requirements change. Do not call this tool to tick steps or update statuses; '
+        'new tasks do not track plan completion statuses.')
     plan = by_name['update_plan']['parameters']['properties']['steps']['items']
     for key in ('depends_on', 'input_refs', 'output_refs'):
         plan['properties'][key] = {'type': 'array', 'items': {'type': 'string'}, 'maxItems': 32}
+        if key in ('input_refs', 'output_refs'):
+            plan['properties'][key]['items']['description'] = (
+                'Exact absolute path under /workspace. Resolve Skill-relative examples '
+                'against that Skill Root. Use a produced directory for a file batch, not a glob.'
+            )
         plan['required'].append(key)
     plan['properties']['skill_index'] = {'type': 'integer', 'minimum': 1}
     validation = by_name['record_validation']['parameters']

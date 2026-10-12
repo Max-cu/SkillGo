@@ -34,8 +34,11 @@ TOOL_NAMES = frozenset(
         "record_validation",
         "list_files",
         "read_file",
+        "read_files",
         "write_file",
         "command",
+        "run_commands",
+        "run_skill_workflow",
         "run_python",
         "block",
         "finish",
@@ -64,6 +67,33 @@ def validate_agent_action(action: dict[str, Any]) -> str | None:
         return f"Unknown sandbox tool: {action_name}"
     if "reason" in action and not isinstance(action.get("reason"), str):
         return "reason must be text"
+    if action_name == 'run_skill_workflow':
+        if (not isinstance(action.get('skill_index'), int) or isinstance(action.get('skill_index'), bool)
+                or action['skill_index'] < 1):
+            return 'run_skill_workflow skill_index must be a positive integer'
+        if not isinstance(action.get('workflow_id'), str) or not 1 <= len(action['workflow_id']) <= 100:
+            return 'run_skill_workflow requires an exact catalog workflow_id'
+        for flag in ('restart','retry_failed'):
+            if flag in action and not isinstance(action[flag], bool):
+                return f'run_skill_workflow {flag} must be boolean'
+        if set(action)-{'action','skill_index','workflow_id','restart','retry_failed','reason'}:
+            return 'run_skill_workflow has invalid fields; commands come only from the approved Skill'
+        return None
+    if action_name in {'read_files', 'run_commands'}:
+        field = 'files' if action_name == 'read_files' else 'commands'
+        single = 'read_file' if action_name == 'read_files' else 'command'
+        allowed = ({'path', 'offset', 'limit', 'reason'} if single == 'read_file'
+                   else {'argv', 'cwd', 'timeout_seconds', 'reason'})
+        items = action.get(field)
+        if not isinstance(items, list) or not 1 <= len(items) <= 8:
+            return f'{action_name} {field} must contain 1-8 items'
+        for index, item in enumerate(items, 1):
+            if not isinstance(item, dict) or set(item) - allowed:
+                return f'{action_name} item {index} has invalid fields'
+            error = validate_agent_action({**item, 'action': single})
+            if error:
+                return f'{action_name} item {index}: {error}'
+        return None
     if action_name == 'request_python_dependencies':
         from .python_dependencies import normalize_requirements, normalize_imports
         try:

@@ -25,6 +25,7 @@ from .artifact_validation import (
     validate_artifact_content as _validate_artifact_content,
 )
 from .config import settings
+from .artifact_collection import delivery_only_job
 from .durable_checkpoint import load_bundle, restore_bundle
 from .database import SessionLocal, initialize_schema
 from .deterministic_runtime import execute_fixed_skill
@@ -757,7 +758,7 @@ async def execute_sandbox_job(
                         job,
                         "artifact",
                         f"已生成 {artifact.filename}",
-                        f"{artifact.size_bytes} 字节 · 等待完整性校验",
+                        f"{artifact.size_bytes} 字节 · 文件已接收" if delivery_only_job(job) else f"{artifact.size_bytes} 字节 · 等待完整性校验",
                         status="succeeded",
                         data={"artifact_id": artifact.id, "filename": artifact.filename},
                     )
@@ -772,7 +773,7 @@ async def execute_sandbox_job(
                 )
 
             job.status = JobStatus.VERIFYING
-            set_step(db, job, "verify-artifacts", JobStepStatus.RUNNING, "正在校验产物哈希与完整性")
+            set_step(db, job, "verify-artifacts", JobStepStatus.RUNNING, "正在确认交付文件已保存" if delivery_only_job(job) else "正在校验产物哈希与完整性")
             db.commit()
             _assert_job_lease(db, lease, lease_lost)
             for artifact in persisted:
@@ -781,10 +782,11 @@ async def execute_sandbox_job(
                     raise SandboxRuntimeError(
                         "ARTIFACT_VERIFICATION_FAILED", f"Artifact verification failed: {artifact.filename}"
                     )
-                _validate_artifact_content(artifact.filename, stored)
+                if not delivery_only_job(job):
+                    _validate_artifact_content(artifact.filename, stored)
                 artifact.verified = True
             _assert_job_lease(db, lease, lease_lost, lock=True)
-            set_step(db, job, "verify-artifacts", JobStepStatus.SUCCEEDED, "所有产物已通过完整性校验")
+            set_step(db, job, "verify-artifacts", JobStepStatus.SUCCEEDED, "交付文件已接收并保存" if delivery_only_job(job) else "所有产物已通过完整性校验")
             job.status = JobStatus.SUCCEEDED
             job.error_code = None
             job.error_message = None
