@@ -5,7 +5,7 @@ SkillGo 对外提供两类 Endpoint，由所发布 Skill 版本的执行模式�
 | Endpoint 类型 | 调用方式 | 适用场景 |
 | --- | --- | --- |
 | `instruction_only` | 同步 JSON：`POST /api/v1/invoke/{slug}` | 纯指令处理，秒级~分钟级返回结构化结果 |
-| `sandbox_required` | 异步任务：`POST /api/v1/workflow-endpoints/{slug}/jobs` | 需要文件与独立 Linux gVisor 沙箱的工作流 |
+| `sandbox_required` | 异步任务：`POST /api/v1/workflow-endpoints/{slug}/jobs` | 接收文本或文件，在独立 Linux gVisor 沙箱中执行的工作流 |
 
 两种调用都使用 Endpoint 密钥：
 
@@ -62,8 +62,10 @@ Idempotency-Key: your-request-id
 
 | 字段 | 必填 | 说明 |
 | --- | --- | --- |
-| `file` | 是 | Skill 的输入文件，单文件；大小上限由 `SKILLGO_WORKSPACE_MAX_FILE_BYTES` 控制，默认 **10 MB** |
-| `instruction` | 否 | 自然语言补充要求，最长 20,000 字符 |
+| `file` | 否 | Skill 的输入文件，单文件；大小上限由 `SKILLGO_WORKSPACE_MAX_FILE_BYTES` 控制，默认 **10 MB** |
+| `instruction` | 否 | 自然语言制作要求，最长 20,000 字符；未提供文件时必须为非空文字 |
+
+纯文本请求省略 `file`，平台只保留任务指令，不创建 ZIP 或占位文本附件；文件与非空指令不能同时缺失。纯文本任务支持取消和重试。
 
 `Idempotency-Key` 为可选请求头，最长 **200 字符**，强烈建议设置：同一 Endpoint 下重复提交相同键时，平台返回第一次创建的任务，并在响应头加 `X-Idempotent-Replay: true`，不会重复执行、重复计费。
 
@@ -163,7 +165,7 @@ Content-Type: application/json
 | `401` | 缺少或错误的 `X-SkillGo-Key` |
 | `404` | Endpoint 不存在或已停用（故意不区分，避免探测 slug） |
 | `409` | Endpoint 类型与调用方式不匹配；slug 冲突；终态任务再取消 |
-| `422` | 缺少文件、文件为空/超限、`instruction` 超长、Idempotency-Key 超 200 字符、同步输入不符合契约 |
+| `422` | 文件与非空指令均缺失、文件为空/超限、`instruction` 超长、Idempotency-Key 超 200 字符、同步输入不符合契约 |
 | `502` | 同步调用执行失败（携带 run_id 与错误码） |
 | `503` | 沙箱运行环境暂不可用（`RUNTIME_UNAVAILABLE`） |
 | `410` | 产物或输入已被保留策略清理 |
@@ -184,3 +186,17 @@ python examples\workflow_api_client.py
 ## 隔离边界
 
 外部 API 并不是绕过用户系统直接运行代码。Endpoint 固定绑定一个拥有者和一个已发布版本，创建的任务记到该拥有者名下；输入与产物使用 `用户 ID / 任务 ID` 存储路径；Worker 每次只领取一个确定任务，并创建只挂载该任务工作区的一次性非 root gVisor 容器（无网络权限除非管理员显式授予）。数据库查询、对象存储路径和运行容器三层同时限制访问范围。
+
+
+## 交付文件收集与接收策略
+
+Skill 可以保留自己的导出目录，例如 `/workspace/skills/.../exports/report.pptx`。
+Agent 在 `finish.artifacts` 中声明确切的普通文件路径，框架会将这些文件安全地复制到交付区。
+无需修改 Skill 以适应平台的 `/workspace/output` 路径。框架不会遍历并自动交付整个 Skill 包；
+路径越界、文件缺失、目录、符号链接及空文件/超限文件会返回可修正的工具错误。
+
+默认保留框架完整验证。部署可通过 `SKILLGO_DELIVERY_ONLY_SKILL_IDS` 配置逗号分隔的 Skill ID，
+对仅包含这些 Skill 的任务使用文件接收模式。该模式不运行额外的模型验证程序，不要求验证报告，
+仅确认声明文件可安全读取、复制和保存，不判定 PPT 的内容、版式或文件格式质量。
+文件自身的 Skill 验证流程保持原样；混合其他 Skill 的任务仍使用完整验证。
+接收模式中的 `verified` 仅代表文件已成功保存和接收，不代表通过了业务或版式审查。

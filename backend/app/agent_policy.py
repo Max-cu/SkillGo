@@ -18,7 +18,7 @@ OBSERVATION_TOOLS = frozenset({"list_files", "read_file"})
 PRE_PLAN_INSPECTION_LIMIT = 3
 PRE_PLAN_INSPECTION_HINT = (
     "Pre-plan inspection is allowed and this call ran, but you must now call "
-    "update_plan with the first step in_progress before any further work. "
+    "update_plan with a valid execution plan before any further work. "
     "write_file and run_fixed_skill remain blocked until the plan exists."
 )
 WORKSPACE_MUTATING_TOOLS = frozenset({"write_file", "command", "run_python"})
@@ -150,11 +150,15 @@ class AgentExecutionState:
 
     skill_count: int
     plan_required: bool = True
+    # New tasks retain an outline, without model-driven checkbox bookkeeping.
+    # Default True preserves the contract of older durable checkpoints.
+    plan_status_tracking: bool = True
     ordered_skills: bool = False
     plan: dict[str, Any] | None = None
     validation_step_id: str | None = None
     validation: dict[str, Any] | None = None
     validation_failures: int = 0
+    delivery_only: bool = False
     loaded_skills: set[int] = field(default_factory=set)
     completed_skill_indexes: set[int] = field(default_factory=set)
     observations: list[dict[str, Any]] = field(default_factory=list)
@@ -173,6 +177,9 @@ class AgentExecutionState:
     # path -> {"sha256", "bytes", "chars", "text"}; plain JSON dict so it is
     # carried by durable snapshots and pinned through context projection.
     reference_shelf: dict[str, dict[str, Any]] = field(default_factory=dict)
+    # Completed command cursor for framework-declared stage workflows. Kept in
+    # durable state so a recoverable failure does not replay successful exports.
+    workflow_runs: dict[str, dict[str, Any]] = field(default_factory=dict)
 
     def read_skill(self, index: int, contexts: list[dict[str, Any]]) -> dict[str, Any]:
         if index < 1 or index > len(contexts):
@@ -246,6 +253,9 @@ class AgentExecutionState:
         self.reference_shelf.pop(path, None)
         self.reference_shelf[path] = entry
         text = entry["text"]
+        content = text[offset:offset + limit]
+        end = offset + len(content)
+        eof = end >= len(text)
         return {
             "ok": True,
             "path": path,
@@ -257,12 +267,18 @@ class AgentExecutionState:
             "chars": entry["chars"],
             "offset": offset,
             "limit": limit,
-            "content": text[offset:offset + limit],
+            "content": content,
+            "total_chars": len(text),
+            "returned_chars": len(content),
+            "eof": eof,
+            "complete": offset == 0 and eof,
+            "truncated": not eof,
+            "next_offset": None if eof else end,
             "hint": self._shelf_hint(path, cached=True),
         }
 
     def reference_pin(self, path: str, text: str, roots: Iterable[str], *,
-                      offset: int, limit: int) -> dict[str, Any] | None:
+                      offset: int, limit: int, eof: bool | None = None) -> dict[str, Any] | None:
         """Pin a freshly read immutable reference and return its first payload.
 
         Only a read from offset 0 that reached EOF (so the whole file was
@@ -274,7 +290,7 @@ class AgentExecutionState:
             return None
         encoded = text.encode("utf-8", errors="replace")
         size = len(encoded)
-        if size > REFERENCE_ENTRY_CAP or len(text) >= limit:
+        if size > REFERENCE_ENTRY_CAP or eof is False or (eof is None and len(text) >= limit):
             return None
         digest = hashlib.sha256(encoded).hexdigest()
         self._put_shelf(path, digest, size, text)
@@ -325,8 +341,8 @@ class AgentExecutionState:
                 return {"ok": False, "error_code": "PLAN_INVALID", "message": f"step {position} must be an object"}
             step_id = str(raw_step.get("id") or position).strip()[:40]
             title = str(raw_step.get("title") or "").strip()[:300]
-            status = str(raw_step.get("status") or "pending").strip()
-            evidence = str(raw_step.get("evidence") or "").strip()[:800]
+            status = str(raw_step.get("status") or "pending").strip() if self.plan_status_tracking else "pending"
+            evidence = str(raw_step.get("evidence") or "").strip()[:800] if self.plan_status_tracking else ""
             if not step_id or step_id in seen_ids or not title or status not in PLAN_STATUSES:
                 return {"ok": False, "error_code": "PLAN_INVALID", "message": f"step {position} has an invalid id, title, or status"}
             # Evidence is encouraged but optional mid-run: the platform trusts
@@ -375,7 +391,7 @@ class AgentExecutionState:
             return True
         if not all(visit(step["id"]) for step in steps):
             return {"ok": False, "error_code": "PLAN_DEPENDENCY_INVALID", "message": "Dependencies must reference existing steps and have no cycles."}
-        if by_id[validation_step_id]['status'] in {'completed', 'skipped'}:
+        if not self.delivery_only and by_id[validation_step_id]['status'] in {'completed', 'skipped'}:
             if (not self.validation or self.validation.get('status') != 'passed'
                     or self.validation.get('mutation_epoch') != self.mutation_epoch
                     or criteria != self.requirements):
@@ -401,6 +417,8 @@ class AgentExecutionState:
             self.validation = self.verification = None
         self.requirements = criteria
         self.plan = {"goal": goal, "steps": steps, "success_criteria": criteria}
+        if not self.plan_status_tracking:
+            self.plan["tracking_mode"] = "outline"
         if files is not None:
             # Merge bindings instead of replacing: a relaxed replan may not see
             # every previously bound path (transient read, output produced in a
@@ -474,8 +492,15 @@ class AgentExecutionState:
             return {
                 "ok": False,
                 "error_code": "PLAN_REQUIRED",
-                "message": "Create/update the plan with one in_progress step before executing work.",
+                "message": (
+                    "Create/update the plan with one in_progress step before executing work."
+                    if self.plan_status_tracking
+                    else "Create/update a valid execution outline before executing work. "
+                         "Step statuses are not tracked in this task."
+                ),
             }
+        if not self.plan_status_tracking:
+            return {"ok": True, "auto_activated": False, "tracking_mode": "outline"}
         steps = self.plan.get("steps", [])
         active = next((step for step in steps if step["status"] == "in_progress"), None)
         if active is not None:
@@ -599,7 +624,7 @@ class AgentExecutionState:
             }
         self.validation = normalized
         synchronized = False
-        if self.plan and all(step['status'] in {'completed', 'skipped'}
+        if self.plan_status_tracking and self.plan and all(step['status'] in {'completed', 'skipped'}
                              for step in self.plan['steps'] if step['id'] != self.validation_step_id):
             for step in self.plan['steps']:
                 if step['id'] == self.validation_step_id:
@@ -650,15 +675,18 @@ class AgentExecutionState:
             index for index in range(1, self.skill_count + 1)
             if index not in self.completed_skill_indexes
         ]
-        if incomplete_skills:
+        if incomplete_skills and self.skill_count > 1:
             return f"Complete every selected Skill phase before finish; incomplete skill indexes: {incomplete_skills}."
-        if self.plan:
+        if self.plan_status_tracking and self.plan:
             incomplete = [
                 step["id"] for step in self.plan["steps"]
                 if step["status"] not in {"completed", "skipped"}
+                and not (self.delivery_only and step['id'] == self.validation_step_id)
             ]
             if incomplete:
                 return f"Update the plan before finish; incomplete step ids: {incomplete}."
+        if self.delivery_only:
+            return None
         if self.validation is None or self.validation.get("mutation_epoch") != self.mutation_epoch:
             return "Run one concentrated run_verifier check on the current artifacts before finish; successful validation is recorded automatically."
         if self.validation.get("artifacts") != dict(sorted(current_artifacts.items())):
@@ -724,10 +752,13 @@ class AgentExecutionState:
 
     def checkpoint(self) -> str:
         snapshot = {
+            "artifact_acceptance_mode": "delivery_only" if self.delivery_only else "full_verification",
             "plan": self.plan,
+            "plan_status_tracking": self.plan_status_tracking,
             "validation_step_id": self.validation_step_id,
             "validation": {key: value for key, value in self.validation.items() if key != 'checks'} if self.validation else None,
             "loaded_skill_indexes": sorted(self.loaded_skills),
+            "workflow_runs": self.workflow_runs,
             "completed_skill_indexes": sorted(self.completed_skill_indexes),
             "skill_evidence": self.skill_evidence,
             "requirements": self.requirements,

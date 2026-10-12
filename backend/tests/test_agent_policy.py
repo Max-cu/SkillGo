@@ -290,10 +290,6 @@ def test_complete_workflow_requires_skill_plan_and_current_validation():
         state.finish_blocker(current_artifacts=ARTIFACT_SNAPSHOT) or ""
     )
     assert state.update_plan(_completed_plan())["ok"] is True
-    assert "incomplete skill indexes" in (
-        state.finish_blocker(current_artifacts=ARTIFACT_SNAPSHOT) or ""
-    )
-    assert state.complete_skill(1, "/workspace/output/result.docx")["ok"] is True
     assert "incomplete step ids" in (
         state.finish_blocker(current_artifacts=ARTIFACT_SNAPSHOT) or ""
     )

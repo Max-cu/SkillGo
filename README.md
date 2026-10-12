@@ -176,6 +176,8 @@ Worker 数量可按宿主资源调整：`--scale worker=N`。`deploy/ecs.env.exa
 - **同步指令调用**：`POST /api/v1/invoke/{slug}` — 适用于纯指令处理，返回结构化结果与 `run_id`。
 - **异步沙箱任务**：`POST /api/v1/workflow-endpoints/{slug}/jobs` — 适用于文件与工具任务，返回 `202 Accepted`、任务 ID 和查询地址。
 
+异步接口接收可选输入文件和文本指令，至少提供一项；纯文本调用省略 `file`，不会生成占位附件。
+
 ### 示例：提交文件处理任务
 
 ```bash

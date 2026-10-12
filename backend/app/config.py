@@ -153,6 +153,9 @@ class Settings:
     sandbox_max_artifact_bytes: int = int(
         os.getenv("SKILLGO_SANDBOX_MAX_ARTIFACT_BYTES", str(500 * 1024 * 1024))
     )
+    delivery_only_skill_ids: tuple[str, ...] = tuple(
+        value.strip() for value in os.getenv("SKILLGO_DELIVERY_ONLY_SKILL_IDS", "").split(',') if value.strip()
+    )
     platform_document_tools_enabled: bool = _bool(
         "SKILLGO_PLATFORM_DOCUMENT_TOOLS_ENABLED", False
     )

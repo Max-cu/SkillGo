@@ -463,7 +463,7 @@ def _prepare_file_job(
     *,
     version: SkillVersion,
     user: User,
-    data: bytes,
+    data: bytes | None,
     original_filename: str | None,
     content_type: str | None,
     instruction: str,
@@ -531,7 +531,7 @@ def _prepare_file_job(
     db.flush()
     for position, (step_key, name) in enumerate(
         (
-            ("prepare-input", "校验并准备输入文件"),
+            ("prepare-input", "校验并准备输入文件" if data is not None else "校验并准备文本指令"),
             ("execute-workflow", "执行 Skill 工作流"),
             ("collect-artifacts", "收集任务产物"),
             ("verify-artifacts", "校验任务产物"),
@@ -541,28 +541,31 @@ def _prepare_file_job(
         db.add(JobStep(job_id=job.id, step_key=step_key, name=name, position=position))
     db.flush()
 
-    input_file, extracted_text = _add_job_input_file(
-        db,
-        job=job,
-        user=user,
-        data=data,
-        original_filename=original_filename,
-        content_type=content_type,
-        analysis=analysis,
-    )
+    input_file = None
+    extracted_text = None
+    if data is not None:
+        input_file, extracted_text = _add_job_input_file(
+            db,
+            job=job,
+            user=user,
+            data=data,
+            original_filename=original_filename,
+            content_type=content_type,
+            analysis=analysis,
+        )
     set_step(
         db,
         job,
         "prepare-input",
         JobStepStatus.SUCCEEDED,
-        f"已校验 {input_file.filename}（{len(data)} 字节）",
+        f"已校验 {input_file.filename}（{len(data)} 字节）" if input_file else "已准备文本指令（无附件）",
     )
     details = {
         "version_id": version.id,
         "version_ids": [item.id for item in selected_versions],
         "skill_count": len(selected_versions),
         "execution_mode": profile["execution_mode"],
-        "input_sha256": input_file.sha256,
+        "input_sha256": input_file.sha256 if input_file else None,
         "trigger": trigger,
     }
     details.update(audit_details or {})
@@ -1048,7 +1051,7 @@ async def create_workflow_job(
 async def invoke_workflow_endpoint(
     endpoint_slug: str,
     response: Response,
-    file: UploadFile = File(...),
+    file: UploadFile | None = File(None),
     instruction: Annotated[str, Form(max_length=20_000)] = "",
     endpoint_key: Annotated[str | None, Header(alias="X-SkillGo-Key")] = None,
     idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
@@ -1097,9 +1100,13 @@ async def invoke_workflow_endpoint(
             response.headers["X-Idempotent-Replay"] = "true"
             return _job_read(job)
 
-    data = await file.read(settings.workspace_max_file_bytes + 1)
-    if not data or len(data) > settings.workspace_max_file_bytes:
-        raise HTTPException(status_code=422, detail="Input file is empty or exceeds the limit")
+    data = None
+    if file is not None:
+        data = await file.read(settings.workspace_max_file_bytes + 1)
+        if not data or len(data) > settings.workspace_max_file_bytes:
+            raise HTTPException(status_code=422, detail="Input file is empty or exceeds the limit")
+    elif not instruction.strip():
+        raise HTTPException(status_code=422, detail="Provide an instruction or an input file")
     owner = db.get(User, endpoint.owner_id)
     if owner is None or not owner.is_active:
         raise HTTPException(status_code=409, detail="Endpoint owner is unavailable")
@@ -1108,8 +1115,8 @@ async def invoke_workflow_endpoint(
         version=version,
         user=owner,
         data=data,
-        original_filename=file.filename,
-        content_type=file.content_type,
+        original_filename=file.filename if file else None,
+        content_type=file.content_type if file else None,
         instruction=instruction,
         trigger="api",
         actor=None,
@@ -1416,8 +1423,8 @@ async def retry_workflow_job(
     source = _owned_job(db, job_id, user)
     if source.status not in {JobStatus.FAILED, JobStatus.BLOCKED, JobStatus.CANCELLED}:
         raise HTTPException(status_code=409, detail="只有失败、受阻或已取消的任务可以重试")
-    if not source.input_files:
-        raise HTTPException(status_code=409, detail="原任务没有可复用的输入文件")
+    if not source.input_files and not source.instruction.strip():
+        raise HTTPException(status_code=409, detail="原任务没有可复用的文本或输入文件")
     if any(item.purged_at is not None for item in source.input_files):
         raise HTTPException(status_code=410, detail="原任务输入文件已超过 15 天保留期，无法直接重试")
 
@@ -1440,7 +1447,7 @@ async def retry_workflow_job(
     except OSError as exc:
         raise HTTPException(status_code=409, detail="原任务输入文件已经不可用") from exc
 
-    first_data, first_name, first_type = stored_inputs[0]
+    first_data, first_name, first_type = stored_inputs[0] if stored_inputs else (None, None, None)
     source_analyses = [
         AttachmentAnalysis(
             text=item.extracted_text or "",
@@ -1470,7 +1477,7 @@ async def retry_workflow_job(
         routing_mode=source.routing_mode,
         audit_details={"retry_of": source.id},
         attachment_analysis_mode=source.attachment_analysis_mode,
-        analysis=source_analyses[0],
+        analysis=source_analyses[0] if source_analyses else None,
     )
     if source.memory:
         if job.memory is None:
@@ -1578,7 +1585,7 @@ async def retry_workflow_job(
     elif execution_mode == "sandbox_required":
         job.status = JobStatus.QUEUED
         set_step(db, job, "execute-workflow", JobStepStatus.PENDING, "重试任务已进入 Linux 沙箱执行队列")
-        add_job_event(db, job, "status", "已重新进入独立沙箱队列", "原输入文件与 Skill 配置已完整复用", status="queued")
+        add_job_event(db, job, "status", "已重新进入独立沙箱队列", "原输入文件与 Skill 配置已完整复用" if stored_inputs else "原文本指令与 Skill 配置已完整复用", status="queued")
     elif execution_mode != "instruction_only":
         job.status = JobStatus.BLOCKED
         job.error_code = "EXECUTOR_ADAPTER_NOT_CONNECTED"

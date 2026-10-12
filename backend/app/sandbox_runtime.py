@@ -439,11 +439,15 @@ print(json.dumps(items, ensure_ascii=False))
         raise SandboxRuntimeError("SANDBOX_LIST_FAILED", f"Sandbox returned an invalid file list: {last_error}")
 
     async def read_text(self, path: str, *, offset: int = 0, limit: int = 30_000) -> str:
+        return (await self.read_text_window(path, offset=offset, limit=limit))["content"]
+
+    async def read_text_window(self, path: str, *, offset: int = 0, limit: int = 30_000) -> dict:
+        """Return a bounded text window with measured character/EOF metadata."""
         target = _workspace_path(path, allow_root=False)
         offset = max(offset, 0)
         limit = min(max(limit, 1), 60_000)
         source = """
-import sys
+import json, sys
 from pathlib import Path
 
 root = Path("/workspace").resolve()
@@ -459,14 +463,40 @@ if path.is_symlink():
 data = path.read_text(encoding="utf-8", errors="replace")
 start = int(sys.argv[2])
 limit = int(sys.argv[3])
-print(data[start:start + limit], end="")
+content = data[start:start + limit]
+end = start + len(content)
+eof = end >= len(data)
+print(json.dumps({"ok": True, "path": sys.argv[1], "content": content,
+    "offset": start, "limit": limit, "total_chars": len(data),
+    "returned_chars": len(content), "eof": eof, "complete": start == 0 and eof,
+    "truncated": not eof, "next_offset": None if eof else end}, ensure_ascii=False))
 """
         result = await self.command(
             ["python3", "-c", source, target, str(offset), str(limit)], timeout_seconds=30
         )
         if result.exit_code != 0:
             raise SandboxRuntimeError("SANDBOX_READ_FAILED", result.stderr or "Could not read file")
-        return result.stdout
+        try:
+            window = json.loads(result.stdout)
+            if not isinstance(window, dict) or not isinstance(window.get("content"), str):
+                raise ValueError('content is missing')
+            end = offset + len(window['content'])
+            total = window.get('total_chars')
+            if (type(total) is not int or total < 0
+                    or window.get('offset') != offset or window.get('limit') != limit
+                    or len(window['content']) != min(limit, max(total - offset, 0))
+                    or window.get('returned_chars') != len(window['content'])
+                    or type(window.get('eof')) is not bool
+                    or window['eof'] != (end >= total)
+                    or type(window.get('complete')) is not bool
+                    or window.get('complete') != (offset == 0 and window['eof'])
+                    or type(window.get('truncated')) is not bool
+                    or window.get('truncated') != (not window['eof'])
+                    or window.get('next_offset') != (None if window['eof'] else end)):
+                raise ValueError('inconsistent text-window metadata')
+        except (ValueError, TypeError) as exc:
+            raise SandboxRuntimeError('SANDBOX_READ_FAILED', 'Invalid text-window response') from exc
+        return window
 
     async def write_text(self, path: str, content: str) -> None:
         data = content.encode("utf-8")
