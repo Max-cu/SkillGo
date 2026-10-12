@@ -1192,7 +1192,8 @@ async def _run_agent_loop(
             )
             stable_reused = False
             if cached_payload is None and not validation_error:
-                cached_payload = execution_state.stable_cached_observation(action)
+                cached_payload = execution_state.stable_cached_observation(
+                    action, allow_eof=action.get('path') not in required_reference_paths)
                 stable_reused = cached_payload is not None
             read_cache_hit = cached_payload is not None
             if not validation_error and action_name in {"list_files", "read_file"}:

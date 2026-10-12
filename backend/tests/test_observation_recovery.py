@@ -64,6 +64,20 @@ def test_normal_and_cached_pagination_are_not_duplicate_information():
         assert state.register_observation_access(action,reused=True,payload=payload) is None
 
 
+def test_advancing_empty_offsets_reuses_measured_eof_and_counts_same_information():
+    state=AgentExecutionState(skill_count=1)
+    first=read(offset=0,limit=30000)
+    state.record(first,observed(first,'ten chars!',total_chars=10,eof=True,complete=True))
+    for index,offset in enumerate([30000,60000,90000]):
+        action=read(offset=offset,limit=30000)
+        payload=state.stable_cached_observation(action)
+        assert state.stable_cached_observation(action,allow_eof=False) is None
+        assert payload['content']=='' and payload['eof'] and payload['next_offset'] is None
+        assert payload['offset']==offset and 'Increasing the offset' in payload['hint']
+        block=state.register_observation_access(action,reused=True,payload=payload,content_available=True)
+        assert (block is not None)==(index==2)
+
+
 def test_exact_read_only_blocked_when_identical_content_is_available():
     state=AgentExecutionState(skill_count=1)
     action=read();payload=observed(action)

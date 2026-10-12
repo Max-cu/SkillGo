@@ -759,7 +759,7 @@ class AgentExecutionState:
                len(json.dumps(self._stable_path_cache, ensure_ascii=False).encode("utf-8")) > 1_048_576):
             self._stable_path_cache.pop(next(iter(self._stable_path_cache)))
 
-    def stable_cached_observation(self, action: dict[str, Any]) -> object | None:
+    def stable_cached_observation(self, action: dict[str, Any], *, allow_eof: bool = True) -> object | None:
         """Return a prior observation when the same path was not invalidated.
 
         Survives write_file to other paths (mutation_epoch cache does not).
@@ -768,6 +768,22 @@ class AgentExecutionState:
         if key is None:
             return None
         value = self._stable_path_cache.get(key)
+        if value is None and allow_eof and action.get('action') == 'read_file':
+            # An unchanged file cannot acquire more text by increasing an
+            # offset beyond its measured EOF. Reuse that proof across windows.
+            offset = int(action.get('offset') or 0)
+            path = str(PurePosixPath(str(action.get('path') or '')))
+            for old_key, old in reversed(list(self._stable_path_cache.items())):
+                if json.loads(old_key).get('path') != path or not isinstance(old, dict):
+                    continue
+                total = old.get('total_chars')
+                if type(total) is int and offset >= total:
+                    value = {**old, 'content': '', 'offset': offset,
+                             'limit': int(action.get('limit') or 30_000),
+                             'returned_chars': 0, 'eof': True, 'complete': offset == 0,
+                             'truncated': False, 'next_offset': None}
+                    value.pop('auto_completed', None)
+                    break
         if value is None:
             return None
         cached = deepcopy(value)
@@ -779,6 +795,8 @@ class AgentExecutionState:
                 "the next operation. Read a different window if truncated; do not "
                 "write files merely to satisfy a progress counter."
             )
+            if cached.get('eof') is True and cached.get('content') == '':
+                cached['hint'] = f"EOF: this file has {cached.get('total_chars')} characters. Increasing the offset cannot reveal more text; use the existing result or read from 0 if it is unavailable."
         return cached
 
     def register_observation_access(self, action: dict[str, Any], *, reused: bool,
