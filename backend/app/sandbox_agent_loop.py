@@ -631,6 +631,8 @@ async def _read_file_payload(sandbox, state, path, roots, *, offset, limit, comp
     """Read text with explicit completeness; auto-finish bounded static refs."""
     cached = state.reference_cached(path, offset, limit, roots)
     if cached is not None:
+        if cached.get('eof') and not cached.get('content'):
+            cached['hint'] = f"EOF: this file has {cached['total_chars']} characters; offset {offset} returns no further text. Do not increase the offset. Use the previous content, or read from 0 if it is no longer available."
         return cached
     reader = getattr(sandbox, 'read_text_window', None)
     if reader is not None:
@@ -662,12 +664,48 @@ async def _read_file_payload(sandbox, state, path, roots, *, offset, limit, comp
                   'next_offset': None if eof else end}
     pinned = state.reference_pin(path, window['content'], roots,
                                  offset=offset, limit=limit, eof=window['eof'])
+    if window['eof'] and not window['content']:
+        window['hint'] = f"EOF: offset {offset} returns no further text (total_chars={window['total_chars']}). Do not increase the offset. Use the previous content, or read from 0 if it is no longer available."
     if pinned is not None:
         return {**pinned, **window}
     return {**window, 'reference': is_reference_path(path, roots), 'retained': False,
-            'hint': ('More text remains. Continue read_file using next_offset until eof=true '
+            'hint': window.get('hint') or ('More text remains. Continue read_file using next_offset until eof=true '
                      'before treating a required reference as fully read.' if not window['eof']
                      else 'This window reaches EOF. retained=false means it is not pinned in the reference shelf.')}
+
+
+def _observation_in_context(payload: object, messages: list[dict[str, Any]]) -> bool:
+    """Only deny a repeated read when its exact content remains available.
+
+    Batch children and full phase references count, truncated/offloaded or
+    removed history does not. Directory listings receive soft guidance only.
+    """
+    if not isinstance(payload, dict) or not isinstance(payload.get('content'), str):
+        return False
+    for message in messages[2:]:
+        content = message.get('content')
+        if not isinstance(content, str) or not content.startswith('{'):
+            continue
+        try:
+            body = json.loads(content)
+        except ValueError:
+            continue
+        if not isinstance(body, dict) or body.get('tool_result') not in {'read_file', 'read_files', 'run_skill_workflow'}:
+            continue
+        result = body.get('payload')
+        if not isinstance(result, dict):
+            continue
+        candidates = [result]
+        children = result.get('results')
+        phases = result.get('phase_references')
+        candidates.extend(item.get('payload') for item in (children if isinstance(children, list) else [])
+                          if isinstance(item, dict) and item.get('tool') == 'read_file')
+        candidates.extend(phases if isinstance(phases, list) else [])
+        if any(isinstance(item, dict) and item.get('ok') is not False
+               and item.get('path') == payload.get('path')
+               and item.get('content') == payload['content'] for item in candidates):
+            return True
+    return False
 
 
 async def _run_agent_loop(
@@ -1043,6 +1081,7 @@ async def _run_agent_loop(
         if durable:
             mark_inflight(db, job, fence)
         conversation_messages = messages
+        turn_nudges: list[str] = []
         if batch:
             # Child handlers keep their existing validation, logging, state and
             # offload behavior. Their replies are collected locally so the
@@ -1118,7 +1157,7 @@ async def _run_agent_loop(
             progress_key = f"{execution_state.progress_epoch}:{fingerprint}"
             repeat_count = repeat_count + 1 if progress_key == repeated_action else 1
             repeated_action = progress_key
-            if repeat_count > 3 or execution_state.repeated_count(action) > 4:
+            if action_name not in {'read_file', 'list_files'} and (repeat_count > 3 or execution_state.repeated_count(action) > 4):
                 raise SandboxRuntimeError(
                     "SANDBOX_AGENT_STALLED",
                     "Sandbox agent repeated an equivalent action without making progress",
@@ -1151,13 +1190,37 @@ async def _run_agent_loop(
             cached_payload = (
                 None if validation_error else execution_state.cached_observation(action)
             )
+            stable_reused = False
+            if cached_payload is None and not validation_error:
+                cached_payload = execution_state.stable_cached_observation(action)
+                stable_reused = cached_payload is not None
+            read_cache_hit = cached_payload is not None
+            if not validation_error and action_name in {"list_files", "read_file"}:
+                loop_block = execution_state.register_observation_access(
+                    action, reused=bool(cached_payload is not None), payload=cached_payload,
+                    content_available=_observation_in_context(cached_payload, model_messages),
+                )
+                if loop_block is not None:
+                    validation_error = loop_block["message"]
+                    precondition_error = loop_block
+                    cached_payload = None
+                    tool_event.data = {
+                        **(tool_event.data or {}),
+                        "anti_loop": "observation",
+                        "duplicate_streak": execution_state.duplicate_observation_streak,
+                    }
+                    nudge = execution_state.observation_loop_nudge()
+                    if nudge:
+                        turn_nudges.append(nudge)
             if validation_error:
                 payload = {
+                    **(precondition_error or {}),
                     "ok": False,
                     "error_code": precondition_error['error_code'] if precondition_error else "SANDBOX_ACTION_INVALID",
                     "message": validation_error,
-                    "hint": ("Submit a valid plan with update_plan, then retry this operation."
-                             if precondition_error else "Correct the arguments and call an available tool again."),
+                    "hint": ((precondition_error or {}).get('hint') or
+                             ("Submit a valid plan with update_plan, then retry this operation."
+                              if precondition_error else "Correct the arguments and call an available tool again.")),
                 }
                 _append_tool_result(
                     messages,
@@ -1167,8 +1230,12 @@ async def _run_agent_loop(
                     tool_call_id=tool_call_id,
                 )
                 progress_detail = "缺少有效执行计划，Agent 正在补充" if precondition_error else "Agent 工具参数无效，正在自动纠正"
+                if precondition_error and precondition_error.get('error_code') == 'OBSERVATION_LOOP_BREAK':
+                    progress_detail = "重复窗口已在上下文中，正在选择下一步"
             elif cached_payload is not None:
                 payload = cached_payload
+                if action_name in {"list_files", "read_file"}:
+                    execution_state.note_stable_observation(action, payload)
                 payload = await _append_tool_result_with_offload(
                     messages,
                     result,
@@ -1179,7 +1246,13 @@ async def _run_agent_loop(
                     operation_number=tool_operation_count,
                     tool_call_id=tool_call_id,
                 )
-                progress_detail = "已复用工作区中尚未变化的检查结果"
+                progress_detail = (
+                    "已复用未改路径的稳定观察" if stable_reused
+                    else "已复用工作区中尚未变化的检查结果"
+                )
+                nudge = execution_state.observation_loop_nudge()
+                if nudge:
+                    turn_nudges.append(nudge)
             elif action_name in {'request_capability', 'request_python_dependencies'}:
                 payload = await request_capability(db, job, sandbox, action.get('capability'), job_cancelled,
                     **({'requirements': action['requirements'], 'imports': action.get('imports', [])} if action_name == 'request_python_dependencies' else {}))
@@ -1187,13 +1260,30 @@ async def _run_agent_loop(
                     raise AgentJobCancelled('Workflow job was cancelled')
                 if payload.get('upgraded'):
                     execution_state._observation_cache.clear()
+                    execution_state._stable_path_cache.clear()
+                    execution_state.observation_accesses.clear()
+                    execution_state.duplicate_observation_streak = 0
+                    execution_state.register_verifier_success()
                     execution_state.verification = None
                     execution_state.validation = None
                 tool_event.data = {**tool_event.data, 'capability': action.get('capability'), 'python_requirements': action.get('requirements', []),
                                    'upgraded': bool(payload.get('upgraded'))}
                 _append_tool_result(messages, result, action_name, payload, tool_call_id=tool_call_id)
             elif action_name == "run_verifier":
-                if execution_state.delivery_only:
+                blocked = None if execution_state.delivery_only else execution_state.verifier_retry_blocked()
+                if blocked is not None:
+                    payload = blocked
+                    progress_detail = "验证被防抖拦截，需先批量修正"
+                    payload = await _append_tool_result_with_offload(
+                        messages, result, action_name, payload, sandbox=sandbox,
+                        turn_number=turn_number, operation_number=tool_operation_count,
+                        tool_call_id=tool_call_id,
+                    )
+                    turn_nudges.append(
+                            "Anti-loop: run_verifier blocked until artifacts change. "
+                            "Batch all remaining fixes, then verify once."
+                    )
+                elif execution_state.delivery_only:
                     payload = {"ok": True, "skipped": True, "verification_mode": "delivery_only",
                                "validation_recorded": False,
                                "hint": "No additional framework verifier is required. Finish with existing deliverable file paths."}
@@ -1209,6 +1299,7 @@ async def _run_agent_loop(
                     payload = await run_verifier(sandbox, action, requirements=execution_state.requirements)
                     execution_state.verification = {**payload, "mutation_epoch": execution_state.mutation_epoch, "operation": tool_operation_count, "tool": "run_verifier"}
                     if payload['ok']:
+                        execution_state.register_verifier_success()
                         # Consume the just-observed proof in this operation. A second
                         # model turn and artifact download add no evidence here.
                         registered = execution_state.record_validation({
@@ -1232,9 +1323,15 @@ async def _run_agent_loop(
                     if not payload['ok']:
                         execution_state.validation = None
                         execution_state.validation_failures += 1
-                        if execution_state.validation_failures > 2:
-                            raise SandboxRuntimeError("SKILL_VALIDATION_FAILED", "Verifier still failed after two targeted attempts")
+                        payload = execution_state.register_verifier_failure(payload)
+                        if execution_state.validation_failures > 2 or execution_state.verifier_fail_streak >= 3:
+                            raise SandboxRuntimeError(
+                                "SKILL_VALIDATION_FAILED",
+                                "Verifier still failed after targeted attempts; stop thrashing tiny edit/re-verify cycles",
+                            )
                     payload = await _append_tool_result_with_offload(messages, result, action_name, payload, sandbox=sandbox, turn_number=turn_number, operation_number=tool_operation_count, tool_call_id=tool_call_id)
+                    if not payload.get('ok') and payload.get('hint'):
+                        turn_nudges.append(str(payload['hint']))
             elif action_name == "run_fixed_skill":
                 index = action['skill_index']
                 if index not in execution_state.loaded_skills or not skill_contexts[index-1].get('fixed_execution') or (execution_state.ordered_skills and any(previous not in execution_state.completed_skill_indexes for previous in range(1, index))):
@@ -1757,6 +1854,21 @@ async def _run_agent_loop(
                 )
 
             payload = await tool_pipeline.after(context, payload)
+            recovery_hint = execution_state.failure_recovery_hint(action)
+            if recovery_hint:
+                turn_nudges.append(recovery_hint)
+                failure = execution_state.failed_operations[action_fingerprint(action)]
+                tool_event.data = {**(tool_event.data or {}),
+                    'repeated_failure_count': failure['repeats'], 'failure_signature': failure['signature']}
+            if action_name in {'read_file', 'list_files'}:
+                tool_event.data = {**(tool_event.data or {}),
+                    'cache_hit': read_cache_hit,
+                    'cache_type': 'stable' if stable_reused else 'epoch' if read_cache_hit else None,
+                    'read_offset': action.get('offset', 0), 'read_limit': action.get('limit'),
+                    'observation_repeats': execution_state.duplicate_observation_streak}
+                if isinstance(payload, dict):
+                    tool_event.data.update({key: payload[key] for key in
+                        ('returned_chars', 'total_chars', 'complete', 'eof') if key in payload})
             agent_session.tool_result(context, payload)
             if isinstance(payload, dict) and (payload.get('ok') is False or payload.get('exit_code', 0) != 0):
                 recoverable_errors += 1
@@ -1839,6 +1951,10 @@ async def _run_agent_loop(
             # do not truncate them a second time at the aggregate boundary.
             _append_tool_result(messages, result, batch['tool'], aggregate, tool_call_id=batch['id'])
 
+        # Keep the native assistant/tools protocol intact: guidance follows all
+        # pending replies, including the one parent reply for a stopped batch.
+        messages.extend({'role': 'user', 'content': text} for text in dict.fromkeys(turn_nudges))
+
         agent_session.finish_step(turn_number)
         agent_session.finish_turn(turn_number)
         agent_session.checkpoint(
@@ -1874,6 +1990,12 @@ async def _run_agent_loop(
                 }
             )
             singleton_tool_turns = 0
+        # Observation-only turns on already-seen paths: nudge even when multi-tool.
+        if non_finish_actions and all(name in {"list_files", "read_file", "read_files"} for name in non_finish_actions):
+            if execution_state.duplicate_observation_streak >= 2:
+                nudge = execution_state.observation_loop_nudge()
+                if nudge:
+                    messages.append({"role": "user", "content": nudge})
 
     raise SandboxRuntimeError(
         "SANDBOX_AGENT_TURN_LIMIT",
