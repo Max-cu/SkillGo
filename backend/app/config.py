@@ -153,6 +153,12 @@ class Settings:
     sandbox_max_artifact_bytes: int = int(
         os.getenv("SKILLGO_SANDBOX_MAX_ARTIFACT_BYTES", str(500 * 1024 * 1024))
     )
+    # Isolates sandbox GC when multiple SkillGo deploys share one Docker host.
+    # Each deploy MUST set a distinct value (e.g. compose project name).
+    deploy_id: str = (os.getenv("SKILLGO_DEPLOY_ID") or "default").strip() or "default"
+    # When true, stale cleanup may also remove pre-label (untagged) sandboxes.
+    # Default false so a second deploy cannot sweep another install's legacy containers.
+    cleanup_untagged_sandboxes: bool = _bool("SKILLGO_CLEANUP_UNTAGGED_SANDBOXES", False)
     delivery_only_skill_ids: tuple[str, ...] = tuple(
         value.strip() for value in os.getenv("SKILLGO_DELIVERY_ONLY_SKILL_IDS", "").split(',') if value.strip()
     )
@@ -180,6 +186,11 @@ class Settings:
 
 
 settings = Settings()
+
+if any(ch.isspace() for ch in settings.deploy_id) or "/" in settings.deploy_id:
+    raise RuntimeError(
+        "SKILLGO_DEPLOY_ID must be a non-empty token without spaces or slashes"
+    )
 
 if settings.sandbox_worker_heartbeat_seconds >= settings.sandbox_worker_lease_seconds:
     raise RuntimeError(

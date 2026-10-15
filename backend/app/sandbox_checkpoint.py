@@ -14,7 +14,7 @@ from uuid import uuid4
 
 import docker
 
-from .sandbox_runtime import DockerSandbox, SandboxRuntimeError
+from .sandbox_runtime import ownership_labels, DockerSandbox, SandboxRuntimeError
 
 logger = logging.getLogger(__name__)
 
@@ -203,8 +203,7 @@ def export_workspace(sandbox):
             volumes={sandbox.volume.name: {'bind': '/workspace', 'mode': 'ro'}},
             cap_drop=['ALL'], security_opt=['no-new-privileges:true'],
             mem_limit='128m', pids_limit=16,
-            labels={'skillgo.stager': 'true', 'skillgo.job_id': sandbox.job_id,
-                    'skillgo.execution_id': sandbox.execution_id})
+            labels={'skillgo.stager': 'true', **ownership_labels(job_id=sandbox.job_id, execution_id=sandbox.execution_id)})
         helper.start()
         chunks, _ = helper.get_archive('/workspace')
         excluded = getattr(sandbox, 'immutable_workspace_paths', None) or frozenset()
