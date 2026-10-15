@@ -37,6 +37,47 @@ MAX_WRITE_BYTES = 9 * 1024 * 1024
 # internal allow_large_arguments argv items.
 WRITE_CHUNK_BYTES = 256 * 1024
 
+def ownership_labels(*, job_id: str, execution_id: str) -> dict[str, str]:
+    """Labels shared by workspace volumes, sandbox containers, and stagers."""
+
+    return {
+        "skillgo.job_id": job_id,
+        "skillgo.execution_id": execution_id,
+        "skillgo.deploy_id": settings.deploy_id,
+    }
+
+
+def _labels_of(resource) -> dict:
+    # Volumes expose Labels under attrs; containers use .labels.
+    # Prefer a real dict so MagicMock auto-attrs do not look like labels.
+    labels = getattr(resource, "labels", None)
+    if isinstance(labels, dict):
+        return dict(labels)
+    attrs = getattr(resource, "attrs", None)
+    if isinstance(attrs, dict):
+        raw = attrs.get("Labels")
+        if isinstance(raw, dict):
+            return dict(raw)
+    return {}
+
+
+def _owned_by_this_deploy(labels: dict) -> bool:
+    deploy = str(labels.get("skillgo.deploy_id") or "")
+    if deploy == settings.deploy_id:
+        return True
+    if not deploy and settings.cleanup_untagged_sandboxes:
+        return True
+    return False
+
+
+def _should_cleanup_resource(labels: dict, *, protected_job_ids: set[str]) -> bool:
+    job_id = str(labels.get("skillgo.job_id") or "")
+    if job_id and job_id in protected_job_ids:
+        return False
+    return _owned_by_this_deploy(labels)
+
+
+
 
 def wrap_argv_with_timeout(argv: list[str], timeout: int) -> list[str]:
     """Bound argv with in-container coreutils timeout(1).
@@ -138,8 +179,7 @@ class DockerSandbox:
                 name=f"skillgo-workspace-{self.execution_id}",
                 labels={
                     "skillgo.workspace": "true",
-                    "skillgo.job_id": self.job_id,
-                    "skillgo.execution_id": self.execution_id,
+                    **ownership_labels(job_id=self.job_id, execution_id=self.execution_id),
                 },
             )
         except DockerException as exc:
@@ -182,8 +222,7 @@ class DockerSandbox:
             },
             "labels": {
                 "skillgo.sandbox": "true",
-                "skillgo.job_id": self.job_id,
-                "skillgo.execution_id": self.execution_id,
+                **ownership_labels(job_id=self.job_id, execution_id=self.execution_id),
             },
         }
         if settings.sandbox_runtime:
@@ -261,8 +300,7 @@ class DockerSandbox:
                 security_opt=["no-new-privileges:true"],
                 labels={
                     "skillgo.stager": "true",
-                    "skillgo.job_id": self.job_id,
-                    "skillgo.execution_id": self.execution_id,
+                    **ownership_labels(job_id=self.job_id, execution_id=self.execution_id),
                 },
             )
             helper.start()
@@ -609,17 +647,24 @@ def cleanup_stale_sandboxes(
     *,
     protected_job_ids: set[str] | None = None,
 ) -> None:
+    """Remove orphaned sandboxes for *this* deploy only.
+
+    Resources belonging to another ``skillgo.deploy_id`` are never touched.
+    Untagged (pre-label) resources are left alone unless
+    ``SKILLGO_CLEANUP_UNTAGGED_SANDBOXES`` is enabled.
+    """
+
     protected = protected_job_ids or set()
     for label in ("skillgo.sandbox=true", "skillgo.stager=true"):
         for container in client.containers.list(all=True, filters={"label": label}):
-            if str((container.labels or {}).get("skillgo.job_id") or "") in protected:
+            if not _should_cleanup_resource(_labels_of(container), protected_job_ids=protected):
                 continue
             try:
                 container.remove(force=True)
             except DockerException:
                 continue
     for volume in client.volumes.list(filters={"label": "skillgo.workspace=true"}):
-        if str((volume.attrs.get("Labels") or {}).get("skillgo.job_id") or "") in protected:
+        if not _should_cleanup_resource(_labels_of(volume), protected_job_ids=protected):
             continue
         try:
             volume.remove(force=True)
@@ -635,6 +680,8 @@ def cleanup_job_sandboxes(client: docker.DockerClient, job_id: str) -> None:
             all=True,
             filters={"label": [label, f"skillgo.job_id={job_id}"]},
         ):
+            if not _owned_by_this_deploy(_labels_of(container)):
+                continue
             try:
                 container.remove(force=True)
             except DockerException:
@@ -642,6 +689,8 @@ def cleanup_job_sandboxes(client: docker.DockerClient, job_id: str) -> None:
     for volume in client.volumes.list(
         filters={"label": ["skillgo.workspace=true", f"skillgo.job_id={job_id}"]}
     ):
+        if not _owned_by_this_deploy(_labels_of(volume)):
+            continue
         try:
             volume.remove(force=True)
         except DockerException:
@@ -660,7 +709,9 @@ def cleanup_execution_sandbox(
         for container in client.containers.list(
             all=True, filters={"label": [label, f"skillgo.job_id={job_id}"]}
         ):
-            labels = container.labels or {}
+            labels = _labels_of(container)
+            if not _owned_by_this_deploy(labels):
+                continue
             recorded_execution = str(labels.get("skillgo.execution_id") or job_id)
             if recorded_execution != execution_id:
                 continue
@@ -671,7 +722,9 @@ def cleanup_execution_sandbox(
     for volume in client.volumes.list(
         filters={"label": ["skillgo.workspace=true", f"skillgo.job_id={job_id}"]}
     ):
-        labels = volume.attrs.get("Labels") or {}
+        labels = _labels_of(volume)
+        if not _owned_by_this_deploy(labels):
+            continue
         recorded_execution = str(labels.get("skillgo.execution_id") or job_id)
         if recorded_execution != execution_id:
             continue

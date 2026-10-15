@@ -7,6 +7,7 @@ import pytest
 from sqlalchemy import select
 
 from app import config, sandbox_worker
+from app.config import settings
 from app.database import SessionLocal
 from app.execution_runtime import cleanup_execution_history, fail_stale_conversation_runs
 from app.models import AgentRun, AgentRunEvent, JobStatus, RunStatus, User, WorkflowJob, utcnow
@@ -274,16 +275,32 @@ class _FakeDockerClient:
 
 def test_worker_startup_preserves_other_workers_active_job_sandbox():
     active_container = _FakeDockerResource(
-        {"skillgo.sandbox": "true", "skillgo.job_id": "active-job"}
+        {
+            "skillgo.sandbox": "true",
+            "skillgo.job_id": "active-job",
+            "skillgo.deploy_id": settings.deploy_id,
+        }
     )
     stale_container = _FakeDockerResource(
-        {"skillgo.sandbox": "true", "skillgo.job_id": "stale-job"}
+        {
+            "skillgo.sandbox": "true",
+            "skillgo.job_id": "stale-job",
+            "skillgo.deploy_id": settings.deploy_id,
+        }
     )
     active_volume = _FakeDockerResource(
-        {"skillgo.workspace": "true", "skillgo.job_id": "active-job"}
+        {
+            "skillgo.workspace": "true",
+            "skillgo.job_id": "active-job",
+            "skillgo.deploy_id": settings.deploy_id,
+        }
     )
     stale_volume = _FakeDockerResource(
-        {"skillgo.workspace": "true", "skillgo.job_id": "stale-job"}
+        {
+            "skillgo.workspace": "true",
+            "skillgo.job_id": "stale-job",
+            "skillgo.deploy_id": settings.deploy_id,
+        }
     )
     client = _FakeDockerClient(
         [active_container, stale_container], [active_volume, stale_volume]
@@ -307,6 +324,7 @@ def test_recovery_cleanup_does_not_remove_newer_attempt_of_same_job():
             "skillgo.sandbox": "true",
             "skillgo.job_id": "one-job",
             "skillgo.execution_id": "one-job-a1",
+            "skillgo.deploy_id": settings.deploy_id,
         }
     )
     current = _FakeDockerResource(
@@ -314,6 +332,7 @@ def test_recovery_cleanup_does_not_remove_newer_attempt_of_same_job():
             "skillgo.sandbox": "true",
             "skillgo.job_id": "one-job",
             "skillgo.execution_id": "one-job-a2",
+            "skillgo.deploy_id": settings.deploy_id,
         }
     )
     client = _FakeDockerClient([old, current], [])
