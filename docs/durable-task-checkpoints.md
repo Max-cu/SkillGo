@@ -2,9 +2,9 @@
 
 ## 已实现
 
-通过 `SKILLGO_DURABLE_CHECKPOINTS_ENABLED=true` 启用。compose 将开关传给 API 和任务 Worker；无需数据库迁移。
+通过 `SKILLGO_DURABLE_CHECKPOINTS_ENABLED=true` 启用。是否在运行中冻结工作区由 `SKILLGO_DURABLE_CHECKPOINT_EVERY` 决定：`0`（当前默认）不保存运行中快照；`1` 恢复每轮保存；更大的正整数从第 1 轮起每隔该间隔保存一次。compose 将两个变量传给 API 和任务 Worker；无需数据库迁移。
 
-每个模型轮次开始前，在上一工具轮次完成后冻结工作区，保存：
+间隔命中的模型轮次开始前，在上一工具轮次完成后冻结工作区，保存：
 
 - `/workspace` 普通文件、目录、权限及文件 SHA-256。
 - Agent 消息、计划、验证证据、计数、执行位置和固定脚本状态。
@@ -58,6 +58,6 @@
 
 恢复列包括新沙箱启动与文件校验；保存期间工作区冻结。大工作区的每轮全量保存开销仍然存在，上限仍为 256 MiB / 10000 条目；并非无成本进程快照。
 
-生产启用方式：在 `deploy/ecs.env` 持久设置 `SKILLGO_DURABLE_CHECKPOINTS_ENABLED=true`，任务空闲时重建 API 与任务 Worker，检查进程配置和网页健康。回退开关为 false 会停止新任务生成快照；已有持久化快照仍可恢复。
+生产若要恢复每轮快照：在 `deploy/ecs.env` 持久设置 `SKILLGO_DURABLE_CHECKPOINTS_ENABLED=true` 和 `SKILLGO_DURABLE_CHECKPOINT_EVERY=1`，任务空闲时重建 API 与任务 Worker，检查进程配置和网页健康。总开关为 true 但间隔为 0 时，新任务不会在运行中生成快照。回退总开关为 false，或把间隔设为 0，都会停止新任务生成快照；已有持久化快照仍可恢复。
 
 增量镜像部署必须保留非 root 用户对 Python 包目录的访问权限（目录 755、文件 644，属主 10001）。停服前用候选镜像导入 `app.main` 与 `app.sandbox_worker`；之前权限错误已自动回滚并修复。

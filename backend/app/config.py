@@ -28,6 +28,10 @@ class Settings:
     )
     storage_root: Path = Path(os.getenv("SKILLGO_STORAGE_ROOT", "./storage"))
     durable_checkpoints_enabled: bool = os.getenv("SKILLGO_DURABLE_CHECKPOINTS_ENABLED", "false").lower() == "true"
+    # 0 disables mid-run workspace snapshots. N>0 freezes the workspace every
+    # N turn boundaries (1 restores the previous every-turn cadence). Pause
+    # and resume are unused; per-turn archives dominate wall clock.
+    durable_checkpoint_every: int = max(0, int(os.getenv("SKILLGO_DURABLE_CHECKPOINT_EVERY", "0")))
     jwt_secret: str = os.getenv(
         "SKILLGO_JWT_SECRET", "development-only-change-this-secret"
     )
