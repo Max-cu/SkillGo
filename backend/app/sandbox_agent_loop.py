@@ -709,6 +709,18 @@ def _observation_in_context(payload: object, messages: list[dict[str, Any]]) -> 
     return False
 
 
+def _midrun_checkpoint_due(turn_number: int, every: int) -> bool:
+    """Whether this turn boundary should freeze a durable workspace snapshot.
+
+    ``every <= 0`` disables mid-run snapshots. ``1`` snapshots every turn.
+    Larger intervals snapshot turn 1, then every ``every`` turns (so the first
+    tool batch still has a snapshot ahead of it).
+    """
+    if every <= 0 or turn_number < 1:
+        return False
+    return (turn_number - 1) % every == 0
+
+
 async def _run_agent_loop(
     db: Session,
     job: WorkflowJob,
@@ -819,6 +831,8 @@ async def _run_agent_loop(
             file_tree = []
         messages = _agent_messages(job, skill_contexts, file_tree)
     durable = bool(settings.durable_checkpoints_enabled or resume) and isinstance(sandbox, DockerSandbox)
+    # Live interval. 0 skips the per-turn archive (container pause + workspace zip).
+    checkpoint_every = settings.durable_checkpoint_every
     fence = checkpoint_fence or (lambda: None)
 
     # 0 disables the reasoning-turn cap (QwenPaw semantics: runaway protection
@@ -855,7 +869,7 @@ async def _run_agent_loop(
                     db.commit()
                     raise AgentJobCancelled('Workflow job was cancelled')
             db.commit()
-        if durable:
+        if durable and _midrun_checkpoint_due(turn_number, checkpoint_every):
             try:
                 await save_checkpoint(db, job, sandbox, {
                     'next_turn': turn_number, 'messages': messages,
@@ -1079,7 +1093,7 @@ async def _run_agent_loop(
             else 0,
         )
 
-        if durable:
+        if durable and checkpoint_every > 0:
             mark_inflight(db, job, fence)
         conversation_messages = messages
         turn_nudges: list[str] = []

@@ -37,7 +37,7 @@ Agent 可以读取 Skill 和文件、更新计划、执行命令或 Python、检
 
 Worker 通过数据库租约领取任务并持续心跳，每次尝试都有独立执行身份。正常命令超时会终止命令进程组并保留沙箱供后续处理；Docker exec 通信超时等故障会触发相应的失败或恢复路径。
 
-启用 `SKILLGO_DURABLE_CHECKPOINTS_ENABLED=true` 后，平台会在轮次边界保存工作文件、计划、消息、验证状态和执行位置。已完成工具轮次的快照可被新 Worker 接管；工具执行中断、结果不确定时明确报错，避免自动重放可能已有副作用的操作。
+启用 `SKILLGO_DURABLE_CHECKPOINTS_ENABLED=true` 且 `SKILLGO_DURABLE_CHECKPOINT_EVERY` 为正整数后，平台会在对应轮次边界保存工作文件、计划、消息、验证状态和执行位置。`EVERY=0`（默认）不在运行中保存快照。已完成工具轮次的快照可被新 Worker 接管；工具执行中断、结果不确定时明确报错，避免自动重放可能已有副作用的操作。
 
 恢复不包含进程内存、后台进程或 `/tmp`。当前仍是每轮全量可变工作区快照，采用流式归档并排除平台配置的不可变 Skill 文件；大工作区会增加冻结和 I/O 成本。等待用户回答后的继续执行采用重新发起尝试的语义，并非恢复原进程。详见 [持久化任务快照](durable-task-checkpoints.md)。
 
@@ -100,6 +100,8 @@ docker image inspect skillgo/sandbox-runtime:local --format '{{.Id}}'
 SKILLGO_ENVIRONMENT_PREPARATION_ENABLED=true
 SKILLGO_ENVIRONMENT_BASE_IMAGE=sha256:<完整镜像ID>
 SKILLGO_DURABLE_CHECKPOINTS_ENABLED=true
+# 0 关闭运行中快照（默认）；1 为每轮保存。
+SKILLGO_DURABLE_CHECKPOINT_EVERY=1
 ```
 
 两个功能可以独立启用。启用环境准备时启动对应服务，并保持 API、Worker 与环境服务配置一致：

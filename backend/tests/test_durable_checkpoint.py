@@ -231,7 +231,8 @@ def test_agent_continues_from_disk_after_losing_all_in_memory_state(client, user
             super().__init__()
             self.container = Mock(attrs={'Image':'sha256:'+'a'*64})
     monkeypatch.setattr(loop, 'DockerSandbox', FakeSandbox)
-    monkeypatch.setattr(loop, 'settings', replace(loop.settings, durable_checkpoints_enabled=True))
+    monkeypatch.setattr(loop, 'settings', replace(
+        loop.settings, durable_checkpoints_enabled=True, durable_checkpoint_every=1))
     monkeypatch.setattr(cp, 'export_workspace', lambda sandbox: (dict(sandbox.files), {}, []))
     class Crash(BaseException): pass
     class Gateway:
@@ -299,7 +300,8 @@ def test_oversized_checkpoint_skips_without_killing_task(client, user_headers, f
             self.container = Mock(attrs={'Image': 'sha256:' + 'a'*64})
 
     monkeypatch.setattr(loop, 'DockerSandbox', FakeSandbox)
-    monkeypatch.setattr(loop, 'settings', replace(loop.settings, durable_checkpoints_enabled=True))
+    monkeypatch.setattr(loop, 'settings', replace(
+        loop.settings, durable_checkpoints_enabled=True, durable_checkpoint_every=1))
     export = Mock(side_effect=ValueError('Snapshot exceeds size limit'))
     monkeypatch.setattr(cp, 'export_workspace', export)
 
@@ -406,3 +408,135 @@ def test_active_snapshot_survives_orphan_sweep_then_expires(client, user_headers
     assert not (storage.root/key).exists()
     with SessionLocal() as db:
         assert 'durable_checkpoint' not in db.get(WorkflowJob,created['id']).memory.data
+
+
+def test_midrun_checkpoint_interval():
+    from app.sandbox_agent_loop import _midrun_checkpoint_due
+
+    assert [_midrun_checkpoint_due(turn, 0) for turn in (1, 2, 5)] == [False, False, False]
+    assert [_midrun_checkpoint_due(turn, -3) for turn in (1, 2)] == [False, False]
+    assert [_midrun_checkpoint_due(turn, 1) for turn in range(1, 5)] == [True, True, True, True]
+    assert [_midrun_checkpoint_due(turn, 2) for turn in range(1, 6)] == [True, False, True, False, True]
+    assert _midrun_checkpoint_due(0, 1) is False
+
+
+def test_zero_interval_skips_midrun_snapshot_and_inflight(client, user_headers, fake_model_gateway, monkeypatch):
+    from dataclasses import replace
+    from app import sandbox_agent_loop as loop
+    from app.database import SessionLocal
+    from app.models import WorkflowJob
+    from app.model_gateway import ModelResult
+    from test_orchestration import MemorySandbox
+    from test_workflow_jobs import create_version, sandbox_skill_zip
+
+    _, version = create_version(client, user_headers, slug='checkpoint-off', package=sandbox_skill_zip())
+    created = client.post('/api/v1/jobs', headers=user_headers,
+        data={'version_id': version['id'], 'instruction': 'answer 42'}).json()
+
+    class FakeSandbox(MemorySandbox):
+        def __init__(self):
+            super().__init__()
+            self.container = Mock(attrs={'Image': 'sha256:' + 'a' * 64})
+
+    class Crash(BaseException):
+        pass
+
+    saves = []
+
+    async def spy_save(*args, **kwargs):
+        saves.append(args)
+
+    inflight = []
+
+    def spy_inflight(*args, **kwargs):
+        inflight.append(args)
+
+    monkeypatch.setattr(loop, 'DockerSandbox', FakeSandbox)
+    monkeypatch.setattr(loop, 'save_checkpoint', spy_save)
+    monkeypatch.setattr(loop, 'mark_inflight', spy_inflight)
+    monkeypatch.setattr(loop, 'settings', replace(
+        loop.settings, durable_checkpoints_enabled=True, durable_checkpoint_every=0))
+
+    class Gateway:
+        connection = SimpleNamespace(context_tokens=48000)
+
+        def __init__(self):
+            self.turn = 0
+
+        async def agent_step(self, *, messages):
+            self.turn += 1
+            if self.turn == 1:
+                return ModelResult({'action': 'list_files', 'path': '/workspace'}, 'scripted', {})
+            raise Crash()
+
+    contexts = [{'name': 'Test', 'version': '1', 'root': '/workspace/skill', 'skill_md': '# Answer', 'runtime_requirements': {}}]
+    with SessionLocal() as db:
+        task = db.get(WorkflowJob, created['id'])
+        task.memory.data = {**task.memory.data, 'durable_checkpoint': {'status': 'ready', 'key': 'kept'}}
+        db.commit()
+        with pytest.raises(Crash):
+            asyncio.run(loop._run_agent_loop(
+                db, task, FakeSandbox(), skill_contexts=contexts, gateway=Gateway(), job_cancelled=lambda: False))
+        assert saves == []
+        assert inflight == []
+        assert task.memory.data['durable_checkpoint'] == {'status': 'ready', 'key': 'kept'}
+
+
+def test_positive_interval_snapshots_only_due_turns(client, user_headers, fake_model_gateway, monkeypatch):
+    from dataclasses import replace
+    from app import sandbox_agent_loop as loop
+    from app.database import SessionLocal
+    from app.models import WorkflowJob
+    from app.model_gateway import ModelResult
+    from test_orchestration import MemorySandbox
+    from test_workflow_jobs import create_version, sandbox_skill_zip
+
+    _, version = create_version(client, user_headers, slug='checkpoint-every-2', package=sandbox_skill_zip())
+    created = client.post('/api/v1/jobs', headers=user_headers,
+        data={'version_id': version['id'], 'instruction': 'answer 42'}).json()
+
+    class FakeSandbox(MemorySandbox):
+        def __init__(self):
+            super().__init__()
+            self.container = Mock(attrs={'Image': 'sha256:' + 'a' * 64})
+
+    class Crash(BaseException):
+        pass
+
+    saved_turns = []
+
+    async def spy_save(db, job, sandbox, state, fence):
+        saved_turns.append(state['next_turn'])
+
+    inflight_turns = []
+
+    def spy_inflight(db, job, fence):
+        inflight_turns.append(True)
+
+    monkeypatch.setattr(loop, 'DockerSandbox', FakeSandbox)
+    monkeypatch.setattr(loop, 'save_checkpoint', spy_save)
+    monkeypatch.setattr(loop, 'mark_inflight', spy_inflight)
+    monkeypatch.setattr(loop, 'settings', replace(
+        loop.settings, durable_checkpoints_enabled=True, durable_checkpoint_every=2))
+
+    class Gateway:
+        connection = SimpleNamespace(context_tokens=48000)
+
+        def __init__(self):
+            self.turn = 0
+
+        async def agent_step(self, *, messages):
+            self.turn += 1
+            if self.turn < 3:
+                return ModelResult({'action': 'list_files', 'path': f'/workspace/turn-{self.turn}'}, 'scripted', {})
+            raise Crash()
+
+    contexts = [{'name': 'Test', 'version': '1', 'root': '/workspace/skill', 'skill_md': '# Answer', 'runtime_requirements': {}}]
+    with SessionLocal() as db:
+        task = db.get(WorkflowJob, created['id'])
+        with pytest.raises(Crash):
+            asyncio.run(loop._run_agent_loop(
+                db, task, FakeSandbox(), skill_contexts=contexts, gateway=Gateway(), job_cancelled=lambda: False))
+        assert saved_turns == [1, 3]
+        # Turn 3 crashes in the model call, after the snapshot and before tools.
+        assert inflight_turns == [True, True]
