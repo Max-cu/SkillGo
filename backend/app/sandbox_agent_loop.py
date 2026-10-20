@@ -24,7 +24,11 @@ from .durable_checkpoint import (
 from .agent_kernel import AgentSession, ToolCallContext, ToolPipeline
 from .agent_policy import AgentExecutionState, PRE_PLAN_INSPECTION_HINT, action_fingerprint, is_reference_path
 from .agent_context import project_context, estimate_tokens
-from .context_thinning import resolve_thin_context_policy
+from .context_thinning import (
+    compact_transcript_for_retry,
+    recovery_thin_policy,
+    resolve_thin_context_policy,
+)
 from .photo_plan import annotate_photo_plan_age, load_photo_plan
 from .skill_phase_contracts import stage_contracts, available_reference_paths, expand_reference_actions
 from .workflow_tools import run_verifier, snapshot_step_files, effective_instruction
@@ -37,7 +41,12 @@ from .artifact_validation import (
 )
 from .config import settings
 from .execution_runtime import ensure_job_run
-from .model_gateway import OpenAICompatibleGateway, ModelGatewayError, SANDBOX_AGENT_TOOLS
+from .model_gateway import (
+    OpenAICompatibleGateway,
+    ModelGatewayError,
+    SANDBOX_AGENT_TOOLS,
+    is_context_length_error,
+)
 from .models import JobEvent, JobStepStatus, WorkflowJob, WorkflowJobMemory
 from .sandbox_runtime import DockerSandbox, SandboxRuntimeError
 from .sandbox_tool_registry import (
@@ -49,6 +58,27 @@ from .workflow_execution import add_job_event, set_step
 
 
 logger = logging.getLogger(__name__)
+
+_REPEAT_PRESENTATION_FIELDS = frozenset({"reason", "timeout_seconds"})
+
+REPEAT_TOOL_NOTE = (
+    "Repeated tool call: the same tool was used again with the same arguments. "
+    "Stop repeating it. Change the arguments, pick a different tool, or finish from results already in the conversation."
+)
+
+
+def repeated_tool_signature(action: dict[str, Any]) -> str:
+    """Stable identity of one normalized tool call.
+
+    Reason text and timeout do not change the operation, so they are left out.
+    """
+
+    normalized = {
+        key: value
+        for key, value in action.items()
+        if key not in _REPEAT_PRESENTATION_FIELDS
+    }
+    return json.dumps(normalized, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 # Process-local totals so a worker rollback still sees the last stamp.
 # Released after the closing job event is recorded.
@@ -878,6 +908,8 @@ async def _run_agent_loop_body(
     )
     repeated_action = ""
     repeat_count = 0
+    tool_repeat_signature = ""
+    tool_repeat_streak = 0
     recoverable_errors = 0
     tool_operation_count = 0
     singleton_tool_turns = 0
@@ -893,6 +925,11 @@ async def _run_agent_loop_body(
         execution_state.delivery_only = delivery_only_job(job)
         next_turn = resume['next_turn']
         repeated_action, repeat_count = resume['repeated_action'], resume['repeat_count']
+        tool_repeat_signature = str(resume.get('tool_repeat_signature') or '')
+        try:
+            tool_repeat_streak = max(0, int(resume.get('tool_repeat_streak') or 0))
+        except (TypeError, ValueError):
+            tool_repeat_streak = 0
         recoverable_errors, tool_operation_count = resume['recoverable_errors'], resume['tool_operation_count']
         singleton_tool_turns = resume['singleton_tool_turns']
         for context, executed in zip(skill_contexts, resume['fixed_executed']): context['fixed_executed'] = executed
@@ -972,7 +1009,7 @@ async def _run_agent_loop_body(
             db.commit()
         if durable:
             try:
-                await save_checkpoint(db, job, sandbox, {
+                checkpoint_payload = {
                     'next_turn': turn_number, 'messages': messages,
                     'execution_state': state_to_json(execution_state),
                     'versions': [x['skill_version_id'] for x in job.selected_skills], 'model_name': job.model_name,
@@ -981,7 +1018,11 @@ async def _run_agent_loop_body(
                     'singleton_tool_turns': singleton_tool_turns,
                     'fixed_executed': [bool(c.get('fixed_executed')) for c in skill_contexts],
                     'memory': {k: v for k, v in job.memory.data.items() if k != 'durable_checkpoint'},
-                }, fence)
+                }
+                if settings.agent_loop_recovery_enabled:
+                    checkpoint_payload['tool_repeat_signature'] = tool_repeat_signature
+                    checkpoint_payload['tool_repeat_streak'] = tool_repeat_streak
+                await save_checkpoint(db, job, sandbox, checkpoint_payload, fence)
             except CheckpointUnavailable as exc:
                 # Durable snapshots are crash-recovery insurance, not part of
                 # task execution: a workspace over the 256 MiB / 10k-file cap
@@ -1043,14 +1084,17 @@ async def _run_agent_loop_body(
                     "error": "load_failed",
                 }
             photo_snapshot = annotate_photo_plan_age(photo_snapshot, _job_started_timestamp(job))
-        try:
-            model_messages = project_context(messages, checkpoint=execution_state.checkpoint(),
+
+        def _project(active_messages, policy):
+            budget_diagnostics.clear()
+            return project_context(active_messages, checkpoint=execution_state.checkpoint(),
                 skill_contexts=skill_contexts, loaded=execution_state.loaded_skills,
                 completed=execution_state.completed_skill_indexes,
                 max_tokens=input_budget, tool_tokens=tool_tokens,
                 initial_exchange_reserve=2048, diagnostics=budget_diagnostics,
-                thin=thin_policy, photo_plan=photo_snapshot, state_inject=inject_state)
-        except ValueError as exc:
+                thin=policy, photo_plan=photo_snapshot, state_inject=inject_state)
+
+        def _fail_context_limit(exc: ValueError) -> None:
             reasoning_event.status = 'failed'
             reasoning_event.detail = str(exc)
             reasoning_event.data = {**(reasoning_event.data or {}),
@@ -1058,7 +1102,27 @@ async def _run_agent_loop_body(
                 'error_code': 'AGENT_CONTEXT_LIMIT', 'context_budget': budget_diagnostics,
                 'timing': _publish_timing()}
             db.commit()
-            raise SandboxRuntimeError("AGENT_CONTEXT_LIMIT", str(exc)) from exc
+
+        context_compacted = False
+        try:
+            model_messages = _project(messages, thin_policy)
+        except ValueError as exc:
+            if not settings.agent_loop_recovery_enabled:
+                _fail_context_limit(exc)
+                raise SandboxRuntimeError("AGENT_CONTEXT_LIMIT", str(exc)) from exc
+            recovery_policy = recovery_thin_policy(thin_policy)
+            try:
+                model_messages = _project(
+                    compact_transcript_for_retry(messages, recovery_policy), recovery_policy)
+            except ValueError as retry_exc:
+                _fail_context_limit(retry_exc)
+                raise SandboxRuntimeError("AGENT_CONTEXT_LIMIT", str(retry_exc)) from retry_exc
+            context_compacted = True
+            budget_diagnostics["context_compact_retry"] = True
+            logger.info(
+                "Sandbox job %s compacted context once and retried the model request turn=%s trigger=budget",
+                job.id, turn_number,
+            )
         reasoning_event.data = {
             **(reasoning_event.data or {}),
             "input_estimated_tokens": estimate_tokens(model_messages),
@@ -1066,18 +1130,55 @@ async def _run_agent_loop_body(
             "context_budget": budget_diagnostics,
             "timing": _publish_timing(),
         }
+        if context_compacted:
+            reasoning_event.data["context_compacted"] = True
         db.commit()
-        model_started_at = time.perf_counter()
-        model_error: ModelGatewayError | None = None
-        try:
-            result = await _await_model_with_cancellation(
-                gateway.agent_step(messages=model_messages), job_cancelled)
-        except ModelGatewayError as exc:
-            model_error = exc
-        finally:
-            # Includes calls cancelled while still waiting on the model.
-            job_timing["model_wait_ms"] += _event_duration_ms(model_started_at)
-            model_timing = _publish_timing()
+
+        async def _call_model(active_messages):
+            started = time.perf_counter()
+            error: ModelGatewayError | None = None
+            outcome = None
+            try:
+                outcome = await _await_model_with_cancellation(
+                    gateway.agent_step(messages=active_messages), job_cancelled)
+            except ModelGatewayError as exc:
+                error = exc
+            finally:
+                # Includes calls cancelled while still waiting on the model.
+                job_timing["model_wait_ms"] += _event_duration_ms(started)
+                snapshot = _publish_timing()
+            return outcome, error, snapshot
+
+        result, model_error, model_timing = await _call_model(model_messages)
+        if (
+            model_error is not None
+            and settings.agent_loop_recovery_enabled
+            and not context_compacted
+            and is_context_length_error(model_error)
+        ):
+            recovery_policy = recovery_thin_policy(thin_policy)
+            try:
+                model_messages = _project(
+                    compact_transcript_for_retry(messages, recovery_policy), recovery_policy)
+            except ValueError as retry_exc:
+                _fail_context_limit(retry_exc)
+                raise SandboxRuntimeError("AGENT_CONTEXT_LIMIT", str(retry_exc)) from retry_exc
+            context_compacted = True
+            budget_diagnostics["context_compact_retry"] = True
+            logger.info(
+                "Sandbox job %s compacted context once and retried the model request turn=%s trigger=context_length",
+                job.id, turn_number,
+            )
+            reasoning_event.data = {
+                **(reasoning_event.data or {}),
+                "input_estimated_tokens": estimate_tokens(model_messages),
+                "message_count": len(model_messages),
+                "context_budget": budget_diagnostics,
+                "timing": _publish_timing(),
+                "context_compacted": True,
+            }
+            db.commit()
+            result, model_error, model_timing = await _call_model(model_messages)
         if model_error is not None:
             reasoning_event.status = "failed"
             reasoning_event.detail = str(model_error)
@@ -1305,7 +1406,34 @@ async def _run_agent_loop_body(
             progress_key = f"{execution_state.progress_epoch}:{fingerprint}"
             repeat_count = repeat_count + 1 if progress_key == repeated_action else 1
             repeated_action = progress_key
-            if action_name not in {'read_file', 'list_files'} and (repeat_count > 3 or execution_state.repeated_count(action) > 4):
+            if settings.agent_loop_recovery_enabled:
+                signature = repeated_tool_signature(action)
+                if signature == tool_repeat_signature:
+                    tool_repeat_streak += 1
+                else:
+                    tool_repeat_signature = signature
+                    tool_repeat_streak = 1
+                if tool_repeat_streak >= settings.agent_repeat_tool_stop:
+                    raise SandboxRuntimeError(
+                        "SANDBOX_REPEATED_TOOL",
+                        (
+                            f"Agent called {action_name[:80]} with the same arguments "
+                            f"{tool_repeat_streak} times in a row"
+                        ),
+                    )
+                if tool_repeat_streak == settings.agent_repeat_tool_note:
+                    turn_nudges.append(REPEAT_TOOL_NOTE)
+                if (
+                    action_name not in {'read_file', 'list_files'}
+                    and execution_state.repeated_count(action) >= settings.agent_repeat_tool_stop
+                ):
+                    raise SandboxRuntimeError(
+                        "SANDBOX_AGENT_STALLED",
+                        "Sandbox agent repeated an equivalent action without making progress",
+                    )
+            elif action_name not in {'read_file', 'list_files'} and (
+                repeat_count > 3 or execution_state.repeated_count(action) > 4
+            ):
                 raise SandboxRuntimeError(
                     "SANDBOX_AGENT_STALLED",
                     "Sandbox agent repeated an equivalent action without making progress",

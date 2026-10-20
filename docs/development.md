@@ -66,7 +66,13 @@ SKILLGO_ORCHESTRATION_MODE=audit
 
 已固定的 reference 正文如果还在保留的交互里，不会被压缩；最近一段交互原样发送。落库的消息、任务事件和工作区文件仍是全文。推理事件的 `context_budget` 会写下 `summarized_count`、`removed_tokens`、`preserved_exchange_count`、`exchange_cap_dropped_count`。在旁路实验量过延迟、每轮 token 和 PPT 通过率之前，不要在生产 anti-loop 路径打开 `fast`。
 
-`SKILLGO_STATE_INJECT=1`（默认关闭）只在 `fast` 模式下生效，不改变 audit 投影。技能可以把照片清单和页码分配写到工作区 `/workspace/_state/photo_plan.json`（`photos[]` 含 `image_id` / `path` / `source`，`assignments` 是页码到 `image_id` 列表；`version` 和 `updated_at` 可选）。每一轮推理如果该文件存在且通过校验，会在稳定历史前缀之后、最后一条执行状态消息之前注入一份有 token 上限的摘要。文件缺失或校验失败只记 WARNING 并跳过注入；缺失文件每个任务只警告一次。同一个 `image_id` 出现在两页时，注入块里会带重复分配警告。文件 mtime 早于任务开始时间时，摘要和 `context_budget.photo_plan.stale` 会标出过期计划。推理事件的 `context_budget.photo_plan` 记录 `injected_tokens`、`file_mtime`、`validation` 和 `stale`。任务结束时的 JobEvent `timing` 记录累计模型等待、累计工具耗时和轮数；取消发生在等模型返回期间时，这段等待也计入 `model_wait_ms`。
+`SKILLGO_STATE_INJECT=1`（默认关闭）只在 `fast` 模式下生效，不改变 audit 投影。技能可以把照片清单和页码分配写到工作区 `/workspace/_state/photo_plan.json`（`photos[]` 含 `image_id` / `path` / `source`，`assignments` 是页码到 `image_id` 列表；`version` 和 `updated_at` 可选）。每一轮推理如果该文件存在且通过校验，会在稳定历史前缀之后、最后一条执行状态消息之前注入一份有 token 上限的摘要。文件缺失或校验失败只记 WARNING 并跳过注入；缺失文件每个任务只警告一次。同一个 `image_id` 出现在两页时，注入块里会带重复分配警告。文件 mtime 早于任务开始时间时，摘要和 `context_budget.photo_plan.stale` 会标出过期计划。推理事件的 `context_budget.photo_plan` 记录 `injected_tokens`、`file_mtime`、`validation` 和 `stale`。任务结束时的 JobEvent `timing` 记录累计模型等待、累计工具耗时和轮数；取消发生在等模型返回期间时，这段等待也计入 `model_wait_ms`。上下文超限后的补救重试同样计入 `model_wait_ms`。
+
+`SKILLGO_AGENT_LOOP_RECOVERY_ENABLED` 默认关闭。关闭时，连续相同动作仍在第 4 次触发 `SANDBOX_AGENT_STALLED`，上下文预算不足或模型返回上下文长度错误时立即失败，不会重试。打开后：
+
+- 同一个工具、同一组规范化参数（忽略 `reason` 和 `timeout_seconds`）连续出现 `SKILLGO_AGENT_REPEAT_TOOL_NOTE` 次（默认 3）时，向模型追加一句纠正说明；
+- 连续次数达到 `SKILLGO_AGENT_REPEAT_TOOL_STOP`（默认比纠正阈值大 2）时，任务以 `SANDBOX_REPEATED_TOOL` 失败，错误信息写明工具名和次数；
+- 本地投影超过上下文预算，或网关返回上下文长度错误时，用现有的工具正文压缩和交换上限把历史压缩一次再请求模型。持久消息不被改写。同一轮只压缩一次，第二次仍超限则按原来的错误失败。
 
 如果模型不支持 `response_format: {"type":"json_object"}`，把 `SKILLGO_MODEL_JSON_MODE` 设为 `false`。内网 HTTPS 使用自签名证书时，优先把企业 CA 安装到运行环境；不要在生产环境关闭 TLS 校验。
 

@@ -160,6 +160,16 @@ class Settings:
     # Re-read /workspace/_state/photo_plan.json into each fast-mode model round.
     # Default off. Audit mode does not inject, even when this flag is on.
     state_inject_enabled: bool = _bool("SKILLGO_STATE_INJECT", False)
+    # Opt-in agent-loop recovery. When off, repeated-action stalls and context
+    # failures keep their existing behavior. When on, identical tool calls get
+    # a short note and a later hard stop, and one context overflow retries
+    # after the existing thinning pass.
+    agent_loop_recovery_enabled: bool = _bool("SKILLGO_AGENT_LOOP_RECOVERY_ENABLED", False)
+    agent_repeat_tool_note: int = int(os.getenv("SKILLGO_AGENT_REPEAT_TOOL_NOTE", "3"))
+    agent_repeat_tool_stop: int = int(
+        os.getenv("SKILLGO_AGENT_REPEAT_TOOL_STOP", "")
+        or str(int(os.getenv("SKILLGO_AGENT_REPEAT_TOOL_NOTE", "3")) + 2)
+    )
     # A reasoning turn may now contain several native tool calls. Keep the
     # model-turn budget separate from the sandbox-operation budget so a useful
     # batch is not reported as several rounds of "thinking".
@@ -236,3 +246,11 @@ if settings.orchestration_mode not in {"audit", "fast"}:
 
 if settings.context_max_exchanges is not None and settings.context_max_exchanges < 0:
     raise RuntimeError("SKILLGO_CONTEXT_MAX_EXCHANGES must be >= 0")
+
+if settings.agent_repeat_tool_note < 1:
+    raise RuntimeError("SKILLGO_AGENT_REPEAT_TOOL_NOTE must be >= 1")
+
+if settings.agent_repeat_tool_stop <= settings.agent_repeat_tool_note:
+    raise RuntimeError(
+        "SKILLGO_AGENT_REPEAT_TOOL_STOP must be greater than SKILLGO_AGENT_REPEAT_TOOL_NOTE"
+    )

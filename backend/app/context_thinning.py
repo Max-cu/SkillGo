@@ -184,6 +184,50 @@ def _clip_text(text: str, policy: ThinContextPolicy, *, location: str, sha: str 
     return text[:head] + marker + text[-tail:]
 
 
+def recovery_thin_policy(policy: ThinContextPolicy | None = None) -> ThinContextPolicy:
+    """Tighter projection used for one overflow retry.
+
+    Reuses the same levers as a normal thin policy: an exchange cap, older
+    tool compaction, and deep-reference pointers. Head and tail stay within
+    the caller's sizes when those are already smaller.
+    """
+
+    current = policy or ThinContextPolicy()
+    exchange_cap = current.max_exchanges if current.max_exchanges else 2
+    return ThinContextPolicy(
+        mode=current.mode,
+        max_exchanges=min(exchange_cap, 2),
+        compact_older_tools=True,
+        thin_reference_shelf=True,
+        compact_head_chars=min(current.compact_head_chars, 240),
+        compact_tail_chars=min(current.compact_tail_chars, 120),
+        compact_min_chars=min(current.compact_min_chars, 400),
+    )
+
+
+def compact_transcript_for_retry(
+    messages: list[dict[str, Any]], policy: ThinContextPolicy,
+) -> list[dict[str, Any]]:
+    """Return a slimmer copy of a transcript for one model retry.
+
+    The first two messages stay as they are. Later tool and user bodies go
+    through ``compact_tool_message``, including the latest exchange. The
+    input list and its message dicts are not mutated; durable history stays
+    intact when the caller keeps the original list.
+    """
+
+    compacted: list[dict[str, Any]] = []
+    for index, message in enumerate(messages):
+        if not isinstance(message, dict):
+            continue
+        if index < 2 or not policy.compact_older_tools:
+            compacted.append(message)
+            continue
+        updated = compact_tool_message(message, policy)
+        compacted.append(updated if updated is not message else message)
+    return compacted
+
+
 def _compact_value(value: Any, policy: ThinContextPolicy, *, location_hint: str = "durable history") -> tuple[Any, bool]:
     if isinstance(value, dict):
         if _protected_reference(value):
