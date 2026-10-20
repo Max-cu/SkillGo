@@ -26,6 +26,7 @@ from .agent_kernel import AgentSession, ToolCallContext, ToolPipeline
 from .agent_policy import AgentExecutionState, PRE_PLAN_INSPECTION_HINT, action_fingerprint, is_reference_path
 from .agent_context import project_context, estimate_tokens
 from .context_thinning import resolve_thin_context_policy
+from .photo_plan import annotate_photo_plan_age, load_photo_plan
 from .skill_phase_contracts import stage_contracts, available_reference_paths, expand_reference_actions
 from .workflow_tools import run_verifier, snapshot_step_files, effective_instruction
 from .artifact_collection import receive_declared_artifacts, delivery_only_job
@@ -37,7 +38,7 @@ from .artifact_validation import (
 )
 from .config import settings
 from .execution_runtime import ensure_job_run
-from .tool_output_spill import cleanup_tool_output, spill_tool_result
+from .tool_output_spill import cleanup_tool_output, spill_tool_result, note_unavailable_tool_outputs
 from .model_gateway import OpenAICompatibleGateway, ModelGatewayError, SANDBOX_AGENT_TOOLS
 from .models import JobEvent, JobStepStatus, WorkflowJob, WorkflowJobMemory
 from .sandbox_runtime import DockerSandbox, SandboxRuntimeError
@@ -56,6 +57,69 @@ logger = logging.getLogger(__name__)
 _spill_scope: contextvars.ContextVar[tuple[Any, int, int]] = contextvars.ContextVar(
     "skillgo_tool_output_spill_scope"
 )
+
+
+# Process-local totals so a worker rollback still sees the last stamp.
+# Released after the closing job event is recorded.
+_JOB_TIMING: dict[str, dict[str, int]] = {}
+
+
+def job_end_timing(job: WorkflowJob) -> dict[str, int] | None:
+    """Cumulative model wait, tool execution, and round count for one job."""
+
+    raw = _JOB_TIMING.get(str(job.id))
+    if not isinstance(raw, dict):
+        memory = getattr(job, "memory", None)
+        data = getattr(memory, "data", None)
+        if isinstance(data, dict) and isinstance(data.get("timing"), dict):
+            raw = data["timing"]
+    if not isinstance(raw, dict):
+        return None
+
+    def _nonneg(key: str) -> int:
+        value = raw.get(key)
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return 0
+        return max(0, int(value))
+
+    return {
+        "model_wait_ms": _nonneg("model_wait_ms"),
+        "tool_exec_ms": _nonneg("tool_exec_ms"),
+        "rounds": _nonneg("rounds"),
+    }
+
+
+def log_job_end_timing(job: WorkflowJob) -> None:
+    timing = job_end_timing(job)
+    if timing is None:
+        return
+    logger.info(
+        "Sandbox job %s end timing model_wait_ms=%d tool_exec_ms=%d rounds=%d",
+        job.id,
+        timing["model_wait_ms"],
+        timing["tool_exec_ms"],
+        timing["rounds"],
+    )
+
+
+def release_job_timing(job_id: str) -> None:
+    """Drop process-local timing and one-shot photo-plan warnings for a job."""
+
+    from .photo_plan import forget_photo_plan_warning
+
+    _JOB_TIMING.pop(str(job_id), None)
+    forget_photo_plan_warning(str(job_id))
+
+
+def _job_started_timestamp(job: WorkflowJob) -> float | None:
+    moment = getattr(job, "started_at", None) or getattr(job, "created_at", None)
+    timestamp = getattr(moment, "timestamp", None)
+    if not callable(timestamp):
+        return None
+    try:
+        return float(timestamp())
+    except (OSError, OverflowError, ValueError):
+        return None
 
 
 class AgentJobCancelled(RuntimeError):
@@ -177,20 +241,6 @@ def _finish_tool_event(event: JobEvent, payload: object) -> None:
 
 def _event_duration_ms(started_at: float) -> int:
     return max(0, round((time.perf_counter() - started_at) * 1000))
-
-
-class _JobTiming:
-    """Per-job totals for time spent waiting on the model and running tools."""
-
-    def __init__(self) -> None:
-        self.model_wait_ms = 0
-        self.tool_run_ms = 0
-
-    def add_model(self, started_at: float) -> None:
-        self.model_wait_ms += _event_duration_ms(started_at)
-
-    def add_tool(self, started_at: float) -> None:
-        self.tool_run_ms += _event_duration_ms(started_at)
 
 
 def _action_skill_context(
@@ -791,7 +841,7 @@ async def _run_agent_loop(
     job_cancelled: Callable[[], bool],
     checkpoint_fence: Callable[[], None] | None = None,
 ) -> tuple[str, list[str], int, int]:
-    timing = _JobTiming()
+    scope_token = _spill_scope.set((sandbox, 0, 0)) if settings.tool_output_spill_enabled else None
     try:
         return await _run_agent_loop_body(
             db,
@@ -801,20 +851,16 @@ async def _run_agent_loop(
             gateway=gateway,
             job_cancelled=job_cancelled,
             checkpoint_fence=checkpoint_fence,
-            timing=timing,
         )
     finally:
-        logger.info(
-            "Sandbox job %s timing model_wait_ms=%d tool_run_ms=%d",
-            job.id,
-            timing.model_wait_ms,
-            timing.tool_run_ms,
-        )
-        if settings.tool_output_spill_enabled:
+        log_job_end_timing(job)
+        if scope_token is not None:
             try:
                 await cleanup_tool_output(sandbox)
             except Exception:
                 logger.warning("Tool output cleanup failed job_id=%s", job.id, exc_info=True)
+            finally:
+                _spill_scope.reset(scope_token)
 
 
 async def _run_agent_loop_body(
@@ -826,7 +872,6 @@ async def _run_agent_loop_body(
     gateway: OpenAICompatibleGateway,
     job_cancelled: Callable[[], bool],
     checkpoint_fence: Callable[[], None] | None = None,
-    timing: _JobTiming,
 ) -> tuple[str, list[str], int, int]:
     skill_root = str(skill_contexts[0]["root"])
     # Skill package/input locations are task-immutable and eligible for the
@@ -905,6 +950,8 @@ async def _run_agent_loop_body(
         if resume['versions'] != expected_versions or resume['model_name'] != job.model_name:
             raise SandboxRuntimeError('CHECKPOINT_CONFIGURATION_CHANGED', 'Skill/model selection changed since snapshot')
         messages = resume['messages']
+        if settings.tool_output_spill_enabled:
+            await note_unavailable_tool_outputs(messages, sandbox)
         execution_state = state_from_json(resume['execution_state'])
         execution_state.delivery_only = delivery_only_job(job)
         next_turn = resume['next_turn']
@@ -929,6 +976,28 @@ async def _run_agent_loop_body(
         messages = _agent_messages(job, skill_contexts, file_tree)
     durable = bool(settings.durable_checkpoints_enabled or resume) and isinstance(sandbox, DockerSandbox)
     fence = checkpoint_fence or (lambda: None)
+    job_timing = {"model_wait_ms": 0, "tool_exec_ms": 0, "rounds": 0}
+    turn_clock: dict[str, Any] = {"tool_started": 0.0, "reasoning_event": None}
+
+    def _publish_timing() -> dict[str, int]:
+        snapshot = {
+            "model_wait_ms": job_timing["model_wait_ms"],
+            "tool_exec_ms": job_timing["tool_exec_ms"],
+            "rounds": job_timing["rounds"],
+        }
+        _JOB_TIMING[str(job.id)] = snapshot
+        if job.memory is not None:
+            job.memory.data = {**(job.memory.data or {}), "timing": dict(snapshot)}
+        return dict(snapshot)
+
+    def _note_tool_duration(event: JobEvent) -> None:
+        elapsed = _event_duration_ms(turn_clock["tool_started"])
+        job_timing["tool_exec_ms"] += elapsed
+        snapshot = _publish_timing()
+        event.data = {**(event.data or {}), "duration_ms": elapsed, "timing": snapshot}
+        reasoning = turn_clock["reasoning_event"]
+        if reasoning is not None and isinstance(reasoning.data, dict):
+            reasoning.data = {**reasoning.data, "timing": snapshot}
 
     # 0 disables the reasoning-turn cap (runaway protection relies on the
     # doom-loop guard and per-layer idle checks instead).
@@ -1013,24 +1082,44 @@ async def _run_agent_loop_body(
             status="running",
             data={"turn": turn_number, "tool_operations": tool_operation_count},
         )
+        turn_clock["reasoning_event"] = reasoning_event
+        job_timing["rounds"] = turn_number
+        reasoning_event.data = {**(reasoning_event.data or {}), "timing": _publish_timing()}
         db.commit()
         reasoning_started_at = time.perf_counter()
         budget_diagnostics: dict[str, Any] = {}
         tool_tokens = (estimate_tokens(SANDBOX_AGENT_TOOLS)
                        if getattr(gateway, '_native_tools_available', False) else 0)
+        thin_policy = resolve_thin_context_policy(settings)
+        inject_state = bool(settings.state_inject_enabled and thin_policy.mode == "fast")
+        photo_snapshot = None
+        if inject_state:
+            try:
+                photo_snapshot = await load_photo_plan(sandbox, job_id=str(job.id))
+            except Exception:
+                logger.warning("photo plan load failed job_id=%s", job.id, exc_info=True)
+                photo_snapshot = {
+                    "validation": "read_error",
+                    "file_mtime": None,
+                    "document": None,
+                    "duplicates": [],
+                    "error": "load_failed",
+                }
+            photo_snapshot = annotate_photo_plan_age(photo_snapshot, _job_started_timestamp(job))
         try:
             model_messages = project_context(messages, checkpoint=execution_state.checkpoint(),
                 skill_contexts=skill_contexts, loaded=execution_state.loaded_skills,
                 completed=execution_state.completed_skill_indexes,
                 max_tokens=input_budget, tool_tokens=tool_tokens,
                 initial_exchange_reserve=2048, diagnostics=budget_diagnostics,
-                thin=resolve_thin_context_policy(settings))
+                thin=thin_policy, photo_plan=photo_snapshot, state_inject=inject_state)
         except ValueError as exc:
             reasoning_event.status = 'failed'
             reasoning_event.detail = str(exc)
             reasoning_event.data = {**(reasoning_event.data or {}),
                 'duration_ms': _event_duration_ms(reasoning_started_at),
-                'error_code': 'AGENT_CONTEXT_LIMIT', 'context_budget': budget_diagnostics}
+                'error_code': 'AGENT_CONTEXT_LIMIT', 'context_budget': budget_diagnostics,
+                'timing': _publish_timing()}
             db.commit()
             raise SandboxRuntimeError("AGENT_CONTEXT_LIMIT", str(exc)) from exc
         reasoning_event.data = {
@@ -1038,27 +1127,34 @@ async def _run_agent_loop_body(
             "input_estimated_tokens": estimate_tokens(model_messages),
             "message_count": len(model_messages),
             "context_budget": budget_diagnostics,
+            "timing": _publish_timing(),
         }
         db.commit()
-        model_started = time.perf_counter()
+        model_started_at = time.perf_counter()
+        model_error: ModelGatewayError | None = None
         try:
             result = await _await_model_with_cancellation(
                 gateway.agent_step(messages=model_messages), job_cancelled)
         except ModelGatewayError as exc:
+            model_error = exc
+        finally:
+            # Includes calls cancelled while still waiting on the model.
+            job_timing["model_wait_ms"] += _event_duration_ms(model_started_at)
+            model_timing = _publish_timing()
+        if model_error is not None:
             reasoning_event.status = "failed"
-            reasoning_event.detail = str(exc)
+            reasoning_event.detail = str(model_error)
             reasoning_event.data = {
                 **(reasoning_event.data or {}),
                 "duration_ms": _event_duration_ms(reasoning_started_at),
-                "error_code": exc.code,
+                "error_code": model_error.code,
+                "timing": model_timing,
             }
-            if exc.details:
-                diagnostic_key = "model_http" if "http_status" in exc.details else "model_transport"
-                reasoning_event.data[diagnostic_key] = exc.details
+            if model_error.details:
+                diagnostic_key = "model_http" if "http_status" in model_error.details else "model_transport"
+                reasoning_event.data[diagnostic_key] = model_error.details
             db.commit()
-            raise
-        finally:
-            timing.add_model(model_started)
+            raise model_error
         if job_cancelled():
             raise AgentJobCancelled("Workflow job was cancelled")
 
@@ -1162,6 +1258,7 @@ async def _run_agent_loop_body(
             **(reasoning_event.data or {}),
             "planned_operations": len(calls),
             "duration_ms": _event_duration_ms(reasoning_started_at),
+            "timing": _publish_timing(),
         }
         if summary_source:
             reasoning_event.data["summary"] = " ".join(summary_source.split())[:160]
@@ -1302,574 +1399,604 @@ async def _run_agent_loop_body(
                 data={**tool_data, "turn": turn_number, "operation": tool_operation_count},
             )
             db.commit()
-            tool_started_at = time.perf_counter()
-            try:
-                cached_payload = (
-                    None if validation_error else execution_state.cached_observation(action)
+            turn_clock["tool_started"] = time.perf_counter()
+            cached_payload = (
+                None if validation_error else execution_state.cached_observation(action)
+            )
+            stable_reused = False
+            if cached_payload is None and not validation_error:
+                cached_payload = execution_state.stable_cached_observation(
+                    action, allow_eof=action.get('path') not in required_reference_paths)
+                stable_reused = cached_payload is not None
+            read_cache_hit = cached_payload is not None
+            if not validation_error and action_name in {"list_files", "read_file"}:
+                loop_block = execution_state.register_observation_access(
+                    action, reused=bool(cached_payload is not None), payload=cached_payload,
+                    content_available=_observation_in_context(cached_payload, model_messages),
                 )
-                stable_reused = False
-                if cached_payload is None and not validation_error:
-                    cached_payload = execution_state.stable_cached_observation(
-                        action, allow_eof=action.get('path') not in required_reference_paths)
-                    stable_reused = cached_payload is not None
-                read_cache_hit = cached_payload is not None
-                if not validation_error and action_name in {"list_files", "read_file"}:
-                    loop_block = execution_state.register_observation_access(
-                        action, reused=bool(cached_payload is not None), payload=cached_payload,
-                        content_available=_observation_in_context(cached_payload, model_messages),
-                    )
-                    if loop_block is not None:
-                        validation_error = loop_block["message"]
-                        precondition_error = loop_block
-                        cached_payload = None
-                        tool_event.data = {
-                            **(tool_event.data or {}),
-                            "anti_loop": "observation",
-                            "duplicate_streak": execution_state.duplicate_observation_streak,
-                        }
-                        nudge = execution_state.observation_loop_nudge()
-                        if nudge:
-                            turn_nudges.append(nudge)
-                if validation_error:
-                    payload = {
-                        **(precondition_error or {}),
-                        "ok": False,
-                        "error_code": precondition_error['error_code'] if precondition_error else "SANDBOX_ACTION_INVALID",
-                        "message": validation_error,
-                        "hint": ((precondition_error or {}).get('hint') or
-                                 ("Submit a valid plan with update_plan, then retry this operation."
-                                  if precondition_error else "Correct the arguments and call an available tool again.")),
+                if loop_block is not None:
+                    validation_error = loop_block["message"]
+                    precondition_error = loop_block
+                    cached_payload = None
+                    tool_event.data = {
+                        **(tool_event.data or {}),
+                        "anti_loop": "observation",
+                        "duplicate_streak": execution_state.duplicate_observation_streak,
                     }
-                    await _append_model_tool_result(
-                        messages,
-                        result,
-                        action_name or "unknown",
-                        payload,
-                        tool_call_id=tool_call_id,
-                    )
-                    progress_detail = "缺少有效执行计划，Agent 正在补充" if precondition_error else "Agent 工具参数无效，正在自动纠正"
-                    if precondition_error and precondition_error.get('error_code') == 'OBSERVATION_LOOP_BREAK':
-                        progress_detail = "重复窗口已在上下文中，正在选择下一步"
-                elif cached_payload is not None:
-                    payload = cached_payload
-                    if action_name in {"list_files", "read_file"}:
-                        execution_state.note_stable_observation(action, payload)
-                    payload = await _append_tool_result_with_offload(
-                        messages,
-                        result,
-                        action_name,
-                        payload,
-                        sandbox=sandbox,
-                        turn_number=turn_number,
-                        operation_number=tool_operation_count,
-                        tool_call_id=tool_call_id,
-                    )
-                    progress_detail = (
-                        "已复用未改路径的稳定观察" if stable_reused
-                        else "已复用工作区中尚未变化的检查结果"
-                    )
                     nudge = execution_state.observation_loop_nudge()
                     if nudge:
                         turn_nudges.append(nudge)
-                elif action_name in {'request_capability', 'request_python_dependencies'}:
-                    payload = await request_capability(db, job, sandbox, action.get('capability'), job_cancelled,
-                        **({'requirements': action['requirements'], 'imports': action.get('imports', [])} if action_name == 'request_python_dependencies' else {}))
-                    if job_cancelled():
-                        raise AgentJobCancelled('Workflow job was cancelled')
-                    if payload.get('upgraded'):
-                        execution_state._observation_cache.clear()
-                        execution_state._stable_path_cache.clear()
-                        execution_state.observation_accesses.clear()
-                        execution_state.duplicate_observation_streak = 0
-                        execution_state.register_verifier_success()
-                        execution_state.verification = None
-                        execution_state.validation = None
-                    tool_event.data = {**tool_event.data, 'capability': action.get('capability'), 'python_requirements': action.get('requirements', []),
-                                       'upgraded': bool(payload.get('upgraded'))}
-                    await _append_model_tool_result(messages, result, action_name, payload, tool_call_id=tool_call_id)
-                elif action_name == "run_verifier":
-                    collection = None
-                    preparation_error = None
-                    if action.get('artifacts'):
-                        collection = await receive_declared_artifacts(sandbox,action['artifacts'],cwd=action.get('cwd') or skill_root)
-                        if not collection['ok']:
-                            preparation_error = collection
-                        else:
-                            try:
-                                prepared_snapshot = await snapshot_sandbox_artifacts(sandbox,paths=collection['artifacts'],
-                                                            validate_content=not execution_state.delivery_only)
-                                execution_state.register_artifact_collection(prepared_snapshot,collection['artifact_sources'])
-                            except SandboxRuntimeError as exc:
-                                preparation_error = {'ok':False,'error_code':exc.code,'message':str(exc)[:1000],
-                                    'hint':'Correct the declared deliverable before verification; never regenerate correct files solely to satisfy a progress counter.'}
-                    blocked = None if execution_state.delivery_only or preparation_error else execution_state.verifier_retry_blocked()
-                    if preparation_error is not None:
-                        payload = preparation_error
-                        progress_detail = "交付文件尚未就绪，正在按诊断修正"
-                        await _append_model_tool_result(messages,result,action_name,payload,tool_call_id=tool_call_id)
-                    elif blocked is not None:
-                        payload = blocked
-                        progress_detail = "验证被防抖拦截，需先批量修正"
-                        payload = await _append_tool_result_with_offload(
-                            messages, result, action_name, payload, sandbox=sandbox,
-                            turn_number=turn_number, operation_number=tool_operation_count,
-                            tool_call_id=tool_call_id,
-                        )
-                        turn_nudges.append(
-                                "Anti-loop: run_verifier blocked until artifacts change. "
-                                "Batch all remaining fixes, then verify once."
-                        )
-                    elif execution_state.delivery_only:
-                        payload = {"ok": True, "skipped": True, "verification_mode": "delivery_only",
-                                   "validation_recorded": False,
-                                   "hint": "No additional framework verifier is required. Finish with existing deliverable file paths."}
-                        if execution_state.plan:
-                            for step in execution_state.plan['steps']:
-                                if step['id'] == execution_state.validation_step_id:
-                                    step['status'] = 'skipped'
-                                    step['evidence'] = 'Deployment uses delivery-only acceptance.'
-                        tool_event.title = "准备交付文件"
-                        progress_detail = "无需额外框架验证，正在准备接收文件"
-                        await _append_model_tool_result(messages, result, action_name, payload, tool_call_id=tool_call_id)
+            if validation_error:
+                payload = {
+                    **(precondition_error or {}),
+                    "ok": False,
+                    "error_code": precondition_error['error_code'] if precondition_error else "SANDBOX_ACTION_INVALID",
+                    "message": validation_error,
+                    "hint": ((precondition_error or {}).get('hint') or
+                             ("Submit a valid plan with update_plan, then retry this operation."
+                              if precondition_error else "Correct the arguments and call an available tool again.")),
+                }
+                await _append_model_tool_result(
+                    messages,
+                    result,
+                    action_name or "unknown",
+                    payload,
+                    tool_call_id=tool_call_id,
+                )
+                progress_detail = "缺少有效执行计划，Agent 正在补充" if precondition_error else "Agent 工具参数无效，正在自动纠正"
+                if precondition_error and precondition_error.get('error_code') == 'OBSERVATION_LOOP_BREAK':
+                    progress_detail = "重复窗口已在上下文中，正在选择下一步"
+            elif cached_payload is not None:
+                payload = cached_payload
+                if action_name in {"list_files", "read_file"}:
+                    execution_state.note_stable_observation(action, payload)
+                payload = await _append_tool_result_with_offload(
+                    messages,
+                    result,
+                    action_name,
+                    payload,
+                    sandbox=sandbox,
+                    turn_number=turn_number,
+                    operation_number=tool_operation_count,
+                    tool_call_id=tool_call_id,
+                )
+                progress_detail = (
+                    "已复用未改路径的稳定观察" if stable_reused
+                    else "已复用工作区中尚未变化的检查结果"
+                )
+                nudge = execution_state.observation_loop_nudge()
+                if nudge:
+                    turn_nudges.append(nudge)
+            elif action_name in {'request_capability', 'request_python_dependencies'}:
+                payload = await request_capability(db, job, sandbox, action.get('capability'), job_cancelled,
+                    **({'requirements': action['requirements'], 'imports': action.get('imports', [])} if action_name == 'request_python_dependencies' else {}))
+                if job_cancelled():
+                    raise AgentJobCancelled('Workflow job was cancelled')
+                if payload.get('upgraded'):
+                    execution_state._observation_cache.clear()
+                    execution_state._stable_path_cache.clear()
+                    execution_state.observation_accesses.clear()
+                    execution_state.duplicate_observation_streak = 0
+                    execution_state.register_verifier_success()
+                    execution_state.verification = None
+                    execution_state.validation = None
+                tool_event.data = {**tool_event.data, 'capability': action.get('capability'), 'python_requirements': action.get('requirements', []),
+                                   'upgraded': bool(payload.get('upgraded'))}
+                await _append_model_tool_result(messages, result, action_name, payload, tool_call_id=tool_call_id)
+            elif action_name == "run_verifier":
+                collection = None
+                preparation_error = None
+                if action.get('artifacts'):
+                    collection = await receive_declared_artifacts(sandbox,action['artifacts'],cwd=action.get('cwd') or skill_root)
+                    if not collection['ok']:
+                        preparation_error = collection
                     else:
-                        payload = await run_verifier(sandbox, action, requirements=execution_state.requirements, collection=collection)
-                        if collection and payload.get('artifacts'):
-                            execution_state.register_artifact_collection(payload['artifacts'],collection['artifact_sources'])
-                        execution_state.verification = {**payload, "mutation_epoch": execution_state.mutation_epoch, "operation": tool_operation_count, "tool": "run_verifier"}
-                        if payload['ok']:
-                            execution_state.register_verifier_success()
-                            # Consume the just-observed proof in this operation. A second
-                            # model turn and artifact download add no evidence here.
-                            registered = execution_state.record_validation({
-                                'verification_id': payload['verification_id'],
-                                'status': 'passed',
-                                'summary': 'Platform verifier passed',
-                                'evidence': payload['full_result_path'],
-                                'checks': ['Platform-observed verifier checks'],
-                            }, artifact_snapshot=payload['artifacts'])
-                            if not registered['ok']:
-                                raise SandboxRuntimeError('VALIDATION_REGISTRATION_FAILED', registered['message'])
-                            payload['validation_recorded'] = True
-                            payload['validation_step_completed'] = registered['validation_step_completed']
-                            payload['hint'] = 'Validation is already recorded. Do not call record_validation; finish once the Skill work is complete; no plan status updates are needed.'
-                            if registered['validation_step_completed']:
-                                await sandbox.write_text('/workspace/work/skillgo-plan.json', json.dumps(execution_state.plan, ensure_ascii=False, indent=2))
-                            tool_event.data = {**tool_event.data, 'validation_recorded': True}
-                        if job.memory is None:
-                            job.memory = WorkflowJobMemory(data={})
-                        job.memory.data = {**job.memory.data, 'verification': {key: value for key, value in payload.items() if key not in {'stdout', 'stderr', 'full_result_path'}}}
-                        if not payload['ok']:
-                            execution_state.validation = None
-                            if payload.get('error_code') == 'VERIFIER_FAILED':
-                                execution_state.validation_failures += 1
-                                payload = execution_state.register_verifier_failure(payload)
-                            if execution_state.validation_failures > 2 or execution_state.verifier_fail_streak >= 3:
-                                raise SandboxRuntimeError(
-                                    "SKILL_VALIDATION_FAILED",
-                                    "Verifier still failed after targeted attempts; stop thrashing tiny edit/re-verify cycles",
-                                )
-                        payload = await _append_tool_result_with_offload(messages, result, action_name, payload, sandbox=sandbox, turn_number=turn_number, operation_number=tool_operation_count, tool_call_id=tool_call_id)
-                        if not payload.get('ok') and payload.get('hint'):
-                            turn_nudges.append(str(payload['hint']))
-                elif action_name == "run_fixed_skill":
-                    index = action['skill_index']
-                    if index not in execution_state.loaded_skills or not skill_contexts[index-1].get('fixed_execution') or (execution_state.ordered_skills and any(previous not in execution_state.completed_skill_indexes for previous in range(1, index))):
-                        payload = {"ok": False, "error_code": "FIXED_SKILL_INVALID", "message": "Load a fixed-entrypoint Skill before executing it."}
-                    else:
-                        fixed_context = skill_contexts[index-1]
-                        existing = await sandbox.list_files('/workspace/output')
-                        fixed = await execute_fixed_skill(sandbox, execution=fixed_context['fixed_execution'],
-                            skill_root=fixed_context['root'], instruction=effective_instruction(job),
-                            input_files=[{'path': f'/workspace/input/{item.filename}', 'filename': item.filename} for item in job.input_files] +
-                            [{'path': item['path'], 'filename': PurePosixPath(item['path']).name} for item in existing if item.get('type') == 'file'])
-                        payload = {'ok': True, 'artifacts': list(fixed.artifact_paths), 'summary': fixed.summary, 'exit_code': 0}
-                        fixed_context['fixed_executed'] = True
-                        execution_state.record({'action': 'command', 'argv': list(fixed_context['fixed_execution'].entrypoint)}, payload)
-                    await _append_model_tool_result(messages, result, action_name, payload, tool_call_id=tool_call_id)
-                elif action_name == "inspect_image":
-                    try:
-                        payload = await visual_cache.inspect(sandbox, gateway, path=action['path'], question=action['question'])
-                        tool_event.data = {**(tool_event.data or {}), **{
-                            key: payload[key] for key in ('sha256', 'question_sha256', 'cached', 'image_bytes', 'vision_duration_ms')
-                        }}
-                    except (ModelGatewayError, SandboxRuntimeError) as exc:
-                        payload = {'ok': False, 'error_code': exc.code, 'message': str(exc)}
-                    payload = await _append_tool_result_with_offload(messages, result, action_name, payload, sandbox=sandbox, turn_number=turn_number, operation_number=tool_operation_count, tool_call_id=tool_call_id)
-                elif action_name == "inspect_document":
-                    try:
-                        payload = await visual_cache.inspect_document(
-                            sandbox, gateway,
-                            path=action['path'],
-                            intent=str(action.get('intent') or 'auto'),
-                            pages=tuple(action['pages']) if action.get('pages') is not None else None,
-                            question=str(action.get('question') or ''),
-                        )
-                        tool_event.data = {**(tool_event.data or {}), **{
-                            key: payload[key] for key in
-                            ('sha256', 'mode', 'page_count', 'block_count', 'block_types', 'cached', 'duration_ms')
-                            if key in payload
-                        }}
-                        progress_detail = f"文档解析（{payload.get('mode')}，{payload.get('page_count', 0)} 页）"
-                    except (ModelGatewayError, SandboxRuntimeError) as exc:
-                        payload = {'ok': False, 'error_code': exc.code, 'message': str(exc)}
-                    payload = await _append_tool_result_with_offload(messages, result, action_name, payload, sandbox=sandbox, turn_number=turn_number, operation_number=tool_operation_count, tool_call_id=tool_call_id)
-                elif action_name == "read_skill":
-                    payload = execution_state.read_skill(
-                        int(action.get("skill_index") or 0), skill_contexts
-                    )
-                    if payload.get("ok") is False:
-                        progress_detail = "Skill 序号无效，Agent 正在自动修正"
-                    payload = await _append_tool_result_with_offload(
-                        messages,
-                        result,
-                        action_name,
-                        payload,
-                        sandbox=sandbox,
-                        turn_number=turn_number,
-                        operation_number=tool_operation_count,
-                        tool_call_id=tool_call_id,
-                    )
-                elif action_name == "complete_skill":
-                    index = int(action.get('skill_index') or 0)
-                    fixed_missing = 1 <= index <= len(skill_contexts) and skill_contexts[index-1].get('fixed_execution') and not skill_contexts[index-1].get('fixed_executed')
-                    payload = {"ok": False, "error_code": "FIXED_SKILL_NOT_EXECUTED", "message": "Call run_fixed_skill before completing this phase."} if fixed_missing else execution_state.complete_skill(
-                        int(action.get("skill_index") or 0),
-                        str(action.get("evidence") or ""),
-                    )
-                    if payload.get("ok") is False:
-                        progress_detail = "Skill 阶段证据不完整，Agent 正在自动修正"
-                    await _append_model_tool_result(
-                        messages, result, action_name, payload, tool_call_id=tool_call_id
-                    )
-                elif action_name == "update_plan":
-                    refs = [path for step in action.get('steps', []) if isinstance(step, dict) for key in ('input_refs', 'output_refs') for path in step.get(key, []) if isinstance(path, str)]
-                    refs.extend(path for step in (execution_state.plan or {}).get('steps', []) for key in ('input_refs', 'output_refs') for path in step.get(key, []))
-                    try:
-                        files = await snapshot_step_files(sandbox, refs)
-                        payload = execution_state.update_plan(action, files=files)
-                    except SandboxRuntimeError as exc:
-                        if exc.code != 'PLAN_PATH_INVALID':
-                            raise
-                        payload = {'ok': False, 'error_code': exc.code, 'message': str(exc)}
-                    if payload.get("ok") is False:
-                        progress_detail = "执行计划不完整，Agent 正在自动修正"
-                    else:
-                        await sandbox.write_text(
-                            "/workspace/work/skillgo-plan.json",
-                            json.dumps(payload["plan"], ensure_ascii=False, indent=2),
-                        )
-                        progress_detail = (
-                            "执行计划已更新（部分引用产物尚未生成，将在完成时核验）"
-                            if payload.get("warnings") else "执行计划已更新"
-                        )
-                        if job.memory is None:
-                            job.memory = WorkflowJobMemory(data={})
-                        job.memory.data = {**job.memory.data, 'plan': payload['plan']}
-                    payload = await _append_tool_result_with_offload(
-                        messages,
-                        result,
-                        action_name,
-                        payload,
-                        sandbox=sandbox,
-                        turn_number=turn_number,
-                        operation_number=tool_operation_count,
-                        tool_call_id=tool_call_id,
-                    )
-                elif action_name == "record_validation":
-                    artifact_snapshot = await snapshot_sandbox_artifacts(sandbox)
-                    payload = execution_state.record_validation(
-                        action,
-                        artifact_snapshot=artifact_snapshot,
-                    )
-                    if payload.get("ok") is False:
-                        if payload.get("error_code") == "SKILL_VALIDATION_FAILED":
-                            if not payload.get("retry_allowed"):
-                                raise SandboxRuntimeError(
-                                    "SKILL_VALIDATION_FAILED",
-                                    "集中验证经过两次定向修正后仍未通过",
-                                )
-                            progress_detail = "集中验证发现问题，Agent 正在定向修正"
-                        else:
-                            progress_detail = "验证记录不完整，Agent 正在补充"
-                    else:
-                        if payload.get('validation_step_completed'):
-                            await sandbox.write_text('/workspace/work/skillgo-plan.json', json.dumps(execution_state.plan, ensure_ascii=False, indent=2))
-                        progress_detail = (
-                            f"集中验证已绑定 {len(artifact_snapshot)} 个产物文件"
-                        )
-                    await _append_model_tool_result(
-                        messages,
-                        result,
-                        action_name,
-                        payload,
-                        tool_call_id=tool_call_id,
-                    )
-                elif action_name == "list_files":
-                    requested_path = str(action.get("path") or skill_root)
-                    try:
-                        payload = await sandbox.list_files(requested_path)
-                    except SandboxRuntimeError as exc:
-                        if exc.code not in {"SANDBOX_LIST_FAILED", "SANDBOX_PATH_DENIED"}:
-                            raise
-                        payload = {
-                            "ok": False,
-                            "error_code": exc.code,
-                            "message": str(exc)[:1000],
-                            "requested_path": requested_path[:500],
-                        }
-                        if exc.code == "SANDBOX_PATH_DENIED":
-                            payload["hint"] = "list_files is limited to paths inside /workspace; start from /workspace."
-                            progress_detail = f"目录路径越界，Agent 正在自动修正：{requested_path[:160]}"
-                        else:
-                            payload["hint"] = "List /workspace first, then use an exact path returned by the tool."
-                            progress_detail = f"目录路径无效，Agent 正在自动修正：{requested_path[:160]}"
-                    payload = await _append_tool_result_with_offload(
-                        messages,
-                        result,
-                        action_name,
-                        payload,
-                        sandbox=sandbox,
-                        turn_number=turn_number,
-                        operation_number=tool_operation_count,
-                        tool_call_id=tool_call_id,
-                    )
-                elif action_name == "read_file":
-                    requested_path = str(action.get("path") or "")
-                    suffix = PurePosixPath(requested_path).suffix.lower()
-                    if suffix in BINARY_DOCUMENT_SUFFIXES:
-                        payload = {
-                            "ok": False,
-                            "error_code": "SANDBOX_READ_BINARY",
-                            "message": f"read_file cannot decode binary file: {requested_path}",
-                            "requested_path": requested_path[:500],
-                            "hint": (
-                                "Use command with the approved Skill parser/library for this file type. "
-                                "For DOCX, prefer the Skill's extract_structure.py and write outputs under /workspace/work."
-                            ),
-                        }
-                        progress_detail = "检测到二进制文档，Agent 正在改用 Skill 解析脚本"
-                    else:
-                        read_offset = int(action.get("offset") or 0)
-                        read_limit = int(action.get("limit") or 30_000)
-                        required_reference = requested_path in required_reference_paths
-                        requested_window = {'offset':read_offset,'limit':read_limit}
-                        if required_reference:
-                            read_offset, read_limit = 0, 30_000
                         try:
-                            payload = await _read_file_payload(
-                                sandbox, execution_state, requested_path, reference_roots,
-                                offset=read_offset, limit=read_limit,
-                                complete_reference=required_reference or (action.get('offset') is None and action.get('limit') is None),
-                                max_complete_chars=200_000 if required_reference else 60_000,
-                            )
-                            if required_reference:
-                                payload = {**payload,'required_reference':True,'requested_window':requested_window}
-                                if not payload.get('complete'):
-                                    payload.update(ok=False,error_code='REQUIRED_REFERENCE_INCOMPLETE',
-                                        message='Declared stage requirements could not be fully supplied within the 200000-character bound. '
-                                                'Do not execute this workflow; inspect the reference/context budget before proceeding.')
-                            if payload.get('cached'):
-                                progress_detail = "命中参考书架（未重读沙箱）"
-                            elif payload.get('truncated'):
-                                progress_detail = "文本尚未读完，已提供下一窗口位置"
+                            prepared_snapshot = await snapshot_sandbox_artifacts(sandbox,paths=collection['artifacts'],
+                                                        validate_content=not execution_state.delivery_only)
+                            execution_state.register_artifact_collection(prepared_snapshot,collection['artifact_sources'])
                         except SandboxRuntimeError as exc:
-                            if exc.code not in {"SANDBOX_READ_FAILED", "SANDBOX_PATH_DENIED"}:
-                                raise
-                            payload = {
-                                "ok": False,
-                                "error_code": exc.code,
-                                "message": str(exc)[:1000],
-                                "requested_path": requested_path[:500],
-                            }
-                            if exc.code == "SANDBOX_PATH_DENIED":
-                                payload["hint"] = (
-                                    "read_file is limited to paths inside /workspace. "
-                                    "Copy the file into /workspace/work first, or read system files "
-                                    "inside the sandbox with run_python using open()."
-                                )
-                                progress_detail = f"读取路径越界，Agent 正在改用沙箱内方式：{requested_path[:160]}"
-                            else:
-                                payload["hint"] = "Call list_files on /workspace and retry with the exact text-file path."
-                                progress_detail = f"文件路径不可读，Agent 正在自动修正：{requested_path[:160]}"
+                            preparation_error = {'ok':False,'error_code':exc.code,'message':str(exc)[:1000],
+                                'hint':'Correct the declared deliverable before verification; never regenerate correct files solely to satisfy a progress counter.'}
+                blocked = None if execution_state.delivery_only or preparation_error else execution_state.verifier_retry_blocked()
+                if preparation_error is not None:
+                    payload = preparation_error
+                    progress_detail = "交付文件尚未就绪，正在按诊断修正"
+                    await _append_model_tool_result(messages,result,action_name,payload,tool_call_id=tool_call_id)
+                elif blocked is not None:
+                    payload = blocked
+                    progress_detail = "验证被防抖拦截，需先批量修正"
                     payload = await _append_tool_result_with_offload(
-                        messages,
-                        result,
-                        action_name,
-                        payload,
-                        sandbox=sandbox,
-                        turn_number=turn_number,
-                        operation_number=tool_operation_count,
+                        messages, result, action_name, payload, sandbox=sandbox,
+                        turn_number=turn_number, operation_number=tool_operation_count,
                         tool_call_id=tool_call_id,
                     )
-                elif action_name == "write_file":
-                    path = str(action.get("path") or "")
-                    content = action["content"]
+                    turn_nudges.append(
+                            "Anti-loop: run_verifier blocked until artifacts change. "
+                            "Batch all remaining fixes, then verify once."
+                    )
+                elif execution_state.delivery_only:
+                    payload = {"ok": True, "skipped": True, "verification_mode": "delivery_only",
+                               "validation_recorded": False,
+                               "hint": "No additional framework verifier is required. Finish with existing deliverable file paths."}
+                    if execution_state.plan:
+                        for step in execution_state.plan['steps']:
+                            if step['id'] == execution_state.validation_step_id:
+                                step['status'] = 'skipped'
+                                step['evidence'] = 'Deployment uses delivery-only acceptance.'
+                    tool_event.title = "准备交付文件"
+                    progress_detail = "无需额外框架验证，正在准备接收文件"
+                    await _append_model_tool_result(messages, result, action_name, payload, tool_call_id=tool_call_id)
+                else:
+                    payload = await run_verifier(sandbox, action, requirements=execution_state.requirements, collection=collection)
+                    if collection and payload.get('artifacts'):
+                        execution_state.register_artifact_collection(payload['artifacts'],collection['artifact_sources'])
+                    execution_state.verification = {**payload, "mutation_epoch": execution_state.mutation_epoch, "operation": tool_operation_count, "tool": "run_verifier"}
+                    if payload['ok']:
+                        execution_state.register_verifier_success()
+                        # Consume the just-observed proof in this operation. A second
+                        # model turn and artifact download add no evidence here.
+                        registered = execution_state.record_validation({
+                            'verification_id': payload['verification_id'],
+                            'status': 'passed',
+                            'summary': 'Platform verifier passed',
+                            'evidence': payload['full_result_path'],
+                            'checks': ['Platform-observed verifier checks'],
+                        }, artifact_snapshot=payload['artifacts'])
+                        if not registered['ok']:
+                            raise SandboxRuntimeError('VALIDATION_REGISTRATION_FAILED', registered['message'])
+                        payload['validation_recorded'] = True
+                        payload['validation_step_completed'] = registered['validation_step_completed']
+                        payload['hint'] = 'Validation is already recorded. Do not call record_validation; finish once the Skill work is complete; no plan status updates are needed.'
+                        if registered['validation_step_completed']:
+                            await sandbox.write_text('/workspace/work/skillgo-plan.json', json.dumps(execution_state.plan, ensure_ascii=False, indent=2))
+                        tool_event.data = {**tool_event.data, 'validation_recorded': True}
+                    if job.memory is None:
+                        job.memory = WorkflowJobMemory(data={})
+                    job.memory.data = {**job.memory.data, 'verification': {key: value for key, value in payload.items() if key not in {'stdout', 'stderr', 'full_result_path'}}}
+                    if not payload['ok']:
+                        execution_state.validation = None
+                        if payload.get('error_code') == 'VERIFIER_FAILED':
+                            execution_state.validation_failures += 1
+                            payload = execution_state.register_verifier_failure(payload)
+                        if execution_state.validation_failures > 2 or execution_state.verifier_fail_streak >= 3:
+                            raise SandboxRuntimeError(
+                                "SKILL_VALIDATION_FAILED",
+                                "Verifier still failed after targeted attempts; stop thrashing tiny edit/re-verify cycles",
+                            )
+                    payload = await _append_tool_result_with_offload(messages, result, action_name, payload, sandbox=sandbox, turn_number=turn_number, operation_number=tool_operation_count, tool_call_id=tool_call_id)
+                    if not payload.get('ok') and payload.get('hint'):
+                        turn_nudges.append(str(payload['hint']))
+            elif action_name == "run_fixed_skill":
+                index = action['skill_index']
+                if index not in execution_state.loaded_skills or not skill_contexts[index-1].get('fixed_execution') or (execution_state.ordered_skills and any(previous not in execution_state.completed_skill_indexes for previous in range(1, index))):
+                    payload = {"ok": False, "error_code": "FIXED_SKILL_INVALID", "message": "Load a fixed-entrypoint Skill before executing it."}
+                else:
+                    fixed_context = skill_contexts[index-1]
+                    existing = await sandbox.list_files('/workspace/output')
+                    fixed = await execute_fixed_skill(sandbox, execution=fixed_context['fixed_execution'],
+                        skill_root=fixed_context['root'], instruction=effective_instruction(job),
+                        input_files=[{'path': f'/workspace/input/{item.filename}', 'filename': item.filename} for item in job.input_files] +
+                        [{'path': item['path'], 'filename': PurePosixPath(item['path']).name} for item in existing if item.get('type') == 'file'])
+                    payload = {'ok': True, 'artifacts': list(fixed.artifact_paths), 'summary': fixed.summary, 'exit_code': 0}
+                    fixed_context['fixed_executed'] = True
+                    execution_state.record({'action': 'command', 'argv': list(fixed_context['fixed_execution'].entrypoint)}, payload)
+                await _append_model_tool_result(messages, result, action_name, payload, tool_call_id=tool_call_id)
+            elif action_name == "inspect_image":
+                try:
+                    payload = await visual_cache.inspect(sandbox, gateway, path=action['path'], question=action['question'])
+                    tool_event.data = {**(tool_event.data or {}), **{
+                        key: payload[key] for key in ('sha256', 'question_sha256', 'cached', 'image_bytes', 'vision_duration_ms')
+                    }}
+                except (ModelGatewayError, SandboxRuntimeError) as exc:
+                    payload = {'ok': False, 'error_code': exc.code, 'message': str(exc)}
+                payload = await _append_tool_result_with_offload(messages, result, action_name, payload, sandbox=sandbox, turn_number=turn_number, operation_number=tool_operation_count, tool_call_id=tool_call_id)
+            elif action_name == "inspect_document":
+                try:
+                    payload = await visual_cache.inspect_document(
+                        sandbox, gateway,
+                        path=action['path'],
+                        intent=str(action.get('intent') or 'auto'),
+                        pages=tuple(action['pages']) if action.get('pages') is not None else None,
+                        question=str(action.get('question') or ''),
+                    )
+                    tool_event.data = {**(tool_event.data or {}), **{
+                        key: payload[key] for key in
+                        ('sha256', 'mode', 'page_count', 'block_count', 'block_types', 'cached', 'duration_ms')
+                        if key in payload
+                    }}
+                    progress_detail = f"文档解析（{payload.get('mode')}，{payload.get('page_count', 0)} 页）"
+                except (ModelGatewayError, SandboxRuntimeError) as exc:
+                    payload = {'ok': False, 'error_code': exc.code, 'message': str(exc)}
+                payload = await _append_tool_result_with_offload(messages, result, action_name, payload, sandbox=sandbox, turn_number=turn_number, operation_number=tool_operation_count, tool_call_id=tool_call_id)
+            elif action_name == "read_skill":
+                payload = execution_state.read_skill(
+                    int(action.get("skill_index") or 0), skill_contexts
+                )
+                if payload.get("ok") is False:
+                    progress_detail = "Skill 序号无效，Agent 正在自动修正"
+                payload = await _append_tool_result_with_offload(
+                    messages,
+                    result,
+                    action_name,
+                    payload,
+                    sandbox=sandbox,
+                    turn_number=turn_number,
+                    operation_number=tool_operation_count,
+                    tool_call_id=tool_call_id,
+                )
+            elif action_name == "complete_skill":
+                index = int(action.get('skill_index') or 0)
+                fixed_missing = 1 <= index <= len(skill_contexts) and skill_contexts[index-1].get('fixed_execution') and not skill_contexts[index-1].get('fixed_executed')
+                payload = {"ok": False, "error_code": "FIXED_SKILL_NOT_EXECUTED", "message": "Call run_fixed_skill before completing this phase."} if fixed_missing else execution_state.complete_skill(
+                    int(action.get("skill_index") or 0),
+                    str(action.get("evidence") or ""),
+                )
+                if payload.get("ok") is False:
+                    progress_detail = "Skill 阶段证据不完整，Agent 正在自动修正"
+                await _append_model_tool_result(
+                    messages, result, action_name, payload, tool_call_id=tool_call_id
+                )
+            elif action_name == "update_plan":
+                refs = [path for step in action.get('steps', []) if isinstance(step, dict) for key in ('input_refs', 'output_refs') for path in step.get(key, []) if isinstance(path, str)]
+                refs.extend(path for step in (execution_state.plan or {}).get('steps', []) for key in ('input_refs', 'output_refs') for path in step.get(key, []))
+                try:
+                    files = await snapshot_step_files(sandbox, refs)
+                    payload = execution_state.update_plan(action, files=files)
+                except SandboxRuntimeError as exc:
+                    if exc.code != 'PLAN_PATH_INVALID':
+                        raise
+                    payload = {'ok': False, 'error_code': exc.code, 'message': str(exc)}
+                if payload.get("ok") is False:
+                    progress_detail = "执行计划不完整，Agent 正在自动修正"
+                else:
+                    await sandbox.write_text(
+                        "/workspace/work/skillgo-plan.json",
+                        json.dumps(payload["plan"], ensure_ascii=False, indent=2),
+                    )
+                    progress_detail = (
+                        "执行计划已更新（部分引用产物尚未生成，将在完成时核验）"
+                        if payload.get("warnings") else "执行计划已更新"
+                    )
+                    if job.memory is None:
+                        job.memory = WorkflowJobMemory(data={})
+                    job.memory.data = {**job.memory.data, 'plan': payload['plan']}
+                payload = await _append_tool_result_with_offload(
+                    messages,
+                    result,
+                    action_name,
+                    payload,
+                    sandbox=sandbox,
+                    turn_number=turn_number,
+                    operation_number=tool_operation_count,
+                    tool_call_id=tool_call_id,
+                )
+            elif action_name == "record_validation":
+                artifact_snapshot = await snapshot_sandbox_artifacts(sandbox)
+                payload = execution_state.record_validation(
+                    action,
+                    artifact_snapshot=artifact_snapshot,
+                )
+                if payload.get("ok") is False:
+                    if payload.get("error_code") == "SKILL_VALIDATION_FAILED":
+                        if not payload.get("retry_allowed"):
+                            raise SandboxRuntimeError(
+                                "SKILL_VALIDATION_FAILED",
+                                "集中验证经过两次定向修正后仍未通过",
+                            )
+                        progress_detail = "集中验证发现问题，Agent 正在定向修正"
+                    else:
+                        progress_detail = "验证记录不完整，Agent 正在补充"
+                else:
+                    if payload.get('validation_step_completed'):
+                        await sandbox.write_text('/workspace/work/skillgo-plan.json', json.dumps(execution_state.plan, ensure_ascii=False, indent=2))
+                    progress_detail = (
+                        f"集中验证已绑定 {len(artifact_snapshot)} 个产物文件"
+                    )
+                await _append_model_tool_result(
+                    messages,
+                    result,
+                    action_name,
+                    payload,
+                    tool_call_id=tool_call_id,
+                )
+            elif action_name == "list_files":
+                requested_path = str(action.get("path") or skill_root)
+                try:
+                    payload = await sandbox.list_files(requested_path)
+                except SandboxRuntimeError as exc:
+                    if exc.code not in {"SANDBOX_LIST_FAILED", "SANDBOX_PATH_DENIED"}:
+                        raise
+                    payload = {
+                        "ok": False,
+                        "error_code": exc.code,
+                        "message": str(exc)[:1000],
+                        "requested_path": requested_path[:500],
+                    }
+                    if exc.code == "SANDBOX_PATH_DENIED":
+                        payload["hint"] = "list_files is limited to paths inside /workspace; start from /workspace."
+                        progress_detail = f"目录路径越界，Agent 正在自动修正：{requested_path[:160]}"
+                    else:
+                        payload["hint"] = "List /workspace first, then use an exact path returned by the tool."
+                        progress_detail = f"目录路径无效，Agent 正在自动修正：{requested_path[:160]}"
+                payload = await _append_tool_result_with_offload(
+                    messages,
+                    result,
+                    action_name,
+                    payload,
+                    sandbox=sandbox,
+                    turn_number=turn_number,
+                    operation_number=tool_operation_count,
+                    tool_call_id=tool_call_id,
+                )
+            elif action_name == "read_file":
+                requested_path = str(action.get("path") or "")
+                suffix = PurePosixPath(requested_path).suffix.lower()
+                if suffix in BINARY_DOCUMENT_SUFFIXES:
+                    payload = {
+                        "ok": False,
+                        "error_code": "SANDBOX_READ_BINARY",
+                        "message": f"read_file cannot decode binary file: {requested_path}",
+                        "requested_path": requested_path[:500],
+                        "hint": (
+                            "Use command with the approved Skill parser/library for this file type. "
+                            "For DOCX, prefer the Skill's extract_structure.py and write outputs under /workspace/work."
+                        ),
+                    }
+                    progress_detail = "检测到二进制文档，Agent 正在改用 Skill 解析脚本"
+                else:
+                    read_offset = int(action.get("offset") or 0)
+                    read_limit = int(action.get("limit") or 30_000)
+                    required_reference = requested_path in required_reference_paths
+                    requested_window = {'offset':read_offset,'limit':read_limit}
+                    if required_reference:
+                        read_offset, read_limit = 0, 30_000
                     try:
-                        await sandbox.write_text(path, content)
-                        payload = {
-                            "ok": True,
-                            "path": path,
-                            "bytes": len(content.encode("utf-8")),
-                        }
+                        payload = await _read_file_payload(
+                            sandbox, execution_state, requested_path, reference_roots,
+                            offset=read_offset, limit=read_limit,
+                            complete_reference=required_reference or (action.get('offset') is None and action.get('limit') is None),
+                            max_complete_chars=200_000 if required_reference else 60_000,
+                        )
+                        if required_reference:
+                            payload = {**payload,'required_reference':True,'requested_window':requested_window}
+                            if not payload.get('complete'):
+                                payload.update(ok=False,error_code='REQUIRED_REFERENCE_INCOMPLETE',
+                                    message='Declared stage requirements could not be fully supplied within the 200000-character bound. '
+                                            'Do not execute this workflow; inspect the reference/context budget before proceeding.')
+                        if payload.get('cached'):
+                            progress_detail = "命中参考书架（未重读沙箱）"
+                        elif payload.get('truncated'):
+                            progress_detail = "文本尚未读完，已提供下一窗口位置"
                     except SandboxRuntimeError as exc:
-                        if exc.code not in {"SANDBOX_WRITE_FAILED", "SANDBOX_WRITE_TOO_LARGE", "SANDBOX_PATH_DENIED"}:
+                        if exc.code not in {"SANDBOX_READ_FAILED", "SANDBOX_PATH_DENIED"}:
                             raise
                         payload = {
                             "ok": False,
                             "error_code": exc.code,
                             "message": str(exc)[:1000],
-                            "requested_path": path[:500],
-                            "execution_started": True,
+                            "requested_path": requested_path[:500],
                         }
                         if exc.code == "SANDBOX_PATH_DENIED":
-                            payload["hint"] = "write_file is limited to paths inside /workspace; write under /workspace/work or /workspace/output."
-                            progress_detail = f"写入路径越界，Agent 正在自动修正：{path[:160]}"
+                            payload["hint"] = (
+                                "read_file is limited to paths inside /workspace. "
+                                "Copy the file into /workspace/work first, or read system files "
+                                "inside the sandbox with run_python using open()."
+                            )
+                            progress_detail = f"读取路径越界，Agent 正在改用沙箱内方式：{requested_path[:160]}"
                         else:
-                            payload["hint"] = "Use a path under /workspace/output and split large text into smaller writes."
-                            progress_detail = f"写入未完成，Agent 正在自动修正：{path[:160]}"
-                    await _append_model_tool_result(
-                        messages, result, action_name, payload, tool_call_id=tool_call_id
+                            payload["hint"] = "Call list_files on /workspace and retry with the exact text-file path."
+                            progress_detail = f"文件路径不可读，Agent 正在自动修正：{requested_path[:160]}"
+                payload = await _append_tool_result_with_offload(
+                    messages,
+                    result,
+                    action_name,
+                    payload,
+                    sandbox=sandbox,
+                    turn_number=turn_number,
+                    operation_number=tool_operation_count,
+                    tool_call_id=tool_call_id,
+                )
+            elif action_name == "write_file":
+                path = str(action.get("path") or "")
+                content = action["content"]
+                try:
+                    await sandbox.write_text(path, content)
+                    payload = {
+                        "ok": True,
+                        "path": path,
+                        "bytes": len(content.encode("utf-8")),
+                    }
+                except SandboxRuntimeError as exc:
+                    if exc.code not in {"SANDBOX_WRITE_FAILED", "SANDBOX_WRITE_TOO_LARGE", "SANDBOX_PATH_DENIED"}:
+                        raise
+                    payload = {
+                        "ok": False,
+                        "error_code": exc.code,
+                        "message": str(exc)[:1000],
+                        "requested_path": path[:500],
+                        "execution_started": True,
+                    }
+                    if exc.code == "SANDBOX_PATH_DENIED":
+                        payload["hint"] = "write_file is limited to paths inside /workspace; write under /workspace/work or /workspace/output."
+                        progress_detail = f"写入路径越界，Agent 正在自动修正：{path[:160]}"
+                    else:
+                        payload["hint"] = "Use a path under /workspace/output and split large text into smaller writes."
+                        progress_detail = f"写入未完成，Agent 正在自动修正：{path[:160]}"
+                await _append_model_tool_result(
+                    messages, result, action_name, payload, tool_call_id=tool_call_id
+                )
+            elif action_name == "command":
+                argv = action["argv"]
+                command_timeout = int(
+                    action.get("timeout_seconds")
+                    or settings.sandbox_command_timeout_seconds
+                )
+                try:
+                    command_result = await sandbox.command(
+                        argv,
+                        cwd=str(action.get("cwd") or skill_root),
+                        timeout_seconds=command_timeout,
                     )
-                elif action_name == "command":
-                    argv = action["argv"]
-                    command_timeout = int(
+                    payload = _command_result_payload(
+                        command_result, timeout_seconds=command_timeout
+                    )
+                    if command_result.timed_out:
+                        progress_detail = "命令达到时限被停止（沙箱保留），Agent 正在从断点续跑"
+                    elif command_result.exit_code != 0:
+                        progress_detail = (
+                            f"命令以退出码 {command_result.exit_code} 失败（非超时），"
+                            "Agent 正在根据诊断自动调整"
+                        )
+                except SandboxRuntimeError as exc:
+                    if exc.code != "SANDBOX_COMMAND_INVALID":
+                        raise
+                    payload = {
+                        "ok": False,
+                        "error_code": exc.code,
+                        "message": str(exc)[:1000],
+                        "hint": (
+                            "Keep argv under 64 items and every item under 4096 characters. "
+                            "Use write_file for long code/content, then command the saved file."
+                        ),
+                    }
+                    progress_detail = "命令参数过长，Agent 正在改用工作区文件后重试"
+                if pre_plan_inspection_remaining is not None:
+                    payload["hint"] = (
+                        PRE_PLAN_INSPECTION_HINT
+                        + (" " + payload["hint"] if payload.get("hint") else "")
+                    )
+                payload = await _append_tool_result_with_offload(
+                    messages,
+                    result,
+                    action_name,
+                    payload,
+                    sandbox=sandbox,
+                    turn_number=turn_number,
+                    operation_number=tool_operation_count,
+                    tool_call_id=tool_call_id,
+                )
+            elif action_name == "run_python":
+                script_path = (
+                    f"/workspace/work/agent-turn-{turn_number}-op-{tool_operation_count}.py"
+                )
+                try:
+                    await sandbox.write_text(script_path, action["code"])
+                    python_timeout = int(
                         action.get("timeout_seconds")
                         or settings.sandbox_command_timeout_seconds
                     )
+                    command_result = await sandbox.command(
+                        ["python3", script_path, *(action.get("args") or [])],
+                        cwd=str(action.get("cwd") or skill_root),
+                        timeout_seconds=python_timeout,
+                    )
+                    payload = _command_result_payload(
+                        command_result, timeout_seconds=python_timeout
+                    )
+                    payload["script_path"] = script_path
+                    if command_result.timed_out:
+                        progress_detail = "Python 工作流达到时限被停止（沙箱保留），Agent 正在续跑"
+                    elif command_result.exit_code != 0:
+                        progress_detail = (
+                            f"Python 工作流以退出码 {command_result.exit_code} 失败（非超时），"
+                            "Agent 正在根据诊断自动调整"
+                        )
+                except SandboxRuntimeError as exc:
+                    if exc.code not in {
+                        "SANDBOX_WRITE_FAILED",
+                        "SANDBOX_WRITE_TOO_LARGE",
+                        "SANDBOX_COMMAND_INVALID",
+                    }:
+                        raise
+                    payload = {
+                        "ok": False,
+                        "error_code": exc.code,
+                        "message": str(exc)[:1000],
+                        "hint": "Shorten the cohesive Python program or correct its workspace paths and retry.",
+                        "execution_started": True,
+                    }
+                    progress_detail = "Python 工作流参数未通过，Agent 正在自动修正"
+                if pre_plan_inspection_remaining is not None:
+                    payload["hint"] = (
+                        PRE_PLAN_INSPECTION_HINT
+                        + (" " + payload["hint"] if payload.get("hint") else "")
+                    )
+                payload = await _append_tool_result_with_offload(
+                    messages,
+                    result,
+                    action_name,
+                    payload,
+                    sandbox=sandbox,
+                    turn_number=turn_number,
+                    operation_number=tool_operation_count,
+                    tool_call_id=tool_call_id,
+                )
+            elif action_name == "block":
+                payload = execution_state.block_workflow(
+                    str(action.get("summary") or ""),
+                    str(action.get("evidence") or ""),
+                )
+                if payload.get("ok") is False:
+                    await _append_model_tool_result(
+                        messages, result, action_name, payload, tool_call_id=tool_call_id
+                    )
+                    progress_detail = "任务受阻证据不足，Agent 正在补充真实检查"
+                else:
+                    tool_event.status = "succeeded"
+                    tool_event.detail = "已确认当前条件无法完成用户目标"
+                    _note_tool_duration(tool_event)
+                    agent_session.tool_result(context, payload)
+                    agent_session.finish_step(turn_number)
+                    agent_session.finish_turn(turn_number, reason="blocked")
+                    db.commit()
+                    raise SandboxRuntimeError(
+                        "SKILL_GOAL_BLOCKED",
+                        f"{payload['summary']} Evidence: {payload['evidence']}",
+                    )
+            elif action_name == "finish":
+                if execution_state.step_artifacts:
+                    refs = [path for snapshot in execution_state.step_artifacts.values() for path in snapshot]
+                    execution_state.invalidate_changed_steps(await snapshot_step_files(sandbox, refs))
+                summary = str(action.get("summary") or "").strip()
+                artifacts = action["artifacts"]
+                collection = await receive_declared_artifacts(sandbox, artifacts[:50], cwd=skill_root)
+                if collection.get('ok') is False:
+                    payload = collection
+                    await _append_model_tool_result(
+                        messages,
+                        result,
+                        action_name,
+                        payload,
+                        tool_call_id=tool_call_id,
+                    )
+                    progress_detail = "交付文件未能收集，Agent 正在根据诊断自动修正"
+                else:
+                    artifacts = collection["artifacts"]
                     try:
-                        command_result = await sandbox.command(
-                            argv,
-                            cwd=str(action.get("cwd") or skill_root),
-                            timeout_seconds=command_timeout,
-                        )
-                        payload = _command_result_payload(
-                            command_result, timeout_seconds=command_timeout
-                        )
-                        if command_result.timed_out:
-                            progress_detail = "命令达到时限被停止（沙箱保留），Agent 正在从断点续跑"
-                        elif command_result.exit_code != 0:
-                            progress_detail = (
-                                f"命令以退出码 {command_result.exit_code} 失败（非超时），"
-                                "Agent 正在根据诊断自动调整"
-                            )
+                        output_tree = await sandbox.list_files("/workspace/output")
                     except SandboxRuntimeError as exc:
-                        if exc.code != "SANDBOX_COMMAND_INVALID":
+                        if exc.code != "SANDBOX_LIST_FAILED":
                             raise
+                        output_tree = []
+                    available_files = sorted(
+                        str(item.get("path"))
+                        for item in output_tree
+                        if item.get("type") == "file" and isinstance(item.get("path"), str)
+                    )
+                    missing = [path for path in artifacts if path not in available_files]
+                    if missing:
                         payload = {
                             "ok": False,
-                            "error_code": exc.code,
-                            "message": str(exc)[:1000],
+                            "error_code": "SANDBOX_ARTIFACT_MISSING",
+                            "message": "One or more declared artifacts do not exist.",
+                            "missing": missing,
+                            "available_files": available_files[:100],
                             "hint": (
-                                "Keep argv under 64 items and every item under 4096 characters. "
-                                "Use write_file for long code/content, then command the saved file."
+                                "Call finish again using only exact paths from available_files, "
+                                "or generate the missing deliverable before finishing."
                             ),
                         }
-                        progress_detail = "命令参数过长，Agent 正在改用工作区文件后重试"
-                    if pre_plan_inspection_remaining is not None:
-                        payload["hint"] = (
-                            PRE_PLAN_INSPECTION_HINT
-                            + (" " + payload["hint"] if payload.get("hint") else "")
-                        )
-                    payload = await _append_tool_result_with_offload(
-                        messages,
-                        result,
-                        action_name,
-                        payload,
-                        sandbox=sandbox,
-                        turn_number=turn_number,
-                        operation_number=tool_operation_count,
-                        tool_call_id=tool_call_id,
-                    )
-                elif action_name == "run_python":
-                    script_path = (
-                        f"/workspace/work/agent-turn-{turn_number}-op-{tool_operation_count}.py"
-                    )
-                    try:
-                        await sandbox.write_text(script_path, action["code"])
-                        python_timeout = int(
-                            action.get("timeout_seconds")
-                            or settings.sandbox_command_timeout_seconds
-                        )
-                        command_result = await sandbox.command(
-                            ["python3", script_path, *(action.get("args") or [])],
-                            cwd=str(action.get("cwd") or skill_root),
-                            timeout_seconds=python_timeout,
-                        )
-                        payload = _command_result_payload(
-                            command_result, timeout_seconds=python_timeout
-                        )
-                        payload["script_path"] = script_path
-                        if command_result.timed_out:
-                            progress_detail = "Python 工作流达到时限被停止（沙箱保留），Agent 正在续跑"
-                        elif command_result.exit_code != 0:
-                            progress_detail = (
-                                f"Python 工作流以退出码 {command_result.exit_code} 失败（非超时），"
-                                "Agent 正在根据诊断自动调整"
-                            )
-                    except SandboxRuntimeError as exc:
-                        if exc.code not in {
-                            "SANDBOX_WRITE_FAILED",
-                            "SANDBOX_WRITE_TOO_LARGE",
-                            "SANDBOX_COMMAND_INVALID",
-                        }:
-                            raise
-                        payload = {
-                            "ok": False,
-                            "error_code": exc.code,
-                            "message": str(exc)[:1000],
-                            "hint": "Shorten the cohesive Python program or correct its workspace paths and retry.",
-                            "execution_started": True,
-                        }
-                        progress_detail = "Python 工作流参数未通过，Agent 正在自动修正"
-                    if pre_plan_inspection_remaining is not None:
-                        payload["hint"] = (
-                            PRE_PLAN_INSPECTION_HINT
-                            + (" " + payload["hint"] if payload.get("hint") else "")
-                        )
-                    payload = await _append_tool_result_with_offload(
-                        messages,
-                        result,
-                        action_name,
-                        payload,
-                        sandbox=sandbox,
-                        turn_number=turn_number,
-                        operation_number=tool_operation_count,
-                        tool_call_id=tool_call_id,
-                    )
-                elif action_name == "block":
-                    payload = execution_state.block_workflow(
-                        str(action.get("summary") or ""),
-                        str(action.get("evidence") or ""),
-                    )
-                    if payload.get("ok") is False:
-                        await _append_model_tool_result(
-                            messages, result, action_name, payload, tool_call_id=tool_call_id
-                        )
-                        progress_detail = "任务受阻证据不足，Agent 正在补充真实检查"
-                    else:
-                        tool_event.status = "succeeded"
-                        tool_event.detail = "已确认当前条件无法完成用户目标"
-                        tool_event.data = {
-                            **(tool_event.data or {}),
-                            "duration_ms": _event_duration_ms(tool_started_at),
-                        }
-                        agent_session.tool_result(context, payload)
-                        agent_session.finish_step(turn_number)
-                        agent_session.finish_turn(turn_number, reason="blocked")
-                        db.commit()
-                        raise SandboxRuntimeError(
-                            "SKILL_GOAL_BLOCKED",
-                            f"{payload['summary']} Evidence: {payload['evidence']}",
-                        )
-                elif action_name == "finish":
-                    if execution_state.step_artifacts:
-                        refs = [path for snapshot in execution_state.step_artifacts.values() for path in snapshot]
-                        execution_state.invalidate_changed_steps(await snapshot_step_files(sandbox, refs))
-                    summary = str(action.get("summary") or "").strip()
-                    artifacts = action["artifacts"]
-                    collection = await receive_declared_artifacts(sandbox, artifacts[:50], cwd=skill_root)
-                    if collection.get('ok') is False:
-                        payload = collection
                         await _append_model_tool_result(
                             messages,
                             result,
@@ -1877,31 +2004,32 @@ async def _run_agent_loop_body(
                             payload,
                             tool_call_id=tool_call_id,
                         )
-                        progress_detail = "交付文件未能收集，Agent 正在根据诊断自动修正"
+                        progress_detail = "产物路径与真实文件不一致，Agent 正在自动修正"
                     else:
-                        artifacts = collection["artifacts"]
-                        try:
-                            output_tree = await sandbox.list_files("/workspace/output")
-                        except SandboxRuntimeError as exc:
-                            if exc.code != "SANDBOX_LIST_FAILED":
-                                raise
-                            output_tree = []
-                        available_files = sorted(
-                            str(item.get("path"))
-                            for item in output_tree
-                            if item.get("type") == "file" and isinstance(item.get("path"), str)
+                        current_snapshot = await snapshot_sandbox_artifacts(
+                            sandbox, paths=artifacts if execution_state.delivery_only else None,
+                            validate_content=not execution_state.delivery_only,
                         )
-                        missing = [path for path in artifacts if path not in available_files]
-                        if missing:
+                        execution_state.register_artifact_collection(current_snapshot,collection['artifact_sources'])
+                        undeclared = sorted(set(current_snapshot) - set(artifacts))
+                        blocker = execution_state.finish_blocker(
+                            current_artifacts=current_snapshot
+                        )
+                        if undeclared:
+                            blocker = (
+                                "Declare every regular file currently under /workspace/output; "
+                                f"undeclared paths: {undeclared[:20]}"
+                            )
+                        if blocker:
                             payload = {
                                 "ok": False,
-                                "error_code": "SANDBOX_ARTIFACT_MISSING",
-                                "message": "One or more declared artifacts do not exist.",
-                                "missing": missing,
-                                "available_files": available_files[:100],
+                                "error_code": "AGENT_PLAN_INCOMPLETE",
+                                "message": blocker,
+                                "artifact_sha256": current_snapshot,
+                                "artifact_sources": collection['artifact_sources'],
                                 "hint": (
-                                    "Call finish again using only exact paths from available_files, "
-                                    "or generate the missing deliverable before finishing."
+                                    "Fulfill the Skill instructions and rerun one verifier against the exact "
+                                    "current output bytes before finish."
                                 ),
                             }
                             await _append_model_tool_result(
@@ -1911,157 +2039,118 @@ async def _run_agent_loop_body(
                                 payload,
                                 tool_call_id=tool_call_id,
                             )
-                            progress_detail = "产物路径与真实文件不一致，Agent 正在自动修正"
+                            progress_detail = "执行或验证证据尚未闭环，Agent 正在补齐"
                         else:
-                            current_snapshot = await snapshot_sandbox_artifacts(
-                                sandbox, paths=artifacts if execution_state.delivery_only else None,
-                                validate_content=not execution_state.delivery_only,
+                            if execution_state.skill_count == 1 and 1 not in execution_state.completed_skill_indexes:
+                                execution_state.complete_skill(1, "finish accepted deliverable files: " + ", ".join(artifacts))
+                            logger.info(
+                                "Sandbox job %s finished after %d reasoning turn(s) and %d tool operation(s)",
+                                job.id,
+                                turn_number,
+                                tool_operation_count,
                             )
-                            execution_state.register_artifact_collection(current_snapshot,collection['artifact_sources'])
-                            undeclared = sorted(set(current_snapshot) - set(artifacts))
-                            blocker = execution_state.finish_blocker(
-                                current_artifacts=current_snapshot
+                            tool_event.status = "succeeded"
+                            tool_event.detail = f"已确认 {len(artifacts)} 个产物文件"
+                            tool_event.data = {
+                                **(tool_event.data or {}),
+                                "artifact_sha256": current_snapshot,
+                                "validation_operation": (
+                                    (execution_state.validation or {})
+                                    .get("verifier", {})
+                                    .get("operation")
+                                ),
+                            }
+                            _note_tool_duration(tool_event)
+                            finish_payload = {
+                                "ok": True,
+                                "artifact_count": len(artifacts),
+                            }
+                            agent_session.tool_result(context, finish_payload)
+                            agent_session.finish_step(turn_number)
+                            agent_session.finish_turn(turn_number)
+                            agent_session.checkpoint(
+                                turn=turn_number,
+                                state={
+                                    "loaded_skill_count": len(execution_state.loaded_skills),
+                                    "completed_skill_count": len(execution_state.completed_skill_indexes),
+                                    "observation_count": len(execution_state.observations),
+                                    "mutation_epoch": execution_state.mutation_epoch,
+                                    "validated": execution_state.validation is not None,
+                                    "artifact_sha256": current_snapshot,
+                                },
                             )
-                            if undeclared:
-                                blocker = (
-                                    "Declare every regular file currently under /workspace/output; "
-                                    f"undeclared paths: {undeclared[:20]}"
-                                )
-                            if blocker:
-                                payload = {
-                                    "ok": False,
-                                    "error_code": "AGENT_PLAN_INCOMPLETE",
-                                    "message": blocker,
-                                    "artifact_sha256": current_snapshot,
-                                    "artifact_sources": collection['artifact_sources'],
-                                    "hint": (
-                                        "Fulfill the Skill instructions and rerun one verifier against the exact "
-                                        "current output bytes before finish."
-                                    ),
-                                }
-                                await _append_model_tool_result(
-                                    messages,
-                                    result,
-                                    action_name,
-                                    payload,
-                                    tool_call_id=tool_call_id,
-                                )
-                                progress_detail = "执行或验证证据尚未闭环，Agent 正在补齐"
-                            else:
-                                if execution_state.skill_count == 1 and 1 not in execution_state.completed_skill_indexes:
-                                    execution_state.complete_skill(1, "finish accepted deliverable files: " + ", ".join(artifacts))
-                                logger.info(
-                                    "Sandbox job %s finished after %d reasoning turn(s) and %d tool operation(s)",
-                                    job.id,
-                                    turn_number,
-                                    tool_operation_count,
-                                )
-                                tool_event.status = "succeeded"
-                                tool_event.detail = f"已确认 {len(artifacts)} 个产物文件"
-                                tool_event.data = {
-                                    **(tool_event.data or {}),
-                                    "duration_ms": _event_duration_ms(tool_started_at),
-                                    "artifact_sha256": current_snapshot,
-                                    "validation_operation": (
-                                        (execution_state.validation or {})
-                                        .get("verifier", {})
-                                        .get("operation")
-                                    ),
-                                }
-                                finish_payload = {
-                                    "ok": True,
-                                    "artifact_count": len(artifacts),
-                                }
-                                agent_session.tool_result(context, finish_payload)
-                                agent_session.finish_step(turn_number)
-                                agent_session.finish_turn(turn_number)
-                                agent_session.checkpoint(
-                                    turn=turn_number,
-                                    state={
-                                        "loaded_skill_count": len(execution_state.loaded_skills),
-                                        "completed_skill_count": len(execution_state.completed_skill_indexes),
-                                        "observation_count": len(execution_state.observations),
-                                        "mutation_epoch": execution_state.mutation_epoch,
-                                        "validated": execution_state.validation is not None,
-                                        "artifact_sha256": current_snapshot,
-                                    },
-                                )
-                                db.commit()
-                                return summary, artifacts, turn_number, tool_operation_count
-                else:
-                    raise SandboxRuntimeError(
-                        "SANDBOX_ACTION_INVALID",
-                        f"Unknown sandbox action: {action_name}",
-                    )
+                            db.commit()
+                            return summary, artifacts, turn_number, tool_operation_count
+            else:
+                raise SandboxRuntimeError(
+                    "SANDBOX_ACTION_INVALID",
+                    f"Unknown sandbox action: {action_name}",
+                )
 
-                payload = await tool_pipeline.after(context, payload)
-                recovery_hint = execution_state.failure_recovery_hint(action)
-                if recovery_hint:
-                    turn_nudges.append(recovery_hint)
-                    failure = execution_state.failed_operations[action_fingerprint(action)]
-                    tool_event.data = {**(tool_event.data or {}),
-                        'repeated_failure_count': failure['repeats'], 'failure_signature': failure['signature']}
-                if action_name in {'read_file', 'list_files'}:
-                    tool_event.data = {**(tool_event.data or {}),
-                        'cache_hit': read_cache_hit,
-                        'cache_type': 'stable' if stable_reused else 'epoch' if read_cache_hit else None,
-                        'read_offset': action.get('offset', 0), 'read_limit': action.get('limit'),
-                        'observation_repeats': execution_state.duplicate_observation_streak}
-                    if isinstance(payload, dict):
-                        tool_event.data.update({key: payload[key] for key in
-                            ('returned_chars', 'total_chars', 'complete', 'eof') if key in payload})
-                agent_session.tool_result(context, payload)
-                if isinstance(payload, dict) and (payload.get('ok') is False or payload.get('exit_code', 0) != 0):
-                    recoverable_errors += 1
-                else:
-                    recoverable_errors = 0
-                if action_name in {'command', 'run_python', 'write_file', 'run_fixed_skill'} and execution_state.step_artifacts:
-                    refs = [path for snapshot in execution_state.step_artifacts.values() for path in snapshot]
-                    previously_completed = set(execution_state.completed_skill_indexes)
-                    execution_state.invalidate_changed_steps(await snapshot_step_files(sandbox, refs))
-                    for index in previously_completed - execution_state.completed_skill_indexes:
-                        skill_contexts[index-1]['fixed_executed'] = False
-                if job.memory is not None:
-                    memory = {**job.memory.data, 'plan': execution_state.plan}
-                    if memory.get('verification') and execution_state.verification is None:
-                        memory['verification'] = {**memory['verification'], 'stale': True}
-                    job.memory.data = memory
-                if recoverable_errors > 8:
-                    raise SandboxRuntimeError(
-                        "SANDBOX_TOOL_ERROR_LIMIT",
-                        "Agent could not recover after repeated tool errors",
-                    )
-                _finish_tool_event(tool_event, payload)
+            payload = await tool_pipeline.after(context, payload)
+            recovery_hint = execution_state.failure_recovery_hint(action)
+            if recovery_hint:
+                turn_nudges.append(recovery_hint)
+                failure = execution_state.failed_operations[action_fingerprint(action)]
+                tool_event.data = {**(tool_event.data or {}),
+                    'repeated_failure_count': failure['repeats'], 'failure_signature': failure['signature']}
+            if action_name in {'read_file', 'list_files'}:
+                tool_event.data = {**(tool_event.data or {}),
+                    'cache_hit': read_cache_hit,
+                    'cache_type': 'stable' if stable_reused else 'epoch' if read_cache_hit else None,
+                    'read_offset': action.get('offset', 0), 'read_limit': action.get('limit'),
+                    'observation_repeats': execution_state.duplicate_observation_streak}
+                if isinstance(payload, dict):
+                    tool_event.data.update({key: payload[key] for key in
+                        ('returned_chars', 'total_chars', 'complete', 'eof') if key in payload})
+            agent_session.tool_result(context, payload)
+            if isinstance(payload, dict) and (payload.get('ok') is False or payload.get('exit_code', 0) != 0):
+                recoverable_errors += 1
+            else:
+                recoverable_errors = 0
+            if action_name in {'command', 'run_python', 'write_file', 'run_fixed_skill'} and execution_state.step_artifacts:
+                refs = [path for snapshot in execution_state.step_artifacts.values() for path in snapshot]
+                previously_completed = set(execution_state.completed_skill_indexes)
+                execution_state.invalidate_changed_steps(await snapshot_step_files(sandbox, refs))
+                for index in previously_completed - execution_state.completed_skill_indexes:
+                    skill_contexts[index-1]['fixed_executed'] = False
+            if job.memory is not None:
+                memory = {**job.memory.data, 'plan': execution_state.plan}
+                if memory.get('verification') and execution_state.verification is None:
+                    memory['verification'] = {**memory['verification'], 'stale': True}
+                job.memory.data = memory
+            if recoverable_errors > 8:
+                _note_tool_duration(tool_event)
+                raise SandboxRuntimeError(
+                    "SANDBOX_TOOL_ERROR_LIMIT",
+                    "Agent could not recover after repeated tool errors",
+                )
+            _finish_tool_event(tool_event, payload)
+            _note_tool_duration(tool_event)
+            if tool_event.status == "failed":
                 tool_event.data = {
                     **(tool_event.data or {}),
-                    "duration_ms": _event_duration_ms(tool_started_at),
+                    "recovery_number": recoverable_errors,
                 }
-                if tool_event.status == "failed":
-                    tool_event.data = {
-                        **(tool_event.data or {}),
-                        "recovery_number": recoverable_errors,
-                    }
-                set_step(
-                    db,
-                    job,
-                    "execute-workflow",
-                    JobStepStatus.RUNNING,
-                    f"{progress_detail} · 第 {turn_number} 轮 · 工具操作 {tool_operation_count}",
-                )
-                db.commit()
+            set_step(
+                db,
+                job,
+                "execute-workflow",
+                JobStepStatus.RUNNING,
+                f"{progress_detail} · 第 {turn_number} 轮 · 工具操作 {tool_operation_count}",
+            )
+            db.commit()
 
-                if batch:
-                    batch['results'].append({'index': call_index, 'tool': action_name, 'payload': payload})
-                    if batch.get('workflow_key') and action_name == 'command' and isinstance(payload,dict) and payload.get('ok') is not False and payload.get('exit_code',0) == 0:
-                        cursor = batch['command_indexes'][call_index-1]+1
-                        execution_state.workflow_runs[batch['workflow_key']]['next_index'] = cursor
-                    if isinstance(payload, dict) and (payload.get('ok') is False or payload.get('exit_code', 0) != 0):
-                        if batch.get('workflow_key'):
-                            execution_state.workflow_runs[batch['workflow_key']]['failed'] = True
-                        break
+            if batch:
+                batch['results'].append({'index': call_index, 'tool': action_name, 'payload': payload})
+                if batch.get('workflow_key') and action_name == 'command' and isinstance(payload,dict) and payload.get('ok') is not False and payload.get('exit_code',0) == 0:
+                    cursor = batch['command_indexes'][call_index-1]+1
+                    execution_state.workflow_runs[batch['workflow_key']]['next_index'] = cursor
+                if isinstance(payload, dict) and (payload.get('ok') is False or payload.get('exit_code', 0) != 0):
+                    if batch.get('workflow_key'):
+                        execution_state.workflow_runs[batch['workflow_key']]['failed'] = True
+                    break
 
-            finally:
-                timing.add_tool(tool_started_at)
         if batch:
             messages = conversation_messages
             completed = len(batch['results'])
@@ -2092,9 +2181,7 @@ async def _run_agent_loop_body(
                     command_count=execution_state.workflow_runs[batch['workflow_key']]['command_count'])
             # Per-child payloads have already followed ordinary offload rules;
             # do not truncate them a second time at the aggregate boundary.
-            if settings.tool_output_spill_enabled:
-                _spill_scope.set((sandbox, turn_number, tool_operation_count + 1))
-            await _append_model_tool_result(messages, result, batch['tool'], aggregate, tool_call_id=batch['id'])
+            _append_tool_result(messages, result, batch['tool'], aggregate, tool_call_id=batch['id'])
 
         # Keep the native assistant/tools protocol intact: guidance follows all
         # pending replies, including the one parent reply for a stopped batch.

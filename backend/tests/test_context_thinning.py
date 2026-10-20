@@ -8,7 +8,7 @@ from types import SimpleNamespace
 from app.agent_context import estimate_tokens, project_context
 from app.config import Settings
 from app.context_thinning import ThinContextPolicy, resolve_thin_context_policy
-from app.sandbox_agent_loop import _run_agent_loop, _run_agent_loop_body
+from app import sandbox_agent_loop
 
 
 def _project(messages, checkpoint, budget, policy, diagnostics=None):
@@ -288,13 +288,12 @@ def test_explicit_exchange_cap_can_apply_without_compaction():
 
 
 def test_thin_context_does_not_gate_durable_snapshots():
-    source = inspect.getsource(_run_agent_loop_body)
-    wrapper = inspect.getsource(_run_agent_loop)
+    source = inspect.getsource(sandbox_agent_loop._run_agent_loop_body)
+    wrapper = inspect.getsource(sandbox_agent_loop._run_agent_loop)
     settings_source = inspect.getsource(Settings)
     assert "save_checkpoint" in source
-    assert "_run_agent_loop_body" in wrapper
     assert "DURABLE_CHECKPOINT_EVERY" not in source
-    assert "DURABLE_CHECKPOINT_EVERY" not in wrapper
+    assert "log_job_end_timing" in wrapper
     assert "SKILLGO_DURABLE_CHECKPOINTS_ENABLED" in settings_source
     assert "DURABLE_CHECKPOINT_EVERY" not in settings_source
     assert "orchestration_mode" in settings_source

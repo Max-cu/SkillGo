@@ -540,6 +540,58 @@ print(json.dumps({"ok": True, "path": sys.argv[1], "content": content,
             raise SandboxRuntimeError('SANDBOX_READ_FAILED', 'Invalid text-window response') from exc
         return window
 
+    async def read_state_file(self, path: str, *, max_bytes: int = 131072) -> dict:
+        """Read a small workspace file plus mtime.
+
+        A missing file is ``{"exists": False}``, not an exception. Oversized
+        files return ``error=too_large`` without their body.
+        """
+
+        target = _workspace_path(path, allow_root=False)
+        limit = min(max(int(max_bytes), 1), 262144)
+        source = """
+import json, sys
+from pathlib import Path
+
+root = Path("/workspace").resolve()
+raw = Path(sys.argv[1])
+limit = int(sys.argv[2])
+if raw.is_symlink():
+    print(json.dumps({"exists": False, "error": "symlink"}))
+    raise SystemExit(0)
+path = raw.resolve()
+if path != root and root not in path.parents:
+    raise SystemExit("path must stay inside /workspace")
+if not path.exists():
+    print(json.dumps({"exists": False}))
+    raise SystemExit(0)
+if not path.is_file():
+    print(json.dumps({"exists": False, "error": "not_file"}))
+    raise SystemExit(0)
+st = path.stat()
+payload = {"exists": True, "mtime": st.st_mtime}
+if st.st_size > limit:
+    payload["error"] = "too_large"
+    payload["size"] = st.st_size
+else:
+    payload["content"] = path.read_text(encoding="utf-8", errors="replace")
+print(json.dumps(payload, ensure_ascii=False))
+"""
+        result = await self.command(
+            ["python3", "-c", source, target, str(limit)], timeout_seconds=30
+        )
+        if result.exit_code != 0:
+            raise SandboxRuntimeError(
+                "SANDBOX_READ_FAILED", result.stderr or "Could not read state file"
+            )
+        try:
+            payload = json.loads(result.stdout)
+        except json.JSONDecodeError as exc:
+            raise SandboxRuntimeError("SANDBOX_READ_FAILED", "Invalid state-file response") from exc
+        if not isinstance(payload, dict):
+            raise SandboxRuntimeError("SANDBOX_READ_FAILED", "Invalid state-file response")
+        return payload
+
     async def write_text(self, path: str, content: str) -> None:
         data = content.encode("utf-8")
         if len(data) > MAX_WRITE_BYTES:

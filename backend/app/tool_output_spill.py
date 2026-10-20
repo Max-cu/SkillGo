@@ -235,6 +235,50 @@ async def spill_tool_result(
     return _context_view(payload, full_text, output_path=path, total_bytes=total_bytes)
 
 
+async def note_unavailable_tool_outputs(messages: list[dict[str, Any]], sandbox: object) -> None:
+    """A resumed transcript can point at scratch files excluded from its snapshot."""
+
+    if not settings.tool_output_spill_enabled:
+        return
+    paths: set[str] = set()
+
+    def collect(value: object) -> None:
+        if isinstance(value, dict):
+            for key, item in value.items():
+                if key in {"output_path", "full_result_path"} and isinstance(item, str):
+                    if item.startswith(TOOL_OUTPUT_ROOT + "/") and is_tool_output_path(item):
+                        paths.add(item)
+                elif isinstance(item, (dict, list)):
+                    collect(item)
+        elif isinstance(value, list):
+            for item in value:
+                collect(item)
+
+    for message in messages:
+        content = message.get("content")
+        if not isinstance(content, str):
+            continue
+        try:
+            collect(json.loads(content))
+        except (ValueError, TypeError):
+            continue
+    unavailable = []
+    for path in sorted(paths):
+        try:
+            await sandbox.read_text(path, offset=0, limit=1)
+        except (FileNotFoundError, KeyError, SandboxRuntimeError):
+            unavailable.append(path)
+    if unavailable:
+        messages.append({
+            "role": "user",
+            "content": (
+                "Recovered tool output: the original full output is unavailable (原文已丢失). "
+                "The previous head/tail excerpts remain valid, but do not read these stale paths. "
+                "Recreate the output only if the omitted content is needed:\n" + "\n".join(unavailable)
+            ),
+        })
+
+
 def cleanup_argv(root: str = "/workspace") -> list[str]:
     return ["python3", "-c", CLEANUP_SCRIPT, root]
 

@@ -63,6 +63,71 @@ class RecordingSandbox:
         return self.files[normalized][offset:offset + limit]
 
 
+@pytest.mark.parametrize("route", ["direct", "legacy_offload"])
+def test_enabled_result_is_spilled_once_without_legacy_offload(monkeypatch, route):
+    from app import sandbox_agent_loop as loop
+
+    original = {"ok": True, "stdout": "x" * 100_000}
+    sandbox = RecordingSandbox()
+    messages = []
+    calls = []
+    original_spill = loop.spill_tool_result
+
+    async def counting_spill(*args, **kwargs):
+        calls.append(args)
+        return await original_spill(*args, **kwargs)
+
+    monkeypatch.setattr(loop, "spill_tool_result", counting_spill)
+
+    async def append():
+        if route == "legacy_offload":
+            return await loop._append_tool_result_with_offload(
+                messages, SimpleNamespace(), "command", original,
+                sandbox=sandbox, turn_number=1, operation_number=1, tool_call_id="a",
+            )
+        token = loop._spill_scope.set((sandbox, 1, 1))
+        try:
+            return await loop._append_model_tool_result(
+                messages, SimpleNamespace(), "command", original, tool_call_id="a",
+            )
+        finally:
+            loop._spill_scope.reset(token)
+
+    with spill_settings(enabled=True):
+        result = asyncio.run(append())
+    assert len(calls) == 1
+    assert sandbox.writes == ["/workspace/_tool_output/1_1.txt"]
+    assert len(messages) == 1
+    assert json.loads(sandbox.files[result["full_result_path"]])["payload"] == original
+    assert json.loads(messages[0]["content"])["payload"] == result
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+def test_recovery_marks_only_unavailable_spill_files(enabled):
+    from app.tool_output_spill import note_unavailable_tool_outputs
+
+    present = "/workspace/_tool_output/1_1.txt"
+    missing = "/workspace/_tool_output/1_2.txt"
+    sandbox = RecordingSandbox()
+    sandbox.files[present] = "full output"
+    messages = [{"role": "tool", "content": json.dumps({"payload": {
+        "results": [{"full_result_path": present}, {"output_path": missing},
+                    {"full_result_path": missing}, {"full_result_path": "/workspace/output/report.txt"}],
+    }})}]
+    original = messages[0].copy()
+    with spill_settings(enabled=enabled):
+        asyncio.run(note_unavailable_tool_outputs(messages, sandbox))
+    assert messages[0] == original
+    if enabled:
+        assert len(messages) == 2
+        assert "原文已丢失" in messages[-1]["content"]
+        assert messages[-1]["content"].count(missing) == 1
+        assert present not in messages[-1]["content"]
+        assert "/workspace/output/report.txt" not in messages[-1]["content"]
+    else:
+        assert len(messages) == 1
+
+
 def _large_command_payload() -> tuple[dict, str]:
     stdout = "START-" + ("middle\n" * 20000) + "-FINAL_TRACEBACK_LINE"
     assert len(stdout.encode()) > 52 * 1024
@@ -196,6 +261,8 @@ def test_flag_on_spills_full_text_and_keeps_head_tail_path_and_size():
         ))
     path = "/workspace/_tool_output/3_2.txt"
     assert result["output_path"] == path
+    assert sandbox.writes == [path]
+    assert not any("/work/tool-results/" in key for key in sandbox.files)
     assert result["bytes"] == len(sandbox.files[path].encode("utf-8"))
     assert result["truncated"] is True
     assert result["exit_code"] == 1
@@ -431,7 +498,7 @@ def test_snapshot_keeps_spill_files_when_flag_off_and_drops_them_when_on():
     assert spilled["/workspace/work/notes.txt"] == b"notes"
 
 
-def test_job_timing_log_splits_model_wait_and_tool_run(caplog, client, user_headers, fake_model_gateway):
+def test_job_timing_reuses_main_model_wait_and_tool_exec(caplog, client, user_headers, fake_model_gateway):
     from app.database import SessionLocal
     from app.model_gateway import ModelGatewayError, ModelResult
     from app.models import WorkflowJob
@@ -473,10 +540,10 @@ def test_job_timing_log_splits_model_wait_and_tool_run(caplog, client, user_head
                     gateway=Gateway(), job_cancelled=lambda: False,
                 ))
             db.rollback()
-    timing = [record.getMessage() for record in caplog.records if "timing model_wait_ms=" in record.getMessage()]
+    timing = [record.getMessage() for record in caplog.records if "end timing model_wait_ms=" in record.getMessage()]
     assert len(timing) == 1
-    assert f"Sandbox job {created['id']} timing model_wait_ms=" in timing[0]
-    assert "tool_run_ms=0" in timing[0]
+    assert f"Sandbox job {created['id']} end timing model_wait_ms=" in timing[0]
+    assert "tool_exec_ms=0" in timing[0]
     wait_ms = int(timing[0].split("model_wait_ms=")[1].split(" ")[0])
     assert wait_ms >= 10
     assert "/workspace/_tool_output/1_1.txt" in sandbox.files
