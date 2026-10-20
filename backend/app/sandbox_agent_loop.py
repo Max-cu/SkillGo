@@ -6,6 +6,7 @@ import json
 import logging
 import hashlib
 import time
+from datetime import datetime, timezone
 from pathlib import PurePosixPath
 from typing import Any, Callable
 
@@ -103,12 +104,16 @@ def release_job_timing(job_id: str) -> None:
 
 
 def _job_started_timestamp(job: WorkflowJob) -> float | None:
+    """POSIX seconds for job start. Naive clock values are UTC."""
+
     moment = getattr(job, "started_at", None) or getattr(job, "created_at", None)
-    timestamp = getattr(moment, "timestamp", None)
-    if not callable(timestamp):
+    if not isinstance(moment, datetime):
         return None
+    # utcnow() and persisted job times are UTC. Attach that zone before timestamp().
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=timezone.utc)
     try:
-        return float(timestamp())
+        return float(moment.timestamp())
     except (OSError, OverflowError, ValueError):
         return None
 

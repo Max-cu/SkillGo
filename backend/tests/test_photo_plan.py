@@ -259,6 +259,48 @@ def test_missing_photo_plan_warns_once_per_job(caplog):
     release_job_timing("job-other")
 
 
+def test_naive_utc_job_start_is_independent_of_host_tz():
+    import os
+    from datetime import datetime, timezone
+
+    from app.models import utcnow
+    from app.sandbox_agent_loop import _job_started_timestamp
+
+    previous = os.environ.get("TZ")
+    os.environ["TZ"] = "Asia/Shanghai"
+    time.tzset()
+    try:
+        naive = datetime(2026, 10, 20, 6, 0, 0)
+        expected = naive.replace(tzinfo=timezone.utc).timestamp()
+        assert naive.timestamp() != expected
+        started = _job_started_timestamp(SimpleNamespace(started_at=naive, created_at=None))
+        assert started == pytest.approx(expected)
+        created = _job_started_timestamp(SimpleNamespace(started_at=None, created_at=naive))
+        assert created == pytest.approx(expected)
+        aware = naive.replace(tzinfo=timezone.utc)
+        assert _job_started_timestamp(
+            SimpleNamespace(started_at=aware, created_at=None)
+        ) == pytest.approx(expected)
+        stripped = utcnow().replace(tzinfo=None)
+        assert _job_started_timestamp(
+            SimpleNamespace(started_at=stripped, created_at=None)
+        ) == pytest.approx(stripped.replace(tzinfo=timezone.utc).timestamp())
+        stale = annotate_photo_plan_age(
+            _snapshot(_plan(), mtime=expected - 60), job_started_at=started,
+        )
+        fresh = annotate_photo_plan_age(
+            _snapshot(_plan(), mtime=expected + 60), job_started_at=started,
+        )
+        assert stale["stale"] is True
+        assert fresh["stale"] is False
+    finally:
+        if previous is None:
+            os.environ.pop("TZ", None)
+        else:
+            os.environ["TZ"] = previous
+        time.tzset()
+
+
 def test_photo_plan_older_than_the_job_is_marked_stale():
     messages = [{"role": "system", "content": "rules"}, {"role": "user", "content": "build"}]
     old = annotate_photo_plan_age(_snapshot(_plan(), mtime=1_000.0), job_started_at=2_000.0)
