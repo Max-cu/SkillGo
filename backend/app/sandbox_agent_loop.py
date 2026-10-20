@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import itertools
 import json
 import logging
 import hashlib
 import time
+from datetime import datetime, timezone
 from pathlib import PurePosixPath
 from typing import Any, Callable
 
@@ -24,7 +26,12 @@ from .durable_checkpoint import (
 from .agent_kernel import AgentSession, ToolCallContext, ToolPipeline
 from .agent_policy import AgentExecutionState, PRE_PLAN_INSPECTION_HINT, action_fingerprint, is_reference_path
 from .agent_context import project_context, estimate_tokens
-from .context_thinning import resolve_thin_context_policy
+from .context_thinning import (
+    compact_transcript_for_retry,
+    recovery_thin_policy,
+    resolve_thin_context_policy,
+)
+from .state_inject import annotate_state_age, declared_state_paths, load_state_file
 from .skill_phase_contracts import stage_contracts, available_reference_paths, expand_reference_actions
 from .workflow_tools import run_verifier, snapshot_step_files, effective_instruction
 from .artifact_collection import receive_declared_artifacts, delivery_only_job
@@ -36,7 +43,13 @@ from .artifact_validation import (
 )
 from .config import settings
 from .execution_runtime import ensure_job_run
-from .model_gateway import OpenAICompatibleGateway, ModelGatewayError, SANDBOX_AGENT_TOOLS
+from .model_gateway import (
+    OpenAICompatibleGateway,
+    ModelGatewayError,
+    SANDBOX_AGENT_TOOLS,
+    is_context_length_error,
+)
+from .tool_output_spill import cleanup_tool_output, spill_tool_result, note_unavailable_tool_outputs
 from .models import JobEvent, JobStepStatus, WorkflowJob, WorkflowJobMemory
 from .sandbox_runtime import DockerSandbox, SandboxRuntimeError
 from .sandbox_tool_registry import (
@@ -48,6 +61,100 @@ from .workflow_execution import add_job_event, set_step
 
 
 logger = logging.getLogger(__name__)
+
+_REPEAT_PRESENTATION_FIELDS = frozenset({"reason", "timeout_seconds"})
+
+REPEAT_TOOL_NOTE = (
+    "Repeated tool call: the same tool was used again with the same arguments. "
+    "Stop repeating it. Change the arguments, pick a different tool, or finish from results already in the conversation."
+)
+
+
+def repeated_tool_signature(action: dict[str, Any]) -> str:
+    """Stable identity of one normalized tool call.
+
+    Reason text and timeout do not change the operation, so they are left out.
+    """
+
+    normalized = {
+        key: value
+        for key, value in action.items()
+        if key not in _REPEAT_PRESENTATION_FIELDS
+    }
+    return json.dumps(normalized, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+# (sandbox, round, call) for the tool result currently being recorded.
+# Set only while SKILLGO_TOOL_OUTPUT_SPILL is on.
+_spill_scope: contextvars.ContextVar[tuple[Any, int, int]] = contextvars.ContextVar(
+    "skillgo_tool_output_spill_scope"
+)
+
+
+# Process-local totals so a worker rollback still sees the last stamp.
+# Released after the closing job event is recorded.
+_JOB_TIMING: dict[str, dict[str, int]] = {}
+
+
+def job_end_timing(job: WorkflowJob) -> dict[str, int] | None:
+    """Cumulative model wait, tool execution, and round count for one job."""
+
+    raw = _JOB_TIMING.get(str(job.id))
+    if not isinstance(raw, dict):
+        memory = getattr(job, "memory", None)
+        data = getattr(memory, "data", None)
+        if isinstance(data, dict) and isinstance(data.get("timing"), dict):
+            raw = data["timing"]
+    if not isinstance(raw, dict):
+        return None
+
+    def _nonneg(key: str) -> int:
+        value = raw.get(key)
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return 0
+        return max(0, int(value))
+
+    return {
+        "model_wait_ms": _nonneg("model_wait_ms"),
+        "tool_exec_ms": _nonneg("tool_exec_ms"),
+        "rounds": _nonneg("rounds"),
+    }
+
+
+def log_job_end_timing(job: WorkflowJob) -> None:
+    timing = job_end_timing(job)
+    if timing is None:
+        return
+    logger.info(
+        "Sandbox job %s end timing model_wait_ms=%d tool_exec_ms=%d rounds=%d",
+        job.id,
+        timing["model_wait_ms"],
+        timing["tool_exec_ms"],
+        timing["rounds"],
+    )
+
+
+def release_job_timing(job_id: str) -> None:
+    """Drop process-local timing and one-shot state-file warnings for a job."""
+
+    from .state_inject import forget_state_warnings
+
+    _JOB_TIMING.pop(str(job_id), None)
+    forget_state_warnings(str(job_id))
+
+
+def _job_started_timestamp(job: WorkflowJob) -> float | None:
+    """POSIX seconds for job start. Naive clock values are UTC."""
+
+    moment = getattr(job, "started_at", None) or getattr(job, "created_at", None)
+    if not isinstance(moment, datetime):
+        return None
+    # utcnow() and persisted job times are UTC. Attach that zone before timestamp().
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=timezone.utc)
+    try:
+        return float(moment.timestamp())
+    except (OSError, OverflowError, ValueError):
+        return None
 
 
 class AgentJobCancelled(RuntimeError):
@@ -169,42 +276,6 @@ def _finish_tool_event(event: JobEvent, payload: object) -> None:
 
 def _event_duration_ms(started_at: float) -> int:
     return max(0, round((time.perf_counter() - started_at) * 1000))
-
-
-class _JobTiming:
-    """Per-job totals for time spent waiting on the model and running tools."""
-
-    def __init__(self) -> None:
-        self.model_wait_ms = 0
-        self.tool_run_ms = 0
-        self._open_tool: float | None = None
-
-    def add_model_wait(self, started_at: float) -> None:
-        self.model_wait_ms += _event_duration_ms(started_at)
-
-    def begin_tool(self) -> float:
-        started = time.perf_counter()
-        self._open_tool = started
-        return started
-
-    def end_tool(self, started_at: float | None = None) -> int:
-        if self._open_tool is None:
-            return 0
-        started = self._open_tool if started_at is None else started_at
-        self._open_tool = None
-        delta = _event_duration_ms(started)
-        self.tool_run_ms += delta
-        return delta
-
-    def close(self, job_id: object) -> None:
-        if self._open_tool is not None:
-            self.end_tool()
-        logger.info(
-            "job timing job_id=%s model_wait_ms=%d tool_run_ms=%d",
-            job_id,
-            self.model_wait_ms,
-            self.tool_run_ms,
-        )
 
 
 def _action_skill_context(
@@ -418,6 +489,13 @@ Execution protocol updates (these refine the earlier rules):
         )
         system = system.replace('Once the required artifacts exist and validation passes, call finish immediately.',
                                 'Once the Skill has finished and its deliverables exist, call finish immediately.')
+    if settings.tool_output_spill_enabled:
+        system += (
+            "\nOversized tool results are written under /workspace/_tool_output/<round>_<call>.txt. "
+            "The tool message keeps a head and tail excerpt, the absolute path, and the byte size. "
+            "Read that path with read_file when the omitted middle is required. "
+            "Those files are job scratch, not deliverables.\n"
+        )
     # Path/dependency contracts apply to both acceptance policies. Keep this
     # independent of the verification guidance filtered by delivery-only mode.
     system += (
@@ -524,6 +602,33 @@ def _append_tool_result(
         messages.append({"role": "user", "content": content})
 
 
+async def _append_model_tool_result(
+    messages: list[dict[str, Any]],
+    result: object,
+    action: str,
+    payload: object,
+    *,
+    tool_call_id: str | None = None,
+) -> object:
+    """Append a tool result, spilling it only when the feature flag is on.
+
+    When the flag is off this performs the same append as ``_append_tool_result``
+    and does not read the spill scope.
+    """
+
+    if settings.tool_output_spill_enabled:
+        sandbox, round_number, call_number = _spill_scope.get()
+        payload = await spill_tool_result(
+            action,
+            payload,
+            sandbox=sandbox,
+            round_number=round_number,
+            call_number=call_number,
+        )
+    _append_tool_result(messages, result, action, payload, tool_call_id=tool_call_id)
+    return payload
+
+
 # Tools whose recent results deserve the generous inline tier: their stdout
 # is operational evidence the agent keeps reasoning over (build logs, batch
 # progress, tracebacks). Recent results use a larger inline budget.
@@ -572,6 +677,16 @@ async def _append_tool_result_with_offload(
     tool_call_id: str | None = None,
 ) -> object:
     """Preserve oversized observations in the sandbox before pruning context."""
+    if settings.tool_output_spill_enabled:
+        payload = await spill_tool_result(
+            action,
+            payload,
+            sandbox=sandbox,
+            round_number=turn_number,
+            call_number=operation_number,
+        )
+        _append_tool_result(messages, result, action, payload, tool_call_id=tool_call_id)
+        return payload
     serialized = json.dumps(payload, ensure_ascii=False)
     total_bytes = len(serialized.encode("utf-8"))
 
@@ -761,9 +876,7 @@ async def _run_agent_loop(
     job_cancelled: Callable[[], bool],
     checkpoint_fence: Callable[[], None] | None = None,
 ) -> tuple[str, list[str], int, int]:
-    """Run one sandbox job and log its total model-wait and tool-run time."""
-
-    job_timing = _JobTiming()
+    scope_token = _spill_scope.set((sandbox, 0, 0)) if settings.tool_output_spill_enabled else None
     try:
         return await _run_agent_loop_body(
             db,
@@ -773,10 +886,16 @@ async def _run_agent_loop(
             gateway=gateway,
             job_cancelled=job_cancelled,
             checkpoint_fence=checkpoint_fence,
-            job_timing=job_timing,
         )
     finally:
-        job_timing.close(job.id)
+        log_job_end_timing(job)
+        if scope_token is not None:
+            try:
+                await cleanup_tool_output(sandbox)
+            except Exception:
+                logger.warning("Tool output cleanup failed job_id=%s", job.id, exc_info=True)
+            finally:
+                _spill_scope.reset(scope_token)
 
 
 async def _run_agent_loop_body(
@@ -788,7 +907,6 @@ async def _run_agent_loop_body(
     gateway: OpenAICompatibleGateway,
     job_cancelled: Callable[[], bool],
     checkpoint_fence: Callable[[], None] | None = None,
-    job_timing: _JobTiming,
 ) -> tuple[str, list[str], int, int]:
     skill_root = str(skill_contexts[0]["root"])
     # Skill package/input locations are task-immutable and eligible for the
@@ -856,6 +974,8 @@ async def _run_agent_loop_body(
     )
     repeated_action = ""
     repeat_count = 0
+    tool_repeat_signature = ""
+    tool_repeat_streak = 0
     recoverable_errors = 0
     tool_operation_count = 0
     singleton_tool_turns = 0
@@ -867,10 +987,17 @@ async def _run_agent_loop_body(
         if resume['versions'] != expected_versions or resume['model_name'] != job.model_name:
             raise SandboxRuntimeError('CHECKPOINT_CONFIGURATION_CHANGED', 'Skill/model selection changed since snapshot')
         messages = resume['messages']
+        if settings.tool_output_spill_enabled:
+            await note_unavailable_tool_outputs(messages, sandbox)
         execution_state = state_from_json(resume['execution_state'])
         execution_state.delivery_only = delivery_only_job(job)
         next_turn = resume['next_turn']
         repeated_action, repeat_count = resume['repeated_action'], resume['repeat_count']
+        tool_repeat_signature = str(resume.get('tool_repeat_signature') or '')
+        try:
+            tool_repeat_streak = max(0, int(resume.get('tool_repeat_streak') or 0))
+        except (TypeError, ValueError):
+            tool_repeat_streak = 0
         recoverable_errors, tool_operation_count = resume['recoverable_errors'], resume['tool_operation_count']
         singleton_tool_turns = resume['singleton_tool_turns']
         for context, executed in zip(skill_contexts, resume['fixed_executed']): context['fixed_executed'] = executed
@@ -891,6 +1018,28 @@ async def _run_agent_loop_body(
         messages = _agent_messages(job, skill_contexts, file_tree)
     durable = bool(settings.durable_checkpoints_enabled or resume) and isinstance(sandbox, DockerSandbox)
     fence = checkpoint_fence or (lambda: None)
+    job_timing = {"model_wait_ms": 0, "tool_exec_ms": 0, "rounds": 0}
+    turn_clock: dict[str, Any] = {"tool_started": 0.0, "reasoning_event": None}
+
+    def _publish_timing() -> dict[str, int]:
+        snapshot = {
+            "model_wait_ms": job_timing["model_wait_ms"],
+            "tool_exec_ms": job_timing["tool_exec_ms"],
+            "rounds": job_timing["rounds"],
+        }
+        _JOB_TIMING[str(job.id)] = snapshot
+        if job.memory is not None:
+            job.memory.data = {**(job.memory.data or {}), "timing": dict(snapshot)}
+        return dict(snapshot)
+
+    def _note_tool_duration(event: JobEvent) -> None:
+        elapsed = _event_duration_ms(turn_clock["tool_started"])
+        job_timing["tool_exec_ms"] += elapsed
+        snapshot = _publish_timing()
+        event.data = {**(event.data or {}), "duration_ms": elapsed, "timing": snapshot}
+        reasoning = turn_clock["reasoning_event"]
+        if reasoning is not None and isinstance(reasoning.data, dict):
+            reasoning.data = {**reasoning.data, "timing": snapshot}
 
     # 0 disables the reasoning-turn cap (runaway protection relies on the
     # doom-loop guard and per-layer idle checks instead).
@@ -928,7 +1077,7 @@ async def _run_agent_loop_body(
             db.commit()
         if durable:
             try:
-                await save_checkpoint(db, job, sandbox, {
+                checkpoint_payload = {
                     'next_turn': turn_number, 'messages': messages,
                     'execution_state': state_to_json(execution_state),
                     'versions': [x['skill_version_id'] for x in job.selected_skills], 'model_name': job.model_name,
@@ -937,7 +1086,11 @@ async def _run_agent_loop_body(
                     'singleton_tool_turns': singleton_tool_turns,
                     'fixed_executed': [bool(c.get('fixed_executed')) for c in skill_contexts],
                     'memory': {k: v for k, v in job.memory.data.items() if k != 'durable_checkpoint'},
-                }, fence)
+                }
+                if settings.agent_loop_recovery_enabled:
+                    checkpoint_payload['tool_repeat_signature'] = tool_repeat_signature
+                    checkpoint_payload['tool_repeat_streak'] = tool_repeat_streak
+                await save_checkpoint(db, job, sandbox, checkpoint_payload, fence)
             except CheckpointUnavailable as exc:
                 # Durable snapshots are crash-recovery insurance, not part of
                 # task execution: a workspace over the 256 MiB / 10k-file cap
@@ -975,52 +1128,143 @@ async def _run_agent_loop_body(
             status="running",
             data={"turn": turn_number, "tool_operations": tool_operation_count},
         )
+        turn_clock["reasoning_event"] = reasoning_event
+        job_timing["rounds"] = turn_number
+        reasoning_event.data = {**(reasoning_event.data or {}), "timing": _publish_timing()}
         db.commit()
         reasoning_started_at = time.perf_counter()
         budget_diagnostics: dict[str, Any] = {}
         tool_tokens = (estimate_tokens(SANDBOX_AGENT_TOOLS)
                        if getattr(gateway, '_native_tools_available', False) else 0)
-        try:
-            model_messages = project_context(messages, checkpoint=execution_state.checkpoint(),
+        thin_policy = resolve_thin_context_policy(settings)
+        inject_state = bool(settings.state_inject_enabled and thin_policy.mode == "fast")
+        state_snapshots: list[dict[str, Any]] = []
+        if inject_state:
+            started = _job_started_timestamp(job)
+            for path in declared_state_paths(skill_contexts):
+                try:
+                    snapshot = await load_state_file(sandbox, path, job_id=str(job.id))
+                except Exception:
+                    logger.warning(
+                        "state file load failed job_id=%s path=%s", job.id, path, exc_info=True,
+                    )
+                    snapshot = {
+                        "path": path,
+                        "validation": "read_error",
+                        "file_mtime": None,
+                        "text": None,
+                        "error": "load_failed",
+                    }
+                state_snapshots.append(annotate_state_age(snapshot, started))
+
+        def _project(active_messages, policy):
+            budget_diagnostics.clear()
+            return project_context(active_messages, checkpoint=execution_state.checkpoint(),
                 skill_contexts=skill_contexts, loaded=execution_state.loaded_skills,
                 completed=execution_state.completed_skill_indexes,
                 max_tokens=input_budget, tool_tokens=tool_tokens,
                 initial_exchange_reserve=2048, diagnostics=budget_diagnostics,
-                thin=resolve_thin_context_policy(settings))
-        except ValueError as exc:
+                thin=policy, state_files=state_snapshots, state_inject=inject_state)
+
+        def _fail_context_limit(exc: ValueError) -> None:
             reasoning_event.status = 'failed'
             reasoning_event.detail = str(exc)
             reasoning_event.data = {**(reasoning_event.data or {}),
                 'duration_ms': _event_duration_ms(reasoning_started_at),
-                'error_code': 'AGENT_CONTEXT_LIMIT', 'context_budget': budget_diagnostics}
+                'error_code': 'AGENT_CONTEXT_LIMIT', 'context_budget': budget_diagnostics,
+                'timing': _publish_timing()}
             db.commit()
-            raise SandboxRuntimeError("AGENT_CONTEXT_LIMIT", str(exc)) from exc
+
+        context_compacted = False
+        try:
+            model_messages = _project(messages, thin_policy)
+        except ValueError as exc:
+            if not settings.agent_loop_recovery_enabled:
+                _fail_context_limit(exc)
+                raise SandboxRuntimeError("AGENT_CONTEXT_LIMIT", str(exc)) from exc
+            recovery_policy = recovery_thin_policy(thin_policy)
+            try:
+                model_messages = _project(
+                    compact_transcript_for_retry(messages, recovery_policy), recovery_policy)
+            except ValueError as retry_exc:
+                _fail_context_limit(retry_exc)
+                raise SandboxRuntimeError("AGENT_CONTEXT_LIMIT", str(retry_exc)) from retry_exc
+            context_compacted = True
+            budget_diagnostics["context_compact_retry"] = True
+            logger.info(
+                "Sandbox job %s compacted context once and retried the model request turn=%s trigger=budget",
+                job.id, turn_number,
+            )
         reasoning_event.data = {
             **(reasoning_event.data or {}),
             "input_estimated_tokens": estimate_tokens(model_messages),
             "message_count": len(model_messages),
             "context_budget": budget_diagnostics,
+            "timing": _publish_timing(),
         }
+        if context_compacted:
+            reasoning_event.data["context_compacted"] = True
         db.commit()
-        model_wait_started = time.perf_counter()
-        try:
-            result = await _await_model_with_cancellation(
-                gateway.agent_step(messages=model_messages), job_cancelled)
-        except ModelGatewayError as exc:
+
+        async def _call_model(active_messages):
+            started = time.perf_counter()
+            error: ModelGatewayError | None = None
+            outcome = None
+            try:
+                outcome = await _await_model_with_cancellation(
+                    gateway.agent_step(messages=active_messages), job_cancelled)
+            except ModelGatewayError as exc:
+                error = exc
+            finally:
+                # Includes calls cancelled while still waiting on the model.
+                job_timing["model_wait_ms"] += _event_duration_ms(started)
+                snapshot = _publish_timing()
+            return outcome, error, snapshot
+
+        result, model_error, model_timing = await _call_model(model_messages)
+        if (
+            model_error is not None
+            and settings.agent_loop_recovery_enabled
+            and not context_compacted
+            and is_context_length_error(model_error)
+        ):
+            recovery_policy = recovery_thin_policy(thin_policy)
+            try:
+                model_messages = _project(
+                    compact_transcript_for_retry(messages, recovery_policy), recovery_policy)
+            except ValueError as retry_exc:
+                _fail_context_limit(retry_exc)
+                raise SandboxRuntimeError("AGENT_CONTEXT_LIMIT", str(retry_exc)) from retry_exc
+            context_compacted = True
+            budget_diagnostics["context_compact_retry"] = True
+            logger.info(
+                "Sandbox job %s compacted context once and retried the model request turn=%s trigger=context_length",
+                job.id, turn_number,
+            )
+            reasoning_event.data = {
+                **(reasoning_event.data or {}),
+                "input_estimated_tokens": estimate_tokens(model_messages),
+                "message_count": len(model_messages),
+                "context_budget": budget_diagnostics,
+                "timing": _publish_timing(),
+                "context_compacted": True,
+            }
+            db.commit()
+            result, model_error, model_timing = await _call_model(model_messages)
+        if model_error is not None:
             reasoning_event.status = "failed"
-            reasoning_event.detail = str(exc)
+            reasoning_event.detail = str(model_error)
             reasoning_event.data = {
                 **(reasoning_event.data or {}),
                 "duration_ms": _event_duration_ms(reasoning_started_at),
-                "error_code": exc.code,
+                "error_code": model_error.code,
+                "timing": model_timing,
             }
-            if exc.details:
-                diagnostic_key = "model_http" if "http_status" in exc.details else "model_transport"
-                reasoning_event.data[diagnostic_key] = exc.details
+            if model_error.details:
+                diagnostic_key = "model_http" if "http_status" in model_error.details else "model_transport"
+                reasoning_event.data[diagnostic_key] = model_error.details
             db.commit()
-            raise
-        finally:
-            job_timing.add_model_wait(model_wait_started)
+            raise model_error
         if job_cancelled():
             raise AgentJobCancelled("Workflow job was cancelled")
 
@@ -1124,6 +1368,7 @@ async def _run_agent_loop_body(
             **(reasoning_event.data or {}),
             "planned_operations": len(calls),
             "duration_ms": _event_duration_ms(reasoning_started_at),
+            "timing": _publish_timing(),
         }
         if summary_source:
             reasoning_event.data["summary"] = " ".join(summary_source.split())[:160]
@@ -1165,6 +1410,8 @@ async def _run_agent_loop_body(
             messages = []
         for call_index, (tool_call_id, action) in enumerate(calls, 1):
             tool_operation_count += 1
+            if settings.tool_output_spill_enabled:
+                _spill_scope.set((sandbox, turn_number, tool_operation_count))
             if settings.sandbox_max_agent_tool_calls > 0 and tool_operation_count > settings.sandbox_max_agent_tool_calls:
                 raise SandboxRuntimeError(
                     "SANDBOX_AGENT_TOOL_LIMIT",
@@ -1233,7 +1480,34 @@ async def _run_agent_loop_body(
             progress_key = f"{execution_state.progress_epoch}:{fingerprint}"
             repeat_count = repeat_count + 1 if progress_key == repeated_action else 1
             repeated_action = progress_key
-            if action_name not in {'read_file', 'list_files'} and (repeat_count > 3 or execution_state.repeated_count(action) > 4):
+            if settings.agent_loop_recovery_enabled:
+                signature = repeated_tool_signature(action)
+                if signature == tool_repeat_signature:
+                    tool_repeat_streak += 1
+                else:
+                    tool_repeat_signature = signature
+                    tool_repeat_streak = 1
+                if tool_repeat_streak >= settings.agent_repeat_tool_stop:
+                    raise SandboxRuntimeError(
+                        "SANDBOX_REPEATED_TOOL",
+                        (
+                            f"Agent called {action_name[:80]} with the same arguments "
+                            f"{tool_repeat_streak} times in a row"
+                        ),
+                    )
+                if tool_repeat_streak == settings.agent_repeat_tool_note:
+                    turn_nudges.append(REPEAT_TOOL_NOTE)
+                if (
+                    action_name not in {'read_file', 'list_files'}
+                    and execution_state.repeated_count(action) >= settings.agent_repeat_tool_stop
+                ):
+                    raise SandboxRuntimeError(
+                        "SANDBOX_AGENT_STALLED",
+                        "Sandbox agent repeated an equivalent action without making progress",
+                    )
+            elif action_name not in {'read_file', 'list_files'} and (
+                repeat_count > 3 or execution_state.repeated_count(action) > 4
+            ):
                 raise SandboxRuntimeError(
                     "SANDBOX_AGENT_STALLED",
                     "Sandbox agent repeated an equivalent action without making progress",
@@ -1262,7 +1536,7 @@ async def _run_agent_loop_body(
                 data={**tool_data, "turn": turn_number, "operation": tool_operation_count},
             )
             db.commit()
-            tool_started_at = job_timing.begin_tool()
+            turn_clock["tool_started"] = time.perf_counter()
             cached_payload = (
                 None if validation_error else execution_state.cached_observation(action)
             )
@@ -1299,7 +1573,7 @@ async def _run_agent_loop_body(
                              ("Submit a valid plan with update_plan, then retry this operation."
                               if precondition_error else "Correct the arguments and call an available tool again.")),
                 }
-                _append_tool_result(
+                await _append_model_tool_result(
                     messages,
                     result,
                     action_name or "unknown",
@@ -1345,7 +1619,7 @@ async def _run_agent_loop_body(
                     execution_state.validation = None
                 tool_event.data = {**tool_event.data, 'capability': action.get('capability'), 'python_requirements': action.get('requirements', []),
                                    'upgraded': bool(payload.get('upgraded'))}
-                _append_tool_result(messages, result, action_name, payload, tool_call_id=tool_call_id)
+                await _append_model_tool_result(messages, result, action_name, payload, tool_call_id=tool_call_id)
             elif action_name == "run_verifier":
                 collection = None
                 preparation_error = None
@@ -1365,7 +1639,7 @@ async def _run_agent_loop_body(
                 if preparation_error is not None:
                     payload = preparation_error
                     progress_detail = "交付文件尚未就绪，正在按诊断修正"
-                    _append_tool_result(messages,result,action_name,payload,tool_call_id=tool_call_id)
+                    await _append_model_tool_result(messages,result,action_name,payload,tool_call_id=tool_call_id)
                 elif blocked is not None:
                     payload = blocked
                     progress_detail = "验证被防抖拦截，需先批量修正"
@@ -1389,7 +1663,7 @@ async def _run_agent_loop_body(
                                 step['evidence'] = 'Deployment uses delivery-only acceptance.'
                     tool_event.title = "准备交付文件"
                     progress_detail = "无需额外框架验证，正在准备接收文件"
-                    _append_tool_result(messages, result, action_name, payload, tool_call_id=tool_call_id)
+                    await _append_model_tool_result(messages, result, action_name, payload, tool_call_id=tool_call_id)
                 else:
                     payload = await run_verifier(sandbox, action, requirements=execution_state.requirements, collection=collection)
                     if collection and payload.get('artifacts'):
@@ -1444,7 +1718,7 @@ async def _run_agent_loop_body(
                     payload = {'ok': True, 'artifacts': list(fixed.artifact_paths), 'summary': fixed.summary, 'exit_code': 0}
                     fixed_context['fixed_executed'] = True
                     execution_state.record({'action': 'command', 'argv': list(fixed_context['fixed_execution'].entrypoint)}, payload)
-                _append_tool_result(messages, result, action_name, payload, tool_call_id=tool_call_id)
+                await _append_model_tool_result(messages, result, action_name, payload, tool_call_id=tool_call_id)
             elif action_name == "inspect_image":
                 try:
                     payload = await visual_cache.inspect(sandbox, gateway, path=action['path'], question=action['question'])
@@ -1497,7 +1771,7 @@ async def _run_agent_loop_body(
                 )
                 if payload.get("ok") is False:
                     progress_detail = "Skill 阶段证据不完整，Agent 正在自动修正"
-                _append_tool_result(
+                await _append_model_tool_result(
                     messages, result, action_name, payload, tool_call_id=tool_call_id
                 )
             elif action_name == "update_plan":
@@ -1556,7 +1830,7 @@ async def _run_agent_loop_body(
                     progress_detail = (
                         f"集中验证已绑定 {len(artifact_snapshot)} 个产物文件"
                     )
-                _append_tool_result(
+                await _append_model_tool_result(
                     messages,
                     result,
                     action_name,
@@ -1686,7 +1960,7 @@ async def _run_agent_loop_body(
                     else:
                         payload["hint"] = "Use a path under /workspace/output and split large text into smaller writes."
                         progress_detail = f"写入未完成，Agent 正在自动修正：{path[:160]}"
-                _append_tool_result(
+                await _append_model_tool_result(
                     messages, result, action_name, payload, tool_call_id=tool_call_id
                 )
             elif action_name == "command":
@@ -1801,17 +2075,14 @@ async def _run_agent_loop_body(
                     str(action.get("evidence") or ""),
                 )
                 if payload.get("ok") is False:
-                    _append_tool_result(
+                    await _append_model_tool_result(
                         messages, result, action_name, payload, tool_call_id=tool_call_id
                     )
                     progress_detail = "任务受阻证据不足，Agent 正在补充真实检查"
                 else:
                     tool_event.status = "succeeded"
                     tool_event.detail = "已确认当前条件无法完成用户目标"
-                    tool_event.data = {
-                        **(tool_event.data or {}),
-                        "duration_ms": job_timing.end_tool(tool_started_at),
-                    }
+                    _note_tool_duration(tool_event)
                     agent_session.tool_result(context, payload)
                     agent_session.finish_step(turn_number)
                     agent_session.finish_turn(turn_number, reason="blocked")
@@ -1829,7 +2100,7 @@ async def _run_agent_loop_body(
                 collection = await receive_declared_artifacts(sandbox, artifacts[:50], cwd=skill_root)
                 if collection.get('ok') is False:
                     payload = collection
-                    _append_tool_result(
+                    await _append_model_tool_result(
                         messages,
                         result,
                         action_name,
@@ -1863,7 +2134,7 @@ async def _run_agent_loop_body(
                                 "or generate the missing deliverable before finishing."
                             ),
                         }
-                        _append_tool_result(
+                        await _append_model_tool_result(
                             messages,
                             result,
                             action_name,
@@ -1898,7 +2169,7 @@ async def _run_agent_loop_body(
                                     "current output bytes before finish."
                                 ),
                             }
-                            _append_tool_result(
+                            await _append_model_tool_result(
                                 messages,
                                 result,
                                 action_name,
@@ -1919,7 +2190,6 @@ async def _run_agent_loop_body(
                             tool_event.detail = f"已确认 {len(artifacts)} 个产物文件"
                             tool_event.data = {
                                 **(tool_event.data or {}),
-                                "duration_ms": job_timing.end_tool(tool_started_at),
                                 "artifact_sha256": current_snapshot,
                                 "validation_operation": (
                                     (execution_state.validation or {})
@@ -1927,6 +2197,7 @@ async def _run_agent_loop_body(
                                     .get("operation")
                                 ),
                             }
+                            _note_tool_duration(tool_event)
                             finish_payload = {
                                 "ok": True,
                                 "artifact_count": len(artifacts),
@@ -1986,15 +2257,13 @@ async def _run_agent_loop_body(
                     memory['verification'] = {**memory['verification'], 'stale': True}
                 job.memory.data = memory
             if recoverable_errors > 8:
+                _note_tool_duration(tool_event)
                 raise SandboxRuntimeError(
                     "SANDBOX_TOOL_ERROR_LIMIT",
                     "Agent could not recover after repeated tool errors",
                 )
             _finish_tool_event(tool_event, payload)
-            tool_event.data = {
-                **(tool_event.data or {}),
-                "duration_ms": job_timing.end_tool(tool_started_at),
-            }
+            _note_tool_duration(tool_event)
             if tool_event.status == "failed":
                 tool_event.data = {
                     **(tool_event.data or {}),

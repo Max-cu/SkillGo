@@ -27,6 +27,52 @@ class ModelGatewayError(RuntimeError):
         self.details = details
 
 
+_CONTEXT_LENGTH_MARKERS = (
+    "context_length_exceeded",
+    "context length",
+    "maximum context",
+    "context window",
+    "context_window",
+    "prompt is too long",
+    "input is too long",
+    "too many tokens",
+    "tokens exceed",
+    "token limit",
+    "reduce the length of the messages",
+    "上下文长度",
+    "超出上下文",
+    "上下文超出",
+    "上下文窗口",
+)
+
+
+def is_context_length_error(exc: BaseException) -> bool:
+    """True when a provider rejected the request for prompt/context size.
+
+    Ordinary argument errors stay false so a bad tool call is not retried.
+    HTTP 413 is treated as a context overflow. HTTP 400 and 422 must also
+    carry a context-length phrase from the provider.
+    """
+
+    if not isinstance(exc, ModelGatewayError) or exc.code != "MODEL_HTTP_ERROR":
+        return False
+    details = exc.details if isinstance(exc.details, dict) else {}
+    status = details.get("http_status")
+    if status == 413:
+        return True
+    if status not in {400, 422}:
+        return False
+    parts = [str(exc)]
+    provider = details.get("provider_error")
+    if isinstance(provider, dict):
+        for key in ("code", "type", "message"):
+            value = provider.get(key)
+            if isinstance(value, str):
+                parts.append(value)
+    blob = " ".join(parts).lower()
+    return any(marker in blob for marker in _CONTEXT_LENGTH_MARKERS)
+
+
 def _model_http_error(exc: httpx.HTTPStatusError, connection: ModelConnection) -> ModelGatewayError:
     """Keep bounded provider diagnostics without persisting headers or bodies."""
     response = exc.response

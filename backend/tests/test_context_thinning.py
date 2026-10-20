@@ -15,6 +15,7 @@ from app.context_thinning import (
     resolve_thin_context_policy,
 )
 from app.sandbox_agent_loop import _run_agent_loop_body
+from app import sandbox_agent_loop
 
 
 def _project(messages, checkpoint, budget, policy, diagnostics=None):
@@ -294,10 +295,12 @@ def test_explicit_exchange_cap_can_apply_without_compaction():
 
 
 def test_thin_context_does_not_gate_durable_snapshots():
-    source = inspect.getsource(_run_agent_loop_body)
+    source = inspect.getsource(sandbox_agent_loop._run_agent_loop_body)
+    wrapper = inspect.getsource(sandbox_agent_loop._run_agent_loop)
     settings_source = inspect.getsource(Settings)
     assert "save_checkpoint" in source
     assert "DURABLE_CHECKPOINT_EVERY" not in source
+    assert "log_job_end_timing" in wrapper
     assert "SKILLGO_DURABLE_CHECKPOINTS_ENABLED" in settings_source
     assert "DURABLE_CHECKPOINT_EVERY" not in settings_source
     assert "orchestration_mode" in settings_source
@@ -575,3 +578,37 @@ def test_summary_shrinks_or_drops_instead_of_exceeding_the_budget():
     assert "summary truncated to fit context budget" in roomy
     assert estimate_tokens([*base, render(roomy)]) <= 400
     assert roomy.startswith("User goal:")
+
+
+@pytest.mark.parametrize("spare_tokens", [0, 50, 200])
+def test_summary_cannot_displace_declared_state(spare_tokens):
+    from dataclasses import replace
+    from app.context_thinning import recovery_thin_policy
+    from app.state_inject import evaluate_state_file
+
+    messages, checkpoint, _markers = _summary_fixture()
+    path = "/workspace/_state/progress.json"
+    text = '{"completed":["draft"],"pending":["export"]}'
+    snapshots = [evaluate_state_file(path=path, text=text, mtime=None, read_error=None)]
+    policy = _fast(max_exchanges=2, thin_reference_shelf=False)
+
+    def project(active_policy, budget, diagnostics=None):
+        return project_context(
+            messages, checkpoint=json.dumps(checkpoint), skill_contexts=[],
+            loaded=set(), completed=set(), max_tokens=budget,
+            initial_exchange_reserve=0, thin=active_policy,
+            state_inject=True, state_files=snapshots, diagnostics=diagnostics,
+        )
+
+    budget = estimate_tokens(project(policy, 500_000)) + spare_tokens
+    off = project(policy, budget)
+    on_policy = replace(policy, structured_compaction_summary=True)
+    for active_policy in (on_policy, recovery_thin_policy(on_policy)):
+        # Recovery retains the summary option; optional summary must yield to state.
+        assert active_policy.structured_compaction_summary is True
+        on = project(active_policy, budget)
+        state_messages = [m for m in on if m.get("content", "").startswith(f"State file {path}")]
+        assert len(state_messages) == 1
+        assert state_messages[0]["content"].endswith(text)
+        assert estimate_tokens(on) <= budget
+    assert project(on_policy, budget)[:-1] == off[:-1]

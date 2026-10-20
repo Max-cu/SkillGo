@@ -238,6 +238,10 @@ class DockerSandbox:
             raise SandboxRuntimeError("SANDBOX_START_FAILED", f"Could not start sandbox: {exc}") from exc
 
     def close(self) -> None:
+        if settings.tool_output_spill_enabled and self.container is not None:
+            from .tool_output_spill import discard_tool_output_sync
+
+            discard_tool_output_sync(self)
         if self.container is not None:
             try:
                 self.container.remove(force=True)
@@ -535,6 +539,68 @@ print(json.dumps({"ok": True, "path": sys.argv[1], "content": content,
         except (ValueError, TypeError) as exc:
             raise SandboxRuntimeError('SANDBOX_READ_FAILED', 'Invalid text-window response') from exc
         return window
+
+    async def read_state_file(self, path: str, *, max_bytes: int = 131072) -> dict:
+        """Read a small workspace file plus mtime.
+
+        A missing file is ``{"exists": False}``, not an exception. Oversized
+        files return ``error=too_large`` without their body.
+        """
+
+        from .state_inject import normalize_state_path
+
+        target = normalize_state_path(path)
+        if target is None:
+            raise SandboxRuntimeError("SANDBOX_PATH_DENIED", "State files must stay inside /workspace/_state")
+        limit = min(max(int(max_bytes), 1), 262144)
+        source = """
+import json, sys
+from pathlib import Path
+
+root = Path("/workspace").resolve()
+raw = Path(sys.argv[1])
+limit = int(sys.argv[2])
+if raw.is_symlink() or raw.parent.is_symlink():
+    print(json.dumps({"exists": False, "error": "symlink"}))
+    raise SystemExit(0)
+path = raw.resolve()
+if path != root / "_state" / raw.name:
+    print(json.dumps({"exists": False, "error": "outside_state"}))
+    raise SystemExit(0)
+if not path.exists():
+    print(json.dumps({"exists": False}))
+    raise SystemExit(0)
+if not path.is_file():
+    print(json.dumps({"exists": False, "error": "not_file"}))
+    raise SystemExit(0)
+st = path.stat()
+payload = {"exists": True, "mtime": st.st_mtime}
+if st.st_size > limit:
+    payload["error"] = "too_large"
+    payload["size"] = st.st_size
+else:
+    with path.open("rb") as handle:
+        data = handle.read(limit + 1)
+    if len(data) > limit:
+        payload["error"] = "too_large"
+    else:
+        payload["content"] = data.decode("utf-8", errors="replace")
+print(json.dumps(payload, ensure_ascii=False))
+"""
+        result = await self.command(
+            ["python3", "-c", source, target, str(limit)], timeout_seconds=30
+        )
+        if result.exit_code != 0:
+            raise SandboxRuntimeError(
+                "SANDBOX_READ_FAILED", result.stderr or "Could not read state file"
+            )
+        try:
+            payload = json.loads(result.stdout)
+        except json.JSONDecodeError as exc:
+            raise SandboxRuntimeError("SANDBOX_READ_FAILED", "Invalid state-file response") from exc
+        if not isinstance(payload, dict):
+            raise SandboxRuntimeError("SANDBOX_READ_FAILED", "Invalid state-file response")
+        return payload
 
     async def write_text(self, path: str, content: str) -> None:
         data = content.encode("utf-8")

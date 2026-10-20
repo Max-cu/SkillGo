@@ -10,6 +10,7 @@ from .context_thinning import (
     compact_tool_message,
     project_shelf_entry,
 )
+from .state_inject import STATE_TOKEN_CAP, apply_state_files
 from .skill_phase_contracts import reference_payloads
 
 
@@ -76,7 +77,10 @@ def project_context(messages: list[dict[str, Any]], *, checkpoint: str,
                     tool_tokens: int = 0, initial_exchange_reserve: int = 1024,
                     deduplicate_references: bool = True,
                     diagnostics: dict[str, Any] | None = None,
-                    thin: ThinContextPolicy | None = None) -> list[dict[str, Any]]:
+                    thin: ThinContextPolicy | None = None,
+                    state_files: list[dict[str, Any]] | None = None,
+                    state_inject: bool = False,
+                    state_token_cap: int | None = None) -> list[dict[str, Any]]:
     # Default policy is a no-op so existing callers keep the audit projection.
     # The sandbox loop passes resolve_thin_context_policy(settings).
     policy = thin or ThinContextPolicy()
@@ -219,6 +223,20 @@ def project_context(messages: list[dict[str, Any]], *, checkpoint: str,
         *(message for _original, projected in selected_pairs for message in projected),
     ]
     memory = memory_message(recent, shelf_view)
+    projected = [*history, memory]
+    # Declared workspace state is not part of the stable prefix. Each file is
+    # re-read every round and sits after history, immediately before the
+    # mutable execution-state message (the last user message).
+    state_metrics = None
+    if state_inject and policy.mode == "fast" and state_files:
+        projected, state_metrics = apply_state_files(
+            projected,
+            history_len=len(history),
+            snapshots=state_files,
+            token_cap=STATE_TOKEN_CAP if state_token_cap is None else state_token_cap,
+            max_tokens=max_tokens,
+            tool_tokens=tool_tokens,
+        )
     summary_chars = 0
     if policy.structured_compaction_summary:
         selected_ids = {id(original) for original, _projected in selected_pairs}
@@ -240,15 +258,15 @@ def project_context(messages: list[dict[str, Any]], *, checkpoint: str,
             )
             fitted = _fit_compaction_summary(
                 summary,
-                base_messages=history,
+                base_messages=projected[:-1],
                 tool_tokens=tool_tokens,
                 max_tokens=max_tokens,
                 render=lambda text: memory_message(recent, shelf_view, text),
             )
             if fitted:
                 memory = memory_message(recent, shelf_view, fitted)
+                projected[-1] = memory
                 summary_chars = len(fitted)
-    projected = [*history, memory]
     if diagnostics is not None:
         diagnostics.update({
             'state_estimated_tokens': estimate_tokens([memory]),
@@ -269,6 +287,8 @@ def project_context(messages: list[dict[str, Any]], *, checkpoint: str,
         if policy.structured_compaction_summary:
             diagnostics['structured_compaction_summary'] = summary_chars > 0
             diagnostics['compaction_summary_chars'] = summary_chars
+        if state_metrics:
+            diagnostics['state_inject'] = state_metrics
     return projected
 
 
