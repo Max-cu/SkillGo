@@ -238,6 +238,10 @@ class DockerSandbox:
             raise SandboxRuntimeError("SANDBOX_START_FAILED", f"Could not start sandbox: {exc}") from exc
 
     def close(self) -> None:
+        if settings.tool_output_spill_enabled and self.container is not None:
+            from .tool_output_spill import discard_tool_output_sync
+
+            discard_tool_output_sync(self)
         if self.container is not None:
             try:
                 self.container.remove(force=True)

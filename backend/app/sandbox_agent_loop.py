@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import itertools
 import json
 import logging
@@ -38,6 +39,7 @@ from .artifact_validation import (
 )
 from .config import settings
 from .execution_runtime import ensure_job_run
+from .tool_output_spill import cleanup_tool_output, spill_tool_result, note_unavailable_tool_outputs
 from .model_gateway import OpenAICompatibleGateway, ModelGatewayError, SANDBOX_AGENT_TOOLS
 from .models import JobEvent, JobStepStatus, WorkflowJob, WorkflowJobMemory
 from .sandbox_runtime import DockerSandbox, SandboxRuntimeError
@@ -50,6 +52,13 @@ from .workflow_execution import add_job_event, set_step
 
 
 logger = logging.getLogger(__name__)
+
+# (sandbox, round, call) for the tool result currently being recorded.
+# Set only while SKILLGO_TOOL_OUTPUT_SPILL is on.
+_spill_scope: contextvars.ContextVar[tuple[Any, int, int]] = contextvars.ContextVar(
+    "skillgo_tool_output_spill_scope"
+)
+
 
 # Process-local totals so a worker rollback still sees the last stamp.
 # Released after the closing job event is recorded.
@@ -450,6 +459,13 @@ Execution protocol updates (these refine the earlier rules):
         )
         system = system.replace('Once the required artifacts exist and validation passes, call finish immediately.',
                                 'Once the Skill has finished and its deliverables exist, call finish immediately.')
+    if settings.tool_output_spill_enabled:
+        system += (
+            "\nOversized tool results are written under /workspace/_tool_output/<round>_<call>.txt. "
+            "The tool message keeps a head and tail excerpt, the absolute path, and the byte size. "
+            "Read that path with read_file when the omitted middle is required. "
+            "Those files are job scratch, not deliverables.\n"
+        )
     # Path/dependency contracts apply to both acceptance policies. Keep this
     # independent of the verification guidance filtered by delivery-only mode.
     system += (
@@ -556,6 +572,33 @@ def _append_tool_result(
         messages.append({"role": "user", "content": content})
 
 
+async def _append_model_tool_result(
+    messages: list[dict[str, Any]],
+    result: object,
+    action: str,
+    payload: object,
+    *,
+    tool_call_id: str | None = None,
+) -> object:
+    """Append a tool result, spilling it only when the feature flag is on.
+
+    When the flag is off this performs the same append as ``_append_tool_result``
+    and does not read the spill scope.
+    """
+
+    if settings.tool_output_spill_enabled:
+        sandbox, round_number, call_number = _spill_scope.get()
+        payload = await spill_tool_result(
+            action,
+            payload,
+            sandbox=sandbox,
+            round_number=round_number,
+            call_number=call_number,
+        )
+    _append_tool_result(messages, result, action, payload, tool_call_id=tool_call_id)
+    return payload
+
+
 # Tools whose recent results deserve the generous inline tier: their stdout
 # is operational evidence the agent keeps reasoning over (build logs, batch
 # progress, tracebacks). Recent results use a larger inline budget.
@@ -604,6 +647,16 @@ async def _append_tool_result_with_offload(
     tool_call_id: str | None = None,
 ) -> object:
     """Preserve oversized observations in the sandbox before pruning context."""
+    if settings.tool_output_spill_enabled:
+        payload = await spill_tool_result(
+            action,
+            payload,
+            sandbox=sandbox,
+            round_number=turn_number,
+            call_number=operation_number,
+        )
+        _append_tool_result(messages, result, action, payload, tool_call_id=tool_call_id)
+        return payload
     serialized = json.dumps(payload, ensure_ascii=False)
     total_bytes = len(serialized.encode("utf-8"))
 
@@ -793,6 +846,7 @@ async def _run_agent_loop(
     job_cancelled: Callable[[], bool],
     checkpoint_fence: Callable[[], None] | None = None,
 ) -> tuple[str, list[str], int, int]:
+    scope_token = _spill_scope.set((sandbox, 0, 0)) if settings.tool_output_spill_enabled else None
     try:
         return await _run_agent_loop_body(
             db,
@@ -805,6 +859,13 @@ async def _run_agent_loop(
         )
     finally:
         log_job_end_timing(job)
+        if scope_token is not None:
+            try:
+                await cleanup_tool_output(sandbox)
+            except Exception:
+                logger.warning("Tool output cleanup failed job_id=%s", job.id, exc_info=True)
+            finally:
+                _spill_scope.reset(scope_token)
 
 
 async def _run_agent_loop_body(
@@ -894,6 +955,8 @@ async def _run_agent_loop_body(
         if resume['versions'] != expected_versions or resume['model_name'] != job.model_name:
             raise SandboxRuntimeError('CHECKPOINT_CONFIGURATION_CHANGED', 'Skill/model selection changed since snapshot')
         messages = resume['messages']
+        if settings.tool_output_spill_enabled:
+            await note_unavailable_tool_outputs(messages, sandbox)
         execution_state = state_from_json(resume['execution_state'])
         execution_state.delivery_only = delivery_only_job(job)
         next_turn = resume['next_turn']
@@ -1246,6 +1309,8 @@ async def _run_agent_loop_body(
             messages = []
         for call_index, (tool_call_id, action) in enumerate(calls, 1):
             tool_operation_count += 1
+            if settings.tool_output_spill_enabled:
+                _spill_scope.set((sandbox, turn_number, tool_operation_count))
             if settings.sandbox_max_agent_tool_calls > 0 and tool_operation_count > settings.sandbox_max_agent_tool_calls:
                 raise SandboxRuntimeError(
                     "SANDBOX_AGENT_TOOL_LIMIT",
@@ -1380,7 +1445,7 @@ async def _run_agent_loop_body(
                              ("Submit a valid plan with update_plan, then retry this operation."
                               if precondition_error else "Correct the arguments and call an available tool again.")),
                 }
-                _append_tool_result(
+                await _append_model_tool_result(
                     messages,
                     result,
                     action_name or "unknown",
@@ -1426,7 +1491,7 @@ async def _run_agent_loop_body(
                     execution_state.validation = None
                 tool_event.data = {**tool_event.data, 'capability': action.get('capability'), 'python_requirements': action.get('requirements', []),
                                    'upgraded': bool(payload.get('upgraded'))}
-                _append_tool_result(messages, result, action_name, payload, tool_call_id=tool_call_id)
+                await _append_model_tool_result(messages, result, action_name, payload, tool_call_id=tool_call_id)
             elif action_name == "run_verifier":
                 collection = None
                 preparation_error = None
@@ -1446,7 +1511,7 @@ async def _run_agent_loop_body(
                 if preparation_error is not None:
                     payload = preparation_error
                     progress_detail = "交付文件尚未就绪，正在按诊断修正"
-                    _append_tool_result(messages,result,action_name,payload,tool_call_id=tool_call_id)
+                    await _append_model_tool_result(messages,result,action_name,payload,tool_call_id=tool_call_id)
                 elif blocked is not None:
                     payload = blocked
                     progress_detail = "验证被防抖拦截，需先批量修正"
@@ -1470,7 +1535,7 @@ async def _run_agent_loop_body(
                                 step['evidence'] = 'Deployment uses delivery-only acceptance.'
                     tool_event.title = "准备交付文件"
                     progress_detail = "无需额外框架验证，正在准备接收文件"
-                    _append_tool_result(messages, result, action_name, payload, tool_call_id=tool_call_id)
+                    await _append_model_tool_result(messages, result, action_name, payload, tool_call_id=tool_call_id)
                 else:
                     payload = await run_verifier(sandbox, action, requirements=execution_state.requirements, collection=collection)
                     if collection and payload.get('artifacts'):
@@ -1525,7 +1590,7 @@ async def _run_agent_loop_body(
                     payload = {'ok': True, 'artifacts': list(fixed.artifact_paths), 'summary': fixed.summary, 'exit_code': 0}
                     fixed_context['fixed_executed'] = True
                     execution_state.record({'action': 'command', 'argv': list(fixed_context['fixed_execution'].entrypoint)}, payload)
-                _append_tool_result(messages, result, action_name, payload, tool_call_id=tool_call_id)
+                await _append_model_tool_result(messages, result, action_name, payload, tool_call_id=tool_call_id)
             elif action_name == "inspect_image":
                 try:
                     payload = await visual_cache.inspect(sandbox, gateway, path=action['path'], question=action['question'])
@@ -1578,7 +1643,7 @@ async def _run_agent_loop_body(
                 )
                 if payload.get("ok") is False:
                     progress_detail = "Skill 阶段证据不完整，Agent 正在自动修正"
-                _append_tool_result(
+                await _append_model_tool_result(
                     messages, result, action_name, payload, tool_call_id=tool_call_id
                 )
             elif action_name == "update_plan":
@@ -1637,7 +1702,7 @@ async def _run_agent_loop_body(
                     progress_detail = (
                         f"集中验证已绑定 {len(artifact_snapshot)} 个产物文件"
                     )
-                _append_tool_result(
+                await _append_model_tool_result(
                     messages,
                     result,
                     action_name,
@@ -1767,7 +1832,7 @@ async def _run_agent_loop_body(
                     else:
                         payload["hint"] = "Use a path under /workspace/output and split large text into smaller writes."
                         progress_detail = f"写入未完成，Agent 正在自动修正：{path[:160]}"
-                _append_tool_result(
+                await _append_model_tool_result(
                     messages, result, action_name, payload, tool_call_id=tool_call_id
                 )
             elif action_name == "command":
@@ -1882,7 +1947,7 @@ async def _run_agent_loop_body(
                     str(action.get("evidence") or ""),
                 )
                 if payload.get("ok") is False:
-                    _append_tool_result(
+                    await _append_model_tool_result(
                         messages, result, action_name, payload, tool_call_id=tool_call_id
                     )
                     progress_detail = "任务受阻证据不足，Agent 正在补充真实检查"
@@ -1907,7 +1972,7 @@ async def _run_agent_loop_body(
                 collection = await receive_declared_artifacts(sandbox, artifacts[:50], cwd=skill_root)
                 if collection.get('ok') is False:
                     payload = collection
-                    _append_tool_result(
+                    await _append_model_tool_result(
                         messages,
                         result,
                         action_name,
@@ -1941,7 +2006,7 @@ async def _run_agent_loop_body(
                                 "or generate the missing deliverable before finishing."
                             ),
                         }
-                        _append_tool_result(
+                        await _append_model_tool_result(
                             messages,
                             result,
                             action_name,
@@ -1976,7 +2041,7 @@ async def _run_agent_loop_body(
                                     "current output bytes before finish."
                                 ),
                             }
-                            _append_tool_result(
+                            await _append_model_tool_result(
                                 messages,
                                 result,
                                 action_name,
