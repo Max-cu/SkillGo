@@ -490,7 +490,7 @@ def _append_tool_result(
 
 # Tools whose recent results deserve the generous inline tier: their stdout
 # is operational evidence the agent keeps reasoning over (build logs, batch
-# progress, tracebacks). Mirrors QwenPaw's pruning_recent_msg_max_bytes.
+# progress, tracebacks). Recent results use a larger inline budget.
 RECENT_TIER_TOOLS = frozenset({"command", "run_python", "run_verifier"})
 # Legacy flat tier for all other oversized tool payloads.
 LEGACY_INLINE_BYTES = 4_000
@@ -827,8 +827,8 @@ async def _run_agent_loop(
     durable = bool(settings.durable_checkpoints_enabled or resume) and isinstance(sandbox, DockerSandbox)
     fence = checkpoint_fence or (lambda: None)
 
-    # 0 disables the reasoning-turn cap (QwenPaw semantics: runaway protection
-    # relies on the doom-loop guard and per-layer idle checks instead).
+    # 0 disables the reasoning-turn cap (runaway protection relies on the
+    # doom-loop guard and per-layer idle checks instead).
     turns_limit = settings.sandbox_max_agent_turns
     turn_numbers = itertools.count(next_turn) if turns_limit <= 0 else range(next_turn, turns_limit + 1)
     for turn_number in turn_numbers:

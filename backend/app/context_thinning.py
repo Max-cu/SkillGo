@@ -29,7 +29,7 @@ class ThinContextPolicy:
     """How ``project_context`` may shrink the model-facing transcript.
 
     ``max_exchanges`` is ``None`` when there is no cap beyond the token budget.
-    Head/tail sizes are characters, matching the Workbuddy compact notes.
+    Head/tail sizes are characters, matching compact-note layout.
     """
 
     mode: str = "audit"

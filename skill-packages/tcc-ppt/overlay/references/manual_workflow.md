@@ -143,15 +143,15 @@ pip install curl_cffi
 ## ⚠️ 首次加载 —— 定位 Skill 根目录
 
 本 skill 可能安装在 SkillGo 平台（如 `/workspace/skills/01-tcc-ppt/tcc-ppt-skill/`）、
-用户级（`~/.workbuddy/skills/`）或项目级（`.workbuddy/skills/`），
+用户级技能目录或项目级技能目录，
 目录名也可能是任意字符串（不一定是 `tcc-ppt-skill`）。
 
 **首次使用本 skill 时，必须先确认 skill 根目录的实际路径**：
 
 1. **最优先**：本 SKILL.md 已被加载，取其所在目录即为 skill 根目录。例如：
    - SkillGo 平台：`/workspace/skills/01-tcc-ppt/tcc-ppt-skill/SKILL.md` → &lt;SKILL_ROOT&gt; = `/workspace/skills/01-tcc-ppt/tcc-ppt-skill`
-   - 本机：`~/.workbuddy/skills/tcc-ppt-skill/SKILL.md` → &lt;SKILL_ROOT&gt; = `~/.workbuddy/skills/tcc-ppt-skill`
-2. **备用方案**（如果 SKILL.md 的文件路径未知）：用 `glob` 在 `~/.workbuddy/skills/`、`.workbuddy/skills/` 和 `/workspace/skills/` 中搜索 `scripts/build_svgs.py`，提取其父目录的父目录。
+   - 本机：技能目录下的 `tcc-ppt-skill/SKILL.md`，其所在目录即为 &lt;SKILL_ROOT&gt;
+2. **备用方案**（如果 SKILL.md 的文件路径未知）：用 `glob` 在用户级技能目录、项目级技能目录和 `/workspace/skills/` 中搜索 `scripts/build_svgs.py`，提取其父目录的父目录。
 3. 将找到的路径记为一个变量（如 `SKILL_ROOT`），后续所有 `cd`、`python scripts/...` 和
    文件读写都基于此路径。
 4. 如果以上都找不到，**报错终止**并输出：「无法定位 skill 根目录 —— 请确认 skill 已正确安装」。
