@@ -7,6 +7,7 @@ import json
 import logging
 import hashlib
 import time
+from datetime import datetime, timezone
 from pathlib import PurePosixPath
 from typing import Any, Callable
 
@@ -26,7 +27,7 @@ from .agent_kernel import AgentSession, ToolCallContext, ToolPipeline
 from .agent_policy import AgentExecutionState, PRE_PLAN_INSPECTION_HINT, action_fingerprint, is_reference_path
 from .agent_context import project_context, estimate_tokens
 from .context_thinning import resolve_thin_context_policy
-from .photo_plan import annotate_photo_plan_age, load_photo_plan
+from .state_inject import annotate_state_age, declared_state_paths, load_state_file
 from .skill_phase_contracts import stage_contracts, available_reference_paths, expand_reference_actions
 from .workflow_tools import run_verifier, snapshot_step_files, effective_instruction
 from .artifact_collection import receive_declared_artifacts, delivery_only_job
@@ -103,21 +104,25 @@ def log_job_end_timing(job: WorkflowJob) -> None:
 
 
 def release_job_timing(job_id: str) -> None:
-    """Drop process-local timing and one-shot photo-plan warnings for a job."""
+    """Drop process-local timing and one-shot state-file warnings for a job."""
 
-    from .photo_plan import forget_photo_plan_warning
+    from .state_inject import forget_state_warnings
 
     _JOB_TIMING.pop(str(job_id), None)
-    forget_photo_plan_warning(str(job_id))
+    forget_state_warnings(str(job_id))
 
 
 def _job_started_timestamp(job: WorkflowJob) -> float | None:
+    """POSIX seconds for job start. Naive clock values are UTC."""
+
     moment = getattr(job, "started_at", None) or getattr(job, "created_at", None)
-    timestamp = getattr(moment, "timestamp", None)
-    if not callable(timestamp):
+    if not isinstance(moment, datetime):
         return None
+    # utcnow() and persisted job times are UTC. Attach that zone before timestamp().
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=timezone.utc)
     try:
-        return float(timestamp())
+        return float(moment.timestamp())
     except (OSError, OverflowError, ValueError):
         return None
 
@@ -1092,27 +1097,31 @@ async def _run_agent_loop_body(
                        if getattr(gateway, '_native_tools_available', False) else 0)
         thin_policy = resolve_thin_context_policy(settings)
         inject_state = bool(settings.state_inject_enabled and thin_policy.mode == "fast")
-        photo_snapshot = None
+        state_snapshots: list[dict[str, Any]] = []
         if inject_state:
-            try:
-                photo_snapshot = await load_photo_plan(sandbox, job_id=str(job.id))
-            except Exception:
-                logger.warning("photo plan load failed job_id=%s", job.id, exc_info=True)
-                photo_snapshot = {
-                    "validation": "read_error",
-                    "file_mtime": None,
-                    "document": None,
-                    "duplicates": [],
-                    "error": "load_failed",
-                }
-            photo_snapshot = annotate_photo_plan_age(photo_snapshot, _job_started_timestamp(job))
+            started = _job_started_timestamp(job)
+            for path in declared_state_paths(skill_contexts):
+                try:
+                    snapshot = await load_state_file(sandbox, path, job_id=str(job.id))
+                except Exception:
+                    logger.warning(
+                        "state file load failed job_id=%s path=%s", job.id, path, exc_info=True,
+                    )
+                    snapshot = {
+                        "path": path,
+                        "validation": "read_error",
+                        "file_mtime": None,
+                        "text": None,
+                        "error": "load_failed",
+                    }
+                state_snapshots.append(annotate_state_age(snapshot, started))
         try:
             model_messages = project_context(messages, checkpoint=execution_state.checkpoint(),
                 skill_contexts=skill_contexts, loaded=execution_state.loaded_skills,
                 completed=execution_state.completed_skill_indexes,
                 max_tokens=input_budget, tool_tokens=tool_tokens,
                 initial_exchange_reserve=2048, diagnostics=budget_diagnostics,
-                thin=thin_policy, photo_plan=photo_snapshot, state_inject=inject_state)
+                thin=thin_policy, state_files=state_snapshots, state_inject=inject_state)
         except ValueError as exc:
             reasoning_event.status = 'failed'
             reasoning_event.detail = str(exc)

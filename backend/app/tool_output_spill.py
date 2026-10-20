@@ -331,4 +331,3 @@ def discard_tool_output_sync(sandbox: object) -> None:
             getattr(sandbox, "job_id", ""),
             exc_info=True,
         )
-
