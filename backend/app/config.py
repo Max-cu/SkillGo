@@ -148,6 +148,15 @@ class Settings:
         # Default 52 KiB. This knob is independent of workspace snapshots.
         os.getenv("SKILLGO_SANDBOX_TOOL_INLINE_BYTES", str(52 * 1024))
     )
+    # Opt-in spill of oversized tool results into the job workspace.
+    # Default off: tool results stay on the inline / tool-results path above.
+    # When on, a result larger than tool_output_spill_bytes is written to
+    # /workspace/_tool_output/<round>_<call>.txt and the model sees a
+    # head+tail excerpt, the path, and the byte size.
+    tool_output_spill_enabled: bool = _bool("SKILLGO_TOOL_OUTPUT_SPILL", False)
+    tool_output_spill_bytes: int = int(
+        os.getenv("SKILLGO_TOOL_OUTPUT_SPILL_BYTES", str(32 * 1024))
+    )
     # Model-context thinning. audit = current projection. fast caps retained
     # exchanges and compacts older tool bodies / deep reference pointers.
     # It does not change SKILLGO_DURABLE_CHECKPOINTS_ENABLED or snapshot cadence.
@@ -157,8 +166,8 @@ class Settings:
     context_max_exchanges: int | None = _optional_int("SKILLGO_CONTEXT_MAX_EXCHANGES")
     compact_older_tools: bool | None = _optional_bool("SKILLGO_COMPACT_OLDER_TOOLS")
     thin_reference_shelf: bool | None = _optional_bool("SKILLGO_THIN_REFERENCE_SHELF")
-    # Re-read /workspace/_state/photo_plan.json into each fast-mode model round.
-    # Default off. Audit mode does not inject, even when this flag is on.
+    # Re-read skill-declared /workspace/_state/*.json files into each fast-mode
+    # model round. Default off. Audit mode does not inject, even when this flag is on.
     state_inject_enabled: bool = _bool("SKILLGO_STATE_INJECT", False)
     # Opt-in agent-loop recovery. When off, repeated-action stalls and context
     # failures keep their existing behavior. When on, identical tool calls get
@@ -254,3 +263,5 @@ if settings.agent_repeat_tool_stop <= settings.agent_repeat_tool_note:
     raise RuntimeError(
         "SKILLGO_AGENT_REPEAT_TOOL_STOP must be greater than SKILLGO_AGENT_REPEAT_TOOL_NOTE"
     )
+if settings.tool_output_spill_bytes < 1:
+    raise RuntimeError("SKILLGO_TOOL_OUTPUT_SPILL_BYTES must be at least 1")

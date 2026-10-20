@@ -238,6 +238,10 @@ class DockerSandbox:
             raise SandboxRuntimeError("SANDBOX_START_FAILED", f"Could not start sandbox: {exc}") from exc
 
     def close(self) -> None:
+        if settings.tool_output_spill_enabled and self.container is not None:
+            from .tool_output_spill import discard_tool_output_sync
+
+            discard_tool_output_sync(self)
         if self.container is not None:
             try:
                 self.container.remove(force=True)
@@ -543,7 +547,11 @@ print(json.dumps({"ok": True, "path": sys.argv[1], "content": content,
         files return ``error=too_large`` without their body.
         """
 
-        target = _workspace_path(path, allow_root=False)
+        from .state_inject import normalize_state_path
+
+        target = normalize_state_path(path)
+        if target is None:
+            raise SandboxRuntimeError("SANDBOX_PATH_DENIED", "State files must stay inside /workspace/_state")
         limit = min(max(int(max_bytes), 1), 262144)
         source = """
 import json, sys
@@ -552,12 +560,13 @@ from pathlib import Path
 root = Path("/workspace").resolve()
 raw = Path(sys.argv[1])
 limit = int(sys.argv[2])
-if raw.is_symlink():
+if raw.is_symlink() or raw.parent.is_symlink():
     print(json.dumps({"exists": False, "error": "symlink"}))
     raise SystemExit(0)
 path = raw.resolve()
-if path != root and root not in path.parents:
-    raise SystemExit("path must stay inside /workspace")
+if path != root / "_state" / raw.name:
+    print(json.dumps({"exists": False, "error": "outside_state"}))
+    raise SystemExit(0)
 if not path.exists():
     print(json.dumps({"exists": False}))
     raise SystemExit(0)
@@ -570,7 +579,12 @@ if st.st_size > limit:
     payload["error"] = "too_large"
     payload["size"] = st.st_size
 else:
-    payload["content"] = path.read_text(encoding="utf-8", errors="replace")
+    with path.open("rb") as handle:
+        data = handle.read(limit + 1)
+    if len(data) > limit:
+        payload["error"] = "too_large"
+    else:
+        payload["content"] = data.decode("utf-8", errors="replace")
 print(json.dumps(payload, ensure_ascii=False))
 """
         result = await self.command(

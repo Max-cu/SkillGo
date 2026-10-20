@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import itertools
 import json
 import logging
 import hashlib
 import time
+from datetime import datetime, timezone
 from pathlib import PurePosixPath
 from typing import Any, Callable
 
@@ -29,7 +31,7 @@ from .context_thinning import (
     recovery_thin_policy,
     resolve_thin_context_policy,
 )
-from .photo_plan import annotate_photo_plan_age, load_photo_plan
+from .state_inject import annotate_state_age, declared_state_paths, load_state_file
 from .skill_phase_contracts import stage_contracts, available_reference_paths, expand_reference_actions
 from .workflow_tools import run_verifier, snapshot_step_files, effective_instruction
 from .artifact_collection import receive_declared_artifacts, delivery_only_job
@@ -47,6 +49,7 @@ from .model_gateway import (
     SANDBOX_AGENT_TOOLS,
     is_context_length_error,
 )
+from .tool_output_spill import cleanup_tool_output, spill_tool_result, note_unavailable_tool_outputs
 from .models import JobEvent, JobStepStatus, WorkflowJob, WorkflowJobMemory
 from .sandbox_runtime import DockerSandbox, SandboxRuntimeError
 from .sandbox_tool_registry import (
@@ -79,6 +82,13 @@ def repeated_tool_signature(action: dict[str, Any]) -> str:
         if key not in _REPEAT_PRESENTATION_FIELDS
     }
     return json.dumps(normalized, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+# (sandbox, round, call) for the tool result currently being recorded.
+# Set only while SKILLGO_TOOL_OUTPUT_SPILL is on.
+_spill_scope: contextvars.ContextVar[tuple[Any, int, int]] = contextvars.ContextVar(
+    "skillgo_tool_output_spill_scope"
+)
+
 
 # Process-local totals so a worker rollback still sees the last stamp.
 # Released after the closing job event is recorded.
@@ -124,21 +134,25 @@ def log_job_end_timing(job: WorkflowJob) -> None:
 
 
 def release_job_timing(job_id: str) -> None:
-    """Drop process-local timing and one-shot photo-plan warnings for a job."""
+    """Drop process-local timing and one-shot state-file warnings for a job."""
 
-    from .photo_plan import forget_photo_plan_warning
+    from .state_inject import forget_state_warnings
 
     _JOB_TIMING.pop(str(job_id), None)
-    forget_photo_plan_warning(str(job_id))
+    forget_state_warnings(str(job_id))
 
 
 def _job_started_timestamp(job: WorkflowJob) -> float | None:
+    """POSIX seconds for job start. Naive clock values are UTC."""
+
     moment = getattr(job, "started_at", None) or getattr(job, "created_at", None)
-    timestamp = getattr(moment, "timestamp", None)
-    if not callable(timestamp):
+    if not isinstance(moment, datetime):
         return None
+    # utcnow() and persisted job times are UTC. Attach that zone before timestamp().
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=timezone.utc)
     try:
-        return float(timestamp())
+        return float(moment.timestamp())
     except (OSError, OverflowError, ValueError):
         return None
 
@@ -475,6 +489,13 @@ Execution protocol updates (these refine the earlier rules):
         )
         system = system.replace('Once the required artifacts exist and validation passes, call finish immediately.',
                                 'Once the Skill has finished and its deliverables exist, call finish immediately.')
+    if settings.tool_output_spill_enabled:
+        system += (
+            "\nOversized tool results are written under /workspace/_tool_output/<round>_<call>.txt. "
+            "The tool message keeps a head and tail excerpt, the absolute path, and the byte size. "
+            "Read that path with read_file when the omitted middle is required. "
+            "Those files are job scratch, not deliverables.\n"
+        )
     # Path/dependency contracts apply to both acceptance policies. Keep this
     # independent of the verification guidance filtered by delivery-only mode.
     system += (
@@ -581,6 +602,33 @@ def _append_tool_result(
         messages.append({"role": "user", "content": content})
 
 
+async def _append_model_tool_result(
+    messages: list[dict[str, Any]],
+    result: object,
+    action: str,
+    payload: object,
+    *,
+    tool_call_id: str | None = None,
+) -> object:
+    """Append a tool result, spilling it only when the feature flag is on.
+
+    When the flag is off this performs the same append as ``_append_tool_result``
+    and does not read the spill scope.
+    """
+
+    if settings.tool_output_spill_enabled:
+        sandbox, round_number, call_number = _spill_scope.get()
+        payload = await spill_tool_result(
+            action,
+            payload,
+            sandbox=sandbox,
+            round_number=round_number,
+            call_number=call_number,
+        )
+    _append_tool_result(messages, result, action, payload, tool_call_id=tool_call_id)
+    return payload
+
+
 # Tools whose recent results deserve the generous inline tier: their stdout
 # is operational evidence the agent keeps reasoning over (build logs, batch
 # progress, tracebacks). Recent results use a larger inline budget.
@@ -629,6 +677,16 @@ async def _append_tool_result_with_offload(
     tool_call_id: str | None = None,
 ) -> object:
     """Preserve oversized observations in the sandbox before pruning context."""
+    if settings.tool_output_spill_enabled:
+        payload = await spill_tool_result(
+            action,
+            payload,
+            sandbox=sandbox,
+            round_number=turn_number,
+            call_number=operation_number,
+        )
+        _append_tool_result(messages, result, action, payload, tool_call_id=tool_call_id)
+        return payload
     serialized = json.dumps(payload, ensure_ascii=False)
     total_bytes = len(serialized.encode("utf-8"))
 
@@ -818,6 +876,7 @@ async def _run_agent_loop(
     job_cancelled: Callable[[], bool],
     checkpoint_fence: Callable[[], None] | None = None,
 ) -> tuple[str, list[str], int, int]:
+    scope_token = _spill_scope.set((sandbox, 0, 0)) if settings.tool_output_spill_enabled else None
     try:
         return await _run_agent_loop_body(
             db,
@@ -830,6 +889,13 @@ async def _run_agent_loop(
         )
     finally:
         log_job_end_timing(job)
+        if scope_token is not None:
+            try:
+                await cleanup_tool_output(sandbox)
+            except Exception:
+                logger.warning("Tool output cleanup failed job_id=%s", job.id, exc_info=True)
+            finally:
+                _spill_scope.reset(scope_token)
 
 
 async def _run_agent_loop_body(
@@ -921,6 +987,8 @@ async def _run_agent_loop_body(
         if resume['versions'] != expected_versions or resume['model_name'] != job.model_name:
             raise SandboxRuntimeError('CHECKPOINT_CONFIGURATION_CHANGED', 'Skill/model selection changed since snapshot')
         messages = resume['messages']
+        if settings.tool_output_spill_enabled:
+            await note_unavailable_tool_outputs(messages, sandbox)
         execution_state = state_from_json(resume['execution_state'])
         execution_state.delivery_only = delivery_only_job(job)
         next_turn = resume['next_turn']
@@ -1070,20 +1138,24 @@ async def _run_agent_loop_body(
                        if getattr(gateway, '_native_tools_available', False) else 0)
         thin_policy = resolve_thin_context_policy(settings)
         inject_state = bool(settings.state_inject_enabled and thin_policy.mode == "fast")
-        photo_snapshot = None
+        state_snapshots: list[dict[str, Any]] = []
         if inject_state:
-            try:
-                photo_snapshot = await load_photo_plan(sandbox, job_id=str(job.id))
-            except Exception:
-                logger.warning("photo plan load failed job_id=%s", job.id, exc_info=True)
-                photo_snapshot = {
-                    "validation": "read_error",
-                    "file_mtime": None,
-                    "document": None,
-                    "duplicates": [],
-                    "error": "load_failed",
-                }
-            photo_snapshot = annotate_photo_plan_age(photo_snapshot, _job_started_timestamp(job))
+            started = _job_started_timestamp(job)
+            for path in declared_state_paths(skill_contexts):
+                try:
+                    snapshot = await load_state_file(sandbox, path, job_id=str(job.id))
+                except Exception:
+                    logger.warning(
+                        "state file load failed job_id=%s path=%s", job.id, path, exc_info=True,
+                    )
+                    snapshot = {
+                        "path": path,
+                        "validation": "read_error",
+                        "file_mtime": None,
+                        "text": None,
+                        "error": "load_failed",
+                    }
+                state_snapshots.append(annotate_state_age(snapshot, started))
 
         def _project(active_messages, policy):
             budget_diagnostics.clear()
@@ -1092,7 +1164,7 @@ async def _run_agent_loop_body(
                 completed=execution_state.completed_skill_indexes,
                 max_tokens=input_budget, tool_tokens=tool_tokens,
                 initial_exchange_reserve=2048, diagnostics=budget_diagnostics,
-                thin=policy, photo_plan=photo_snapshot, state_inject=inject_state)
+                thin=policy, state_files=state_snapshots, state_inject=inject_state)
 
         def _fail_context_limit(exc: ValueError) -> None:
             reasoning_event.status = 'failed'
@@ -1338,6 +1410,8 @@ async def _run_agent_loop_body(
             messages = []
         for call_index, (tool_call_id, action) in enumerate(calls, 1):
             tool_operation_count += 1
+            if settings.tool_output_spill_enabled:
+                _spill_scope.set((sandbox, turn_number, tool_operation_count))
             if settings.sandbox_max_agent_tool_calls > 0 and tool_operation_count > settings.sandbox_max_agent_tool_calls:
                 raise SandboxRuntimeError(
                     "SANDBOX_AGENT_TOOL_LIMIT",
@@ -1499,7 +1573,7 @@ async def _run_agent_loop_body(
                              ("Submit a valid plan with update_plan, then retry this operation."
                               if precondition_error else "Correct the arguments and call an available tool again.")),
                 }
-                _append_tool_result(
+                await _append_model_tool_result(
                     messages,
                     result,
                     action_name or "unknown",
@@ -1545,7 +1619,7 @@ async def _run_agent_loop_body(
                     execution_state.validation = None
                 tool_event.data = {**tool_event.data, 'capability': action.get('capability'), 'python_requirements': action.get('requirements', []),
                                    'upgraded': bool(payload.get('upgraded'))}
-                _append_tool_result(messages, result, action_name, payload, tool_call_id=tool_call_id)
+                await _append_model_tool_result(messages, result, action_name, payload, tool_call_id=tool_call_id)
             elif action_name == "run_verifier":
                 collection = None
                 preparation_error = None
@@ -1565,7 +1639,7 @@ async def _run_agent_loop_body(
                 if preparation_error is not None:
                     payload = preparation_error
                     progress_detail = "交付文件尚未就绪，正在按诊断修正"
-                    _append_tool_result(messages,result,action_name,payload,tool_call_id=tool_call_id)
+                    await _append_model_tool_result(messages,result,action_name,payload,tool_call_id=tool_call_id)
                 elif blocked is not None:
                     payload = blocked
                     progress_detail = "验证被防抖拦截，需先批量修正"
@@ -1589,7 +1663,7 @@ async def _run_agent_loop_body(
                                 step['evidence'] = 'Deployment uses delivery-only acceptance.'
                     tool_event.title = "准备交付文件"
                     progress_detail = "无需额外框架验证，正在准备接收文件"
-                    _append_tool_result(messages, result, action_name, payload, tool_call_id=tool_call_id)
+                    await _append_model_tool_result(messages, result, action_name, payload, tool_call_id=tool_call_id)
                 else:
                     payload = await run_verifier(sandbox, action, requirements=execution_state.requirements, collection=collection)
                     if collection and payload.get('artifacts'):
@@ -1644,7 +1718,7 @@ async def _run_agent_loop_body(
                     payload = {'ok': True, 'artifacts': list(fixed.artifact_paths), 'summary': fixed.summary, 'exit_code': 0}
                     fixed_context['fixed_executed'] = True
                     execution_state.record({'action': 'command', 'argv': list(fixed_context['fixed_execution'].entrypoint)}, payload)
-                _append_tool_result(messages, result, action_name, payload, tool_call_id=tool_call_id)
+                await _append_model_tool_result(messages, result, action_name, payload, tool_call_id=tool_call_id)
             elif action_name == "inspect_image":
                 try:
                     payload = await visual_cache.inspect(sandbox, gateway, path=action['path'], question=action['question'])
@@ -1697,7 +1771,7 @@ async def _run_agent_loop_body(
                 )
                 if payload.get("ok") is False:
                     progress_detail = "Skill 阶段证据不完整，Agent 正在自动修正"
-                _append_tool_result(
+                await _append_model_tool_result(
                     messages, result, action_name, payload, tool_call_id=tool_call_id
                 )
             elif action_name == "update_plan":
@@ -1756,7 +1830,7 @@ async def _run_agent_loop_body(
                     progress_detail = (
                         f"集中验证已绑定 {len(artifact_snapshot)} 个产物文件"
                     )
-                _append_tool_result(
+                await _append_model_tool_result(
                     messages,
                     result,
                     action_name,
@@ -1886,7 +1960,7 @@ async def _run_agent_loop_body(
                     else:
                         payload["hint"] = "Use a path under /workspace/output and split large text into smaller writes."
                         progress_detail = f"写入未完成，Agent 正在自动修正：{path[:160]}"
-                _append_tool_result(
+                await _append_model_tool_result(
                     messages, result, action_name, payload, tool_call_id=tool_call_id
                 )
             elif action_name == "command":
@@ -2001,7 +2075,7 @@ async def _run_agent_loop_body(
                     str(action.get("evidence") or ""),
                 )
                 if payload.get("ok") is False:
-                    _append_tool_result(
+                    await _append_model_tool_result(
                         messages, result, action_name, payload, tool_call_id=tool_call_id
                     )
                     progress_detail = "任务受阻证据不足，Agent 正在补充真实检查"
@@ -2026,7 +2100,7 @@ async def _run_agent_loop_body(
                 collection = await receive_declared_artifacts(sandbox, artifacts[:50], cwd=skill_root)
                 if collection.get('ok') is False:
                     payload = collection
-                    _append_tool_result(
+                    await _append_model_tool_result(
                         messages,
                         result,
                         action_name,
@@ -2060,7 +2134,7 @@ async def _run_agent_loop_body(
                                 "or generate the missing deliverable before finishing."
                             ),
                         }
-                        _append_tool_result(
+                        await _append_model_tool_result(
                             messages,
                             result,
                             action_name,
@@ -2095,7 +2169,7 @@ async def _run_agent_loop_body(
                                     "current output bytes before finish."
                                 ),
                             }
-                            _append_tool_result(
+                            await _append_model_tool_result(
                                 messages,
                                 result,
                                 action_name,

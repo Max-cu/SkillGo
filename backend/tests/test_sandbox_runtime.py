@@ -7,6 +7,69 @@ import pytest
 from app.sandbox_runtime import DockerSandbox, SandboxRuntimeError, _workspace_path
 
 
+def _read_state_locally(root, *, max_bytes=16):
+    """Execute the actual container reader against a temporary workspace."""
+    import asyncio
+    import subprocess
+    import sys
+    from app.sandbox_runtime import SandboxCommandResult
+
+    sandbox = DockerSandbox(SimpleNamespace(), job_id="state-reader")
+
+    async def command(argv, *, timeout_seconds=30):
+        source = argv[2].replace('Path("/workspace")', f"Path({str(root)!r})")
+        target = root / "_state" / "progress.json"
+        result = subprocess.run(
+            [sys.executable, "-X", "utf8", "-c", source, str(target), argv[4]],
+            capture_output=True, text=True, encoding="utf-8", check=False,
+        )
+        return SandboxCommandResult(exit_code=result.returncode, stdout=result.stdout, stderr=result.stderr)
+
+    sandbox.command = command
+    return asyncio.run(sandbox.read_state_file("/workspace/_state/progress.json", max_bytes=max_bytes))
+
+
+@pytest.mark.parametrize("over_limit", [False, True])
+def test_state_reader_limits_real_utf8_bytes(tmp_path, over_limit):
+    state = tmp_path / "_state"
+    state.mkdir()
+    raw = "中" * 5 + ("ab" if over_limit else "a")
+    (state / "progress.json").write_bytes(raw.encode("utf-8"))
+    payload = _read_state_locally(tmp_path)
+    if over_limit:
+        assert payload["error"] == "too_large"
+        assert "content" not in payload
+    else:
+        assert payload["content"] == raw
+        assert "error" not in payload
+
+
+@pytest.mark.parametrize("directory_link", [False, True])
+def test_state_reader_rejects_file_and_parent_symlinks(tmp_path, directory_link):
+    outside = tmp_path / "other"
+    outside.mkdir()
+    (outside / "progress.json").write_text("secret", encoding="utf-8")
+    state = tmp_path / "_state"
+    try:
+        if directory_link:
+            state.symlink_to(outside, target_is_directory=True)
+        else:
+            state.mkdir()
+            (state / "progress.json").symlink_to(outside / "progress.json")
+    except OSError as exc:
+        pytest.skip(f"Symlink creation unavailable: {exc}")
+    assert _read_state_locally(tmp_path) == {"exists": False, "error": "symlink"}
+
+
+@pytest.mark.parametrize("path", ["/workspace/other.json", "_state/nested/a.json", "_state/../a.json"])
+def test_state_reader_rejects_paths_outside_declared_state_directory(path):
+    import asyncio
+    sandbox = DockerSandbox(SimpleNamespace(), job_id="state-reader")
+    with pytest.raises(SandboxRuntimeError) as caught:
+        asyncio.run(sandbox.read_state_file(path))
+    assert caught.value.code == "SANDBOX_PATH_DENIED"
+
+
 @pytest.mark.parametrize(
     ("raw", "expected"),
     [
