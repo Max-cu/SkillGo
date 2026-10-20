@@ -327,7 +327,7 @@ async def _read_state_payload(sandbox: Any, path: str) -> dict[str, Any]:
     if not isinstance(text, str):
         return {"exists": False, "error": "empty_response"}
     mtime = await _optional_mtime(sandbox, path)
-    if len(text) > STATE_MAX_BYTES:
+    if len(text.encode("utf-8")) > STATE_MAX_BYTES:
         return {"exists": True, "mtime": mtime, "error": "too_large"}
     return {"exists": True, "content": text, "mtime": mtime}
 

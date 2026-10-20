@@ -21,6 +21,7 @@ from app.models import utcnow
 from app.sandbox_agent_loop import AgentJobCancelled, _job_started_timestamp, release_job_timing
 from app.state_inject import (
     MAX_DECLARED_FILES,
+    STATE_MAX_BYTES,
     annotate_state_age,
     declared_state_paths,
     evaluate_state_file,
@@ -28,16 +29,14 @@ from app.state_inject import (
 )
 from test_orchestration import MemorySandbox
 
-PHOTO = "/workspace/_state/photo_plan.json"
+PROGRESS = "/workspace/_state/progress.json"
 NOTES = "/workspace/_state/notes.json"
-PHOTO_BODY = json.dumps(
+PROGRESS_BODY = json.dumps(
     {
         "version": 1,
         "updated_at": "2026-10-20T00:00:00Z",
-        "photos": [
-            {"image_id": "image_001", "path": "/workspace/work/photos/a.jpg", "source": "upload"},
-        ],
-        "assignments": {"1": ["image_001"], "4": ["image_001"]},
+        "completed_steps": ["step_001"],
+        "pending_steps": ["step_002"],
     },
     ensure_ascii=False,
 )
@@ -111,13 +110,13 @@ def test_state_inject_defaults_off():
 
 
 def test_declarations_come_from_skill_metadata_and_manifest():
-    skill = _skill("_state/photo_plan.json", manifest={
+    skill = _skill("_state/progress.json", manifest={
         "metadata": {"state_files": ["/workspace/_state/notes.json", "../secret.json"]},
-        "spec": {"state_files": ["_state/photo_plan.json", "_state/extra.json"]},
+        "spec": {"state_files": ["_state/progress.json", "_state/extra.json"]},
         "x-skillgo": {"state_files": ["_state/ignored.json"]},
     })
     bare = {"skill_md": "# Guide"}
-    assert declared_state_paths([skill, bare]) == [PHOTO, NOTES, "/workspace/_state/extra.json"]
+    assert declared_state_paths([skill, bare]) == [PROGRESS, NOTES, "/workspace/_state/extra.json"]
     assert declared_state_paths([bare]) == []
     assert declared_state_paths([{
         "skill_md": "---\nname: demo\ndescription: demo\nstate_files:\n  - _state/top.json\n---\n# Guide\n",
@@ -126,7 +125,7 @@ def test_declarations_come_from_skill_metadata_and_manifest():
         "/etc/passwd",
         "/workspace/input/secret.json",
         "_state/nested/file.json",
-        "_state/../photo_plan.json",
+        "_state/../progress.json",
         "notes.txt",
         "_state/.hidden.json",
     ]
@@ -138,33 +137,33 @@ def test_declarations_come_from_skill_metadata_and_manifest():
 def test_declared_files_sit_after_history_and_before_the_last_user_message():
     messages = _messages()
     before = copy.deepcopy(messages)
-    photo = _snapshot(PHOTO, PHOTO_BODY)
+    progress = _snapshot(PROGRESS, PROGRESS_BODY)
     notes = _snapshot(NOTES, '{"topic":"alpha"}')
     other = _snapshot(NOTES, '{"topic":"beta"}')
     diagnostics = {}
     baseline = _project(messages, policy=_fast(), diagnostics={})
     projected = _project(
-        messages, policy=_fast(), files=[photo, notes], state_inject=True, diagnostics=diagnostics,
+        messages, policy=_fast(), files=[progress, notes], state_inject=True, diagnostics=diagnostics,
     )
-    again = _project(messages, policy=_fast(), files=[photo, other], state_inject=True)
+    again = _project(messages, policy=_fast(), files=[progress, other], state_inject=True)
 
     assert messages == before
     assert projected[-1]["content"].startswith("Execution state and active Skill instructions")
-    assert projected[-3]["content"].startswith(f"State file {PHOTO}")
+    assert projected[-3]["content"].startswith(f"State file {PROGRESS}")
     assert projected[-2]["content"].startswith(f"State file {NOTES}")
-    assert projected[-3]["content"].endswith(PHOTO_BODY)
+    assert projected[-3]["content"].endswith(PROGRESS_BODY)
     assert projected[-2]["content"].endswith('{"topic":"alpha"}')
-    assert "image_001" in projected[-3]["content"]
+    assert "step_001" in projected[-3]["content"]
     assert projected[:-3] == baseline[:-1] == again[:-3]
     assert projected[-1] == baseline[-1]
     assert projected[-2] != again[-2]
     metrics = diagnostics["state_inject"]
-    assert set(metrics) == {PHOTO, NOTES}
-    assert metrics[PHOTO]["validation"] == "ok"
-    assert metrics[PHOTO]["injected_tokens"] == estimate_tokens([projected[-3]])
-    assert metrics[PHOTO]["injected_tokens"] > 0
-    assert metrics[PHOTO]["file_mtime"] == 1_700_000_000.5
-    assert metrics[PHOTO]["stale"] is False
+    assert set(metrics) == {PROGRESS, NOTES}
+    assert metrics[PROGRESS]["validation"] == "ok"
+    assert metrics[PROGRESS]["injected_tokens"] == estimate_tokens([projected[-3]])
+    assert metrics[PROGRESS]["injected_tokens"] > 0
+    assert metrics[PROGRESS]["file_mtime"] == 1_700_000_000.5
+    assert metrics[PROGRESS]["stale"] is False
     assert metrics[NOTES]["injected_tokens"] == estimate_tokens([projected[-2]])
     assert "photo_plan" not in diagnostics
     assert diagnostics["request_estimated_tokens"] == estimate_tokens(projected)
@@ -172,7 +171,7 @@ def test_declared_files_sit_after_history_and_before_the_last_user_message():
 
 def test_audit_mode_and_disabled_flag_do_not_inject():
     messages = _messages()
-    files = [_snapshot(PHOTO, PHOTO_BODY)]
+    files = [_snapshot(PROGRESS, PROGRESS_BODY)]
     audit_diag, fast_diag, idle_diag = {}, {}, {}
     audit = _project(
         messages, policy=ThinContextPolicy(), files=files, state_inject=True, diagnostics=audit_diag,
@@ -247,11 +246,11 @@ def test_missing_state_file_warns_once_per_job_and_path(caplog):
     with caplog.at_level(logging.WARNING, logger="app.state_inject"):
         evaluate_state_file(path=NOTES, text=None, mtime=None, read_error=None, job_id="job-once")
         evaluate_state_file(path=NOTES, text=None, mtime=None, read_error=None, job_id="job-once")
-        evaluate_state_file(path=PHOTO, text=None, mtime=None, read_error=None, job_id="job-once")
+        evaluate_state_file(path=PROGRESS, text=None, mtime=None, read_error=None, job_id="job-once")
         evaluate_state_file(path=NOTES, text=None, mtime=None, read_error=None, job_id="job-other")
     missing = [record.message for record in caplog.records if "validation=missing" in record.message]
     assert sum("job-once" in message and NOTES in message for message in missing) == 1
-    assert sum("job-once" in message and PHOTO in message for message in missing) == 1
+    assert sum("job-once" in message and PROGRESS in message for message in missing) == 1
     assert sum("job-other" in message and NOTES in message for message in missing) == 1
     release_job_timing("job-once")
     caplog.clear()
@@ -262,6 +261,7 @@ def test_missing_state_file_warns_once_per_job_and_path(caplog):
     release_job_timing("job-other")
 
 
+@pytest.mark.skipif(not hasattr(time, "tzset"), reason="Changing process TZ requires POSIX tzset")
 def test_naive_utc_job_start_is_independent_of_host_tz():
     previous = os.environ.get("TZ")
     os.environ["TZ"] = "Asia/Shanghai"
@@ -364,6 +364,24 @@ def test_load_state_file_reads_mtime_and_tolerates_a_missing_file(caplog):
     assert sum("validation=missing" in record.message for record in caplog.records) == 1
 
 
+@pytest.mark.parametrize("over_limit", [False, True])
+def test_fallback_state_reader_limits_utf8_bytes(over_limit):
+    raw = "中" * (STATE_MAX_BYTES // 3)
+    raw += "abc" if over_limit else "ab"
+    assert len(raw) < STATE_MAX_BYTES
+    assert len(raw.encode("utf-8")) == STATE_MAX_BYTES + int(over_limit)
+    sandbox = MemorySandbox()
+    sandbox.files[NOTES] = raw.encode("utf-8")
+    loaded = asyncio.run(load_state_file(sandbox, NOTES))
+    if over_limit:
+        assert loaded["validation"] == "read_error"
+        assert loaded["error"] == "too_large"
+        assert loaded["text"] is None
+    else:
+        assert loaded["validation"] == "ok"
+        assert loaded["text"] == raw
+
+
 def test_fast_loop_injects_only_declared_state_files(client, user_headers, fake_model_gateway, monkeypatch, caplog):
     from dataclasses import replace
 
@@ -388,7 +406,7 @@ def test_fast_loop_injects_only_declared_state_files(client, user_headers, fake_
         def __init__(self):
             super().__init__()
             self.reads = []
-            self.files[PHOTO] = PHOTO_BODY.encode()
+            self.files[PROGRESS] = PROGRESS_BODY.encode()
             self.files[NOTES] = notes_body.encode()
 
         async def read_state_file(self, path, *, max_bytes):
@@ -439,7 +457,7 @@ def test_fast_loop_injects_only_declared_state_files(client, user_headers, fake_
     assert gateway.seen[-1]["content"].startswith("Execution state and active Skill instructions")
     assert gateway.seen[-2]["content"].startswith(f"State file {NOTES}")
     assert gateway.seen[-2]["content"].endswith(notes_body)
-    assert "image_001" not in json.dumps(gateway.seen)
+    assert "step_001" not in json.dumps(gateway.seen)
     assert "photo_plan" not in json.dumps(gateway.seen[-2])
     assert any("end timing" in record.message and "rounds=2" in record.message for record in caplog.records)
     with SessionLocal() as db:
