@@ -2,6 +2,13 @@
 
 所有重要变更都记录在此文件中。版本号遵循 [Semantic Versioning](https://semver.org/)。
 
+## [Unreleased]
+
+### Added
+
+- 可选的历史压缩摘要（`SKILLGO_STRUCTURED_COMPACTION_SUMMARY`，默认关闭）。关闭时发给模型的投影保持不变。打开后，被丢弃或压缩的历史按固定栏目（用户目标、约束、已做决定、文件路径、当前进度、待办步骤、已知错误）写入投影末尾的状态消息，不进入可缓存的稳定前缀。
+- 每个沙箱任务结束时记录累计模型等待时间与工具执行时间（日志字段 `model_wait_ms`、`tool_run_ms`）。
+
 ## [0.4.4] - 2026-09-24
 
 ### Changed

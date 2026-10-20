@@ -157,6 +157,10 @@ class Settings:
     context_max_exchanges: int | None = _optional_int("SKILLGO_CONTEXT_MAX_EXCHANGES")
     compact_older_tools: bool | None = _optional_bool("SKILLGO_COMPACT_OLDER_TOOLS")
     thin_reference_shelf: bool | None = _optional_bool("SKILLGO_THIN_REFERENCE_SHELF")
+    # Fixed summary of dropped or compacted history. Default off: the model
+    # projection stays identical to the build without this summary. When on,
+    # the summary is attached only to the trailing state message.
+    structured_compaction_summary: bool = _bool("SKILLGO_STRUCTURED_COMPACTION_SUMMARY", False)
     # A reasoning turn may now contain several native tool calls. Keep the
     # model-turn budget separate from the sandbox-operation budget so a useful
     # batch is not reported as several rounds of "thinking".

@@ -171,6 +171,42 @@ def _event_duration_ms(started_at: float) -> int:
     return max(0, round((time.perf_counter() - started_at) * 1000))
 
 
+class _JobTiming:
+    """Per-job totals for time spent waiting on the model and running tools."""
+
+    def __init__(self) -> None:
+        self.model_wait_ms = 0
+        self.tool_run_ms = 0
+        self._open_tool: float | None = None
+
+    def add_model_wait(self, started_at: float) -> None:
+        self.model_wait_ms += _event_duration_ms(started_at)
+
+    def begin_tool(self) -> float:
+        started = time.perf_counter()
+        self._open_tool = started
+        return started
+
+    def end_tool(self, started_at: float | None = None) -> int:
+        if self._open_tool is None:
+            return 0
+        started = self._open_tool if started_at is None else started_at
+        self._open_tool = None
+        delta = _event_duration_ms(started)
+        self.tool_run_ms += delta
+        return delta
+
+    def close(self, job_id: object) -> None:
+        if self._open_tool is not None:
+            self.end_tool()
+        logger.info(
+            "job timing job_id=%s model_wait_ms=%d tool_run_ms=%d",
+            job_id,
+            self.model_wait_ms,
+            self.tool_run_ms,
+        )
+
+
 def _action_skill_context(
     action: dict[str, Any], skill_contexts: list[dict[str, Any]]
 ) -> dict[str, str]:
@@ -725,6 +761,35 @@ async def _run_agent_loop(
     job_cancelled: Callable[[], bool],
     checkpoint_fence: Callable[[], None] | None = None,
 ) -> tuple[str, list[str], int, int]:
+    """Run one sandbox job and log its total model-wait and tool-run time."""
+
+    job_timing = _JobTiming()
+    try:
+        return await _run_agent_loop_body(
+            db,
+            job,
+            sandbox,
+            skill_contexts=skill_contexts,
+            gateway=gateway,
+            job_cancelled=job_cancelled,
+            checkpoint_fence=checkpoint_fence,
+            job_timing=job_timing,
+        )
+    finally:
+        job_timing.close(job.id)
+
+
+async def _run_agent_loop_body(
+    db: Session,
+    job: WorkflowJob,
+    sandbox: DockerSandbox,
+    *,
+    skill_contexts: list[dict[str, Any]],
+    gateway: OpenAICompatibleGateway,
+    job_cancelled: Callable[[], bool],
+    checkpoint_fence: Callable[[], None] | None = None,
+    job_timing: _JobTiming,
+) -> tuple[str, list[str], int, int]:
     skill_root = str(skill_contexts[0]["root"])
     # Skill package/input locations are task-immutable and eligible for the
     # pinned reference shelf; /workspace/work and /workspace/output are not.
@@ -937,6 +1002,7 @@ async def _run_agent_loop(
             "context_budget": budget_diagnostics,
         }
         db.commit()
+        model_wait_started = time.perf_counter()
         try:
             result = await _await_model_with_cancellation(
                 gateway.agent_step(messages=model_messages), job_cancelled)
@@ -953,6 +1019,8 @@ async def _run_agent_loop(
                 reasoning_event.data[diagnostic_key] = exc.details
             db.commit()
             raise
+        finally:
+            job_timing.add_model_wait(model_wait_started)
         if job_cancelled():
             raise AgentJobCancelled("Workflow job was cancelled")
 
@@ -1194,7 +1262,7 @@ async def _run_agent_loop(
                 data={**tool_data, "turn": turn_number, "operation": tool_operation_count},
             )
             db.commit()
-            tool_started_at = time.perf_counter()
+            tool_started_at = job_timing.begin_tool()
             cached_payload = (
                 None if validation_error else execution_state.cached_observation(action)
             )
@@ -1742,7 +1810,7 @@ async def _run_agent_loop(
                     tool_event.detail = "已确认当前条件无法完成用户目标"
                     tool_event.data = {
                         **(tool_event.data or {}),
-                        "duration_ms": _event_duration_ms(tool_started_at),
+                        "duration_ms": job_timing.end_tool(tool_started_at),
                     }
                     agent_session.tool_result(context, payload)
                     agent_session.finish_step(turn_number)
@@ -1851,7 +1919,7 @@ async def _run_agent_loop(
                             tool_event.detail = f"已确认 {len(artifacts)} 个产物文件"
                             tool_event.data = {
                                 **(tool_event.data or {}),
-                                "duration_ms": _event_duration_ms(tool_started_at),
+                                "duration_ms": job_timing.end_tool(tool_started_at),
                                 "artifact_sha256": current_snapshot,
                                 "validation_operation": (
                                     (execution_state.validation or {})
@@ -1925,7 +1993,7 @@ async def _run_agent_loop(
             _finish_tool_event(tool_event, payload)
             tool_event.data = {
                 **(tool_event.data or {}),
-                "duration_ms": _event_duration_ms(tool_started_at),
+                "duration_ms": job_timing.end_tool(tool_started_at),
             }
             if tool_event.status == "failed":
                 tool_event.data = {
