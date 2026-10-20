@@ -1,0 +1,22 @@
+{
+  "_schema": "tcc-ppt-skill-palette/v1",
+  "_description": "活力风 —— 燃橙配色方案。主色取高饱和燃橙，与同风格门面页（templates/vibrant/）的满版主橙 + 暖白底保持一致。",
+  "_role_table": "roles.json",
+  "_scope": "🔴 本方案只作用于创作页（009）；门面页不参与配色替换（见 roles.json 的 _scope_principle）。",
+  "name": "活力风",
+  "id": "vibrant",
+  "_is_default": false,
+
+  "tokens": {
+    "ROLE_PRIMARY": "#FF7A00",
+    "ROLE_ACCENT_LIGHT": "#FFB37A",
+    "ROLE_DEEP": "#241612"
+  },
+
+  "_design_notes": {
+    "配色逻辑": "沿用与商务风 / 简约风相同的三角色明度梯度：PRIMARY 主色（大面积色条/标题色/实心数据块）、ACCENT_LIGHT 最亮（渐变亮端、序号圆点、次级色条）、DEEP 较沉（压照片的图注条底、大标题）。",
+    "取色来源": "燃橙家族 —— 与门面页模板（templates/vibrant/）的主橙 #FF7A00 / 浅橙 #FFB37A / 深炭 #241612 完全同源。",
+    "色相安全窗口": "PRIMARY #FF7A00 色相 28.7°，距语义红 #C11920（357.5°）约 30°、距语义黄 #FFD806（50.6°）约 22° —— 取在安全窗口正中，不与两个语义色混淆。",
+    "红黄语义色": "#C11920（三级·关键）/ #FFD806（二级·重点）刻意不登记，任何方案下恒定。理由见 roles.json 的 _DO_NOT_REGISTER。"
+  }
+}

@@ -1,0 +1,270 @@
+{
+  "_schema": "tcc-ppt-skill-config/v1",
+  "_style": "default",
+  "_style_note": "🔴 本文件是**风格 default 自有的一份** schema（2026-10-09 起 schema 按风格各存一份，与门面页模板同目录；`references/` 下同名旧文件已删）。新增风格 = 复制整个 assets/templates/default/ 文件夹改名，再把门面页 5 项的 placeholder_schema / max_chars 按新模板核对一遍。",
+  "_description": "tcc-ppt-skill 数据驱动配置文件。所有页面内容、patch 分派均由此定义，核心脚本（build_svgs.py / export_flat.py）读取此文件执行，不再含硬编码。修改内容时只需编辑此文件，脚本保持不变。",
+  "_meta_schema": {
+    "description": "顶层元信息；export_flat.py 只用 _meta.project 拼出最终 .pptx 文件名（不含作者名）",
+    "required": [
+      "project",
+      "author"
+    ],
+    "fields": {
+      "project": {
+        "type": "string",
+        "desc": "项目名称，与 design_spec.md §I 一致",
+        "max_chars": 50
+      },
+      "author": {
+        "type": "string",
+        "desc": "作者姓名。只能取自素材（文件名 / 正文署名）；素材无署名则填占位语「TCC」（全大写 ASCII ⇒ 英文字体自动落 Arial）。🔴 严禁编造，严禁填 skill 作者名",
+        "max_chars": 10
+      },
+      "palette": {
+        "type": "string",
+        "desc": "配色方案 id，取自前置解析的 [PPT风格：xxx]。取值 = assets/palettes/ 下的方案文件名（不含 .json），当前为 default（商务风）/ minimal（简约风）。缺省 default。🔴 只作用于创作页（009）；门面页不参与配色替换",
+        "example": "minimal"
+      },
+      "template_set": {
+        "type": "string",
+        "desc": "门面页风格名 = assets/templates/ 下的子目录名（当前有 default / minimal）。缺省 default，旧 config 无需填写。⚠️ 与 palette 是两个正交维度：本字段管门面页整张版式，palette 管创作页色值。目录不存在会报错退出（不静默降级）",
+        "example": "default"
+      }
+    }
+  },
+  "_template_reference": {
+    "001_cover": {
+      "description": "封面 — 全版深蓝渐变背景",
+      "placeholder_schema": {
+        "TITLE": {
+          "type": "string",
+          "desc": "主标题",
+          "max_chars": 18
+        },
+        "TITLE_EN": {
+          "type": "string_english",
+          "desc": "英文副标题（英文计数≈2字符=1汉字视觉宽度）",
+          "max_chars": 30
+        },
+        "AUTHOR": {
+          "type": "string",
+          "desc": "汇报人（模板已有前缀'汇报人：'，只需填姓名）。只能取自素材；无署名填占位语「TCC」（全大写 ASCII ⇒ 英文字体自动落 Arial）。🔴 严禁编造人名",
+          "max_chars": 5
+        },
+        "DATE": {
+          "type": "string",
+          "desc": "日期（模板已有前缀'汇报时间：'，填 xxxx年xx月xx日 格式）",
+          "max_chars": 12
+        }
+      },
+      "patch": "patch_001_cover"
+    },
+    "002_toc_3ch": {
+      "description": "目录（三栏版）— 三个编号+中英文标题，3 章 deck 专用；标题已写死'目录/content'",
+      "placeholder_schema": {
+        "TOC_ITEM_1_NUM": {
+          "type": "string",
+          "desc": "第1项编号"
+        },
+        "TOC_ITEM_1_TITLE": {
+          "type": "string",
+          "desc": "第1项中文标题",
+          "max_chars": 8
+        },
+        "TOC_ITEM_1_EN": {
+          "type": "string_english",
+          "desc": "第1项英文标题",
+          "max_chars": 11
+        },
+        "TOC_ITEM_2_NUM": {
+          "type": "string",
+          "desc": "第2项编号"
+        },
+        "TOC_ITEM_2_TITLE": {
+          "type": "string",
+          "desc": "第2项中文标题",
+          "max_chars": 8
+        },
+        "TOC_ITEM_2_EN": {
+          "type": "string_english",
+          "desc": "第2项英文标题",
+          "max_chars": 11
+        },
+        "TOC_ITEM_3_NUM": {
+          "type": "string",
+          "desc": "第3项编号"
+        },
+        "TOC_ITEM_3_TITLE": {
+          "type": "string",
+          "desc": "第3项中文标题",
+          "max_chars": 8
+        },
+        "TOC_ITEM_3_EN": {
+          "type": "string_english",
+          "desc": "第3项英文标题",
+          "max_chars": 11
+        }
+      },
+      "patch": "patch_002_toc_3ch",
+      "_note": "P02-3CH 需要 XML 兼容性修复（& 转义）；只有 1~3 三个条目"
+    },
+    "002_toc": {
+      "description": "目录（四栏版）— 四个编号+中英文标题，4 章 deck 专用；标题已写死'目录/content'",
+      "placeholder_schema": {
+        "TOC_ITEM_1_NUM": {
+          "type": "string",
+          "desc": "第1项编号"
+        },
+        "TOC_ITEM_1_TITLE": {
+          "type": "string",
+          "desc": "第1项中文标题",
+          "max_chars": 8
+        },
+        "TOC_ITEM_1_EN": {
+          "type": "string_english",
+          "desc": "第1项英文标题",
+          "max_chars": 11
+        },
+        "TOC_ITEM_2_NUM": {
+          "type": "string",
+          "desc": "第2项编号"
+        },
+        "TOC_ITEM_2_TITLE": {
+          "type": "string",
+          "desc": "第2项中文标题",
+          "max_chars": 8
+        },
+        "TOC_ITEM_2_EN": {
+          "type": "string_english",
+          "desc": "第2项英文标题",
+          "max_chars": 11
+        },
+        "TOC_ITEM_3_NUM": {
+          "type": "string",
+          "desc": "第3项编号"
+        },
+        "TOC_ITEM_3_TITLE": {
+          "type": "string",
+          "desc": "第3项中文标题",
+          "max_chars": 8
+        },
+        "TOC_ITEM_3_EN": {
+          "type": "string_english",
+          "desc": "第3项英文标题",
+          "max_chars": 11
+        },
+        "TOC_ITEM_4_NUM": {
+          "type": "string",
+          "desc": "第4项编号"
+        },
+        "TOC_ITEM_4_TITLE": {
+          "type": "string",
+          "desc": "第4项中文标题",
+          "max_chars": 8
+        },
+        "TOC_ITEM_4_EN": {
+          "type": "string_english",
+          "desc": "第4项英文标题",
+          "max_chars": 11
+        }
+      },
+      "patch": "patch_002_toc",
+      "_note": "P02 需要 XML 兼容性修复（& 转义）"
+    },
+    "003_toc": {
+      "description": "章节过渡页 — 左侧圆形徽章+大数字+标题+双行描述",
+      "placeholder_schema": {
+        "CHAPTER_NUM": {
+          "type": "string",
+          "desc": "章编号",
+          "max_chars": 2
+        },
+        "CHAPTER_TITLE": {
+          "type": "string",
+          "desc": "章标题",
+          "max_chars": 6
+        },
+        "CHAPTER_DESC_LINE1": {
+          "type": "string",
+          "desc": "描述第一行",
+          "max_chars": 27
+        },
+        "CHAPTER_DESC_LINE2": {
+          "type": "string",
+          "desc": "描述第二行",
+          "max_chars": 27
+        }
+      },
+      "patch": "patch_003_toc",
+      "_note": "纯文字模板，无需 patch 和照片替换"
+    },
+    "009_content": {
+      "description": "创作内容页 — 页头固定，正文自由创作（见 references/ 下契约三册）",
+      "placeholder_schema": {
+        "PAGE_TITLE": {
+          "type": "string",
+          "desc": "页面标题",
+          "max_chars": 15
+        }
+      },
+      "patch": "patch_009_content",
+      "_note": "创作页：正文不走占位符，由 Step 2 写 body_svg 片段、照片直接写在片段里；仅 PAGE_TITLE 一个占位符"
+    },
+    "010_ending": {
+      "description": "致谢页 — 中央致谢文字+装饰元素，无文本占位符",
+      "placeholder_schema": {},
+      "patch": null,
+      "_note": "无需文本替换，仅需 build_svgs 做图片路径修正"
+    }
+  },
+  "_pages_schema": {
+    "description": "pages[] 数组结构——build_svgs.py 读取的核心配置。每个 page 对应一张幻灯片。",
+    "required_fields": [
+      "id",
+      "template",
+      "output",
+      "text"
+    ],
+    "fields": {
+      "id": {
+        "type": "string",
+        "desc": "页面唯一标识，如 page01、page04_1",
+        "example": "page04"
+      },
+      "template": {
+        "type": "string",
+        "desc": "模板文件名（不含路径），与 _templates.files 中一致",
+        "example": "009_content.svg"
+      },
+      "output": {
+        "type": "string",
+        "desc": "输出 SVG 文件名，格式 slide_NN_<slug>.svg",
+        "example": "slide_04_tank_zone.svg"
+      },
+      "text": {
+        "type": "object",
+        "desc": "占位符→内容映射，键名与 _template_reference 中对应模板的 placeholder_schema 一致"
+      },
+      "body_svg": {
+        "type": "string",
+        "desc": "[009 页必需] 正文 SVG 片段文件名，指向 assets/svg_body/ 下的文件（如 page05.svg）。仅 009 创作页需要，其他模板不要写"
+      },
+      "patch": {
+        "type": "string",
+        "desc": "[保留字段] 当前 patch 分派由 export_flat.py 的 TEMPLATE_PATCH_MAP 按模板自动完成，此字段暂未生效"
+      }
+    },
+    "_note": "同一模板复用多次时，id 和 output 必须唯一（如 page04_1/page04_2）。⚠️ 一个模板需要哪些占位符，一律以 `_template_reference.<模板>.placeholder_schema` 为准 —— 2026-09-29 起已删除原先另设的 `required_slots` 清单：它与 placeholder_schema 描述同一件事、属两次手工录入，必然漂移（实测漏掉 16 个占位符，导致漏填时校验抓不到）。"
+  },
+  "_templates": {
+  "description": "模板文件名列表。🔴 这些文件名在**每一处**都可能出现两份『同名不同位』的副本：门面页在 assets/templates/<风格名>/，009_content.svg 在 assets/templates/ 根。build_svgs.py 按此规则自动定位",
+  "files": [
+    "001_cover.svg",
+    "002_toc.svg",
+    "002_toc_3ch.svg",
+    "003_toc.svg",
+    "009_content.svg",
+    "010_ending.svg"
+  ]
+  }
+}

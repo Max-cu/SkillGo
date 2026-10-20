@@ -1,0 +1,23 @@
+{
+  "_schema": "tcc-ppt-skill-palette/v1",
+  "_description": "商务风（原默认配色）—— 创作页（009）的原生蓝色系，值与 assets/templates/default/*.svg 中的写死色值一致。本方案替换结果 = 模板原样。",
+  "_role_table": "roles.json",
+  "_scope": "🔴 本方案只作用于创作页（009）；门面页不参与配色替换（见 roles.json 的 _scope_principle）。",
+  "name": "商务风",
+  "id": "default",
+  "_is_default": true,
+  "tokens": {
+    "ROLE_PRIMARY": "#003C96",
+    "ROLE_ACCENT_LIGHT": "#307FE2",
+    "ROLE_DEEP": "#013B94"
+  },
+  "_reserved": {
+    "_comment": "以下角色不参与替换，列出仅为文档完整。",
+    "__KEEP__": [
+      "#FFFFFF",
+      "#262626",
+      "#000000",
+      "#404040"
+    ]
+  }
+}

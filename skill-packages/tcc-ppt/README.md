@@ -1,28 +1,15 @@
-# TCC PPT compiler overlay
+# TCC PPT skill
 
-This overlay targets the user-supplied `tcc-ppt-skill-v4.zip` with SHA-256
-`46a33c26804316da41a39236d77dbb378e02f7b732f4861e908cbeab3105d86c`.
-Vendor templates, icons and validators remain in the original ZIP. Private
-business inputs and generated decks are never part of this directory.
+本目录就是技能包本身（脚本、参考、模板、图标）。照片落页记在工作区状态文件 `/workspace/_state/photo_plan.json`，由 `scripts/write_photo_plan.py` 写入，并在 `SKILL.md` 的 `metadata.state_files` 中声明。
 
-Build an uploadable package:
+打包：
 
 ```sh
-python skill-packages/tcc-ppt/build_package.py original.zip optimized.zip
+python skill-packages/tcc-ppt/build_package.py /tmp/tcc-ppt.zip
 ```
 
-Extract the result into an isolated directory and run its offline regression:
+照片安排与页级检查：
 
 ```sh
-python -m pytest tcc-ppt-skill-v4/tests/test_structured_workflow.py -q
+python -m pytest skill-packages/tcc-ppt/tests/test_photo_plan.py -q
 ```
-
-Normal authoring produces a source-bound JSON plan, then the compiler derives
-SVG, design specification and pipeline configuration. The existing company
-checks still gate build, finalize and export. Complex pages can mix custom SVG
-with compiled pages; other chapter structures retain the manual workflow.
-`write_json` avoids putting JSON inside an escaped string. `run_verifier.artifacts`
-collects the exact original exports before hash-bound validation.
-
-Publish as a new immutable Skill version; running jobs keep their existing
-package. Test a real task before claiming an end-to-end speed improvement.

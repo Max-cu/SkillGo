@@ -1,0 +1,277 @@
+{
+  "_schema": "tcc-ppt-skill-config/v1",
+  "_style": "vibrant",
+  "_style_note": "🔴 本文件是**风格 vibrant（活力风）自有的一份** schema（2026-10-09 起 schema 按风格各存一份，与门面页模板同目录）。**占位符集合按风格独立** —— 本风格与 default / minimal 不同：① `001_cover` 多一个 `SUBTITLE`（中文副标题，三行标题区）；② `003_toc` 用 `CHAPTER_DESC_EN`（英文注释行）替代 `CHAPTER_DESC_LINE1/LINE2`，且左上有写死的引子行 `CHAPTER {{CHAPTER_NUM}}`。⚠️ 下游（check_design_spec / check_required_slots / build_svgs）一律以**本文件**为准，不参考其它风格。",
+  "_description": "tcc-ppt-skill 数据驱动配置文件（风格 vibrant）。所有页面内容、patch 分派均由此定义，核心脚本（build_svgs.py / export_flat.py）读取此文件执行，不再含硬编码。",
+  "_meta_schema": {
+    "description": "顶层元信息；export_flat.py 只用 _meta.project 拼出最终 .pptx 文件名（不含作者名）",
+    "required": [
+      "project",
+      "author"
+    ],
+    "fields": {
+      "project": {
+        "type": "string",
+        "desc": "项目名称，与 design_spec.md §I 一致",
+        "max_chars": 50
+      },
+      "author": {
+        "type": "string",
+        "desc": "作者姓名。只能取自素材（文件名 / 正文署名）；素材无署名则填占位语「TCC」（全大写 ASCII ⇒ 英文字体自动落 Arial）。🔴 严禁编造，严禁填 skill 作者名",
+        "max_chars": 10
+      },
+      "palette": {
+        "type": "string",
+        "desc": "配色方案 id，取自前置解析的 [PPT风格：xxx]。取值 = assets/palettes/ 下的方案文件名（不含 .json），当前为 default（商务风）/ minimal（简约风）/ vibrant（活力风）。缺省 default。🔴 只作用于创作页（009）；门面页不参与配色替换",
+        "example": "vibrant"
+      },
+      "template_set": {
+        "type": "string",
+        "desc": "门面页风格名 = assets/templates/ 下的子目录名（当前有 default / minimal / vibrant）。缺省 default，旧 config 无需填写。⚠️ 与 palette 是两个正交维度：本字段管门面页整张版式，palette 管创作页色值。目录不存在会报错退出（不静默降级）",
+        "example": "vibrant"
+      }
+    }
+  },
+  "_template_reference": {
+    "001_cover": {
+      "description": "封面 — 暖白底 + 右下斜切双光带（浅橙带 + 主橙块）+ 左上超大标题三行 + 左下署名反白（不用照片）",
+      "placeholder_schema": {
+        "TITLE": {
+          "type": "string",
+          "desc": "主标题（第一行，最大号）",
+          "max_chars": 18
+        },
+        "SUBTITLE": {
+          "type": "string",
+          "desc": "中文副标题（第二行，中号）—— 🔴 本风格独有，default / minimal 无此槽位",
+          "max_chars": 24
+        },
+        "TITLE_EN": {
+          "type": "string_english",
+          "desc": "英文副标题（第三行，小号，模板已加字距；英文计数≈2字符=1汉字视觉宽度）",
+          "max_chars": 30
+        },
+        "AUTHOR": {
+          "type": "string",
+          "desc": "汇报人（模板已有前缀'汇报人：'，只需填姓名）。只能取自素材；无署名填占位语「TCC」（全大写 ASCII ⇒ 英文字体自动落 Arial）。🔴 严禁编造人名",
+          "max_chars": 5
+        },
+        "DATE": {
+          "type": "string",
+          "desc": "日期（模板已有前缀'汇报时间：'，填 xxxx年xx月xx日 格式）",
+          "max_chars": 12
+        }
+      },
+      "patch": "patch_001_cover"
+    },
+    "002_toc_3ch": {
+      "description": "目录（三章版）— 竖向列表：斜切序号徽章 + 中文标题 + 英文注，3 章 deck 专用",
+      "placeholder_schema": {
+        "TOC_ITEM_1_NUM": {
+          "type": "string",
+          "desc": "第1项编号",
+          "max_chars": 2
+        },
+        "TOC_ITEM_1_TITLE": {
+          "type": "string",
+          "desc": "第1项中文标题",
+          "max_chars": 14
+        },
+        "TOC_ITEM_1_EN": {
+          "type": "string_english",
+          "desc": "第1项英文标题",
+          "max_chars": 38
+        },
+        "TOC_ITEM_2_NUM": {
+          "type": "string",
+          "desc": "第2项编号",
+          "max_chars": 2
+        },
+        "TOC_ITEM_2_TITLE": {
+          "type": "string",
+          "desc": "第2项中文标题",
+          "max_chars": 14
+        },
+        "TOC_ITEM_2_EN": {
+          "type": "string_english",
+          "desc": "第2项英文标题",
+          "max_chars": 38
+        },
+        "TOC_ITEM_3_NUM": {
+          "type": "string",
+          "desc": "第3项编号",
+          "max_chars": 2
+        },
+        "TOC_ITEM_3_TITLE": {
+          "type": "string",
+          "desc": "第3项中文标题",
+          "max_chars": 14
+        },
+        "TOC_ITEM_3_EN": {
+          "type": "string_english",
+          "desc": "第3项英文标题",
+          "max_chars": 38
+        }
+      },
+      "patch": "patch_002_toc_3ch",
+      "_note": "竖向列表版；只有 1~3 三个条目，行距按 3 行舒展排布。🔴 「目录 / CONTENTS」页头写死在模板里，无占位符。"
+    },
+    "002_toc": {
+      "description": "目录（四章版）— 竖向列表：斜切序号徽章 + 中文标题 + 英文注，4 章 deck 专用",
+      "placeholder_schema": {
+        "TOC_ITEM_1_NUM": {
+          "type": "string",
+          "desc": "第1项编号",
+          "max_chars": 2
+        },
+        "TOC_ITEM_1_TITLE": {
+          "type": "string",
+          "desc": "第1项中文标题",
+          "max_chars": 14
+        },
+        "TOC_ITEM_1_EN": {
+          "type": "string_english",
+          "desc": "第1项英文标题",
+          "max_chars": 38
+        },
+        "TOC_ITEM_2_NUM": {
+          "type": "string",
+          "desc": "第2项编号",
+          "max_chars": 2
+        },
+        "TOC_ITEM_2_TITLE": {
+          "type": "string",
+          "desc": "第2项中文标题",
+          "max_chars": 14
+        },
+        "TOC_ITEM_2_EN": {
+          "type": "string_english",
+          "desc": "第2项英文标题",
+          "max_chars": 38
+        },
+        "TOC_ITEM_3_NUM": {
+          "type": "string",
+          "desc": "第3项编号",
+          "max_chars": 2
+        },
+        "TOC_ITEM_3_TITLE": {
+          "type": "string",
+          "desc": "第3项中文标题",
+          "max_chars": 14
+        },
+        "TOC_ITEM_3_EN": {
+          "type": "string_english",
+          "desc": "第3项英文标题",
+          "max_chars": 38
+        },
+        "TOC_ITEM_4_NUM": {
+          "type": "string",
+          "desc": "第4项编号",
+          "max_chars": 2
+        },
+        "TOC_ITEM_4_TITLE": {
+          "type": "string",
+          "desc": "第4项中文标题",
+          "max_chars": 14
+        },
+        "TOC_ITEM_4_EN": {
+          "type": "string_english",
+          "desc": "第4项英文标题",
+          "max_chars": 38
+        }
+      },
+      "patch": "patch_002_toc",
+      "_note": "竖向列表版；4 个条目，行距比三章版收紧。🔴 「目录 / CONTENTS」页头写死在模板里，无占位符。"
+    },
+    "003_toc": {
+      "description": "章节过渡页 — 对角双色：橙区（左上，白字）+ 米白三角（右下）+ 浅橙光带沿对角切分；右下超大章号（橙字）+ 左上引子行 / 短横线 / 左对齐标题 / 英文注释行",
+      "placeholder_schema": {
+        "CHAPTER_NUM": {
+          "type": "string",
+          "desc": "章编号。🔴 模板里出现两次（右侧 260px 超大号 + 左上引子行 'CHAPTER {章号}'），build_svgs 全局替换 ⇒ 两处自动一致",
+          "max_chars": 2
+        },
+        "CHAPTER_TITLE": {
+          "type": "string",
+          "desc": "章标题",
+          "max_chars": 14
+        },
+        "CHAPTER_DESC_EN": {
+          "type": "string_english",
+          "desc": "英文注释行（标题下方一行小字）",
+          "max_chars": 40
+        }
+      },
+      "patch": "patch_003_toc",
+      "_note": "🔴 本风格的描述槽位是 **`CHAPTER_DESC_EN`（英文）**，与 default（LINE1 + LINE2 两行中文）/ minimal（LINE1 单行）都不同。左上的 `CHAPTER {{CHAPTER_NUM}}` 引子行前半段写死在模板里。🔴 字色写死在模板里、不参与配色替换：**橙区文字白 / 半透明白；右下巨号落在米白三角里 ⇒ 是主橙 `#FF7A00`（正负形翻转，非笔误）**。⚠️ `patch_003_toc` 在本风格上**空转**（本风格每个语义形状仅 1 个 `<text>`）。🔄 2026-10-15：该 patch 已改**条件筛**（剥「直接含 ≥2 个 `<text>`」的形状），**不再按 id 匹配** ⇒ 新增 003 元素时**不必再避开** `s-003-shape-23`。📐 容量另见 `template_capacity.md`：`CHAPTER_DESC_EN` 上限 40 折算字。🔴 **2026-10-14：框宽 1000 → 580、框高 44 → 64**——浅橙光带 / 米白三角在 y≈396 处已推进到 x≈760 / 810，老框宽会让白字一直排进米白区（读不出来）；现由 `text_flow='reflow'`（`bodyPr` 的 wrap 为 square）**在橙区内自动折行**，超约 27 折算字即折成两行、两行都是白字。"
+    },
+    "009_content": {
+      "description": "创作内容页 — 页头固定，正文自由创作（见 references/ 下契约三册）",
+      "placeholder_schema": {
+        "PAGE_TITLE": {
+          "type": "string",
+          "desc": "页面标题",
+          "max_chars": 15
+        }
+      },
+      "patch": "patch_009_content",
+      "_note": "创作页：正文不走占位符，由 Step 2 写 body_svg 片段、照片直接写在片段里；仅 PAGE_TITLE 一个占位符。🔴 本模板为**所有风格共享**（在 templates/ 根），风格间无差异。"
+    },
+    "010_ending": {
+      "description": "致谢页 — 左栏橙区（THANKS! + 短杠 + 感谢聆听）+ 浅橙斜柱分栏 + 右栏米白（三张白卡 × 三码 × 标签），无文本占位符",
+      "placeholder_schema": {},
+      "patch": null,
+      "_note": "无需文本替换，仅需 build_svgs 做图片路径修正；二维码区为静态图形（无占位符）。🔴 2026-10-14 改版（L 版）右栏改米白 ⇒ ① 三卡加 `#E8E0D6` 1px 描边（白卡压米白底不加描边会糊）；② 标签字改 `#CC6100` 深橙（原白字在米白上看不见）；③ **本页 logo 由 `image4` 换成 `image1`（深色版）**—— 白版 logo 在米白栏上会隐形；④ 中 / 右两卡中心补「白椭圆 + CNCEC logo `image11`」覆盖件，尺寸按原图中心图案 bbox 定（勿按码直径缩放）。"
+    }
+  },
+  "_pages_schema": {
+    "description": "pages[] 数组结构——build_svgs.py 读取的核心配置。每个 page 对应一张幻灯片。",
+    "required_fields": [
+      "id",
+      "template",
+      "output",
+      "text"
+    ],
+    "fields": {
+      "id": {
+        "type": "string",
+        "desc": "页面唯一标识，如 page01、page04_1",
+        "example": "page04"
+      },
+      "template": {
+        "type": "string",
+        "desc": "模板文件名（不含路径），与 _templates.files 中一致",
+        "example": "009_content.svg"
+      },
+      "output": {
+        "type": "string",
+        "desc": "输出 SVG 文件名，格式 slide_NN_<slug>.svg",
+        "example": "slide_04_tank_zone.svg"
+      },
+      "text": {
+        "type": "object",
+        "desc": "占位符→内容映射，键名与 _template_reference 中对应模板的 placeholder_schema 一致"
+      },
+      "body_svg": {
+        "type": "string",
+        "desc": "[009 页必需] 正文 SVG 片段文件名，指向 assets/svg_body/ 下的文件（如 page05.svg）。仅 009 创作页需要，其他模板不要写"
+      },
+      "patch": {
+        "type": "string",
+        "desc": "[保留字段] 当前 patch 分派由 export_flat.py 的 TEMPLATE_PATCH_MAP 按模板自动完成，此字段暂未生效"
+      }
+    },
+    "_note": "同一模板复用多次时，id 和 output 必须唯一（如 page04_1/page04_2）。⚠️ 一个模板需要哪些占位符，一律以 `_template_reference.<模板>.placeholder_schema` 为准。"
+  },
+  "_templates": {
+    "description": "模板文件名列表。🔴 这些文件名在**每一处**都可能出现两份『同名不同位』的副本：门面页在 assets/templates/<风格名>/，009_content.svg 在 assets/templates/ 根。build_svgs.py 按此规则自动定位",
+    "files": [
+      "001_cover.svg",
+      "002_toc.svg",
+      "002_toc_3ch.svg",
+      "003_toc.svg",
+      "009_content.svg",
+      "010_ending.svg"
+    ]
+  }
+}

@@ -1,0 +1,24 @@
+{
+  "_schema": "tcc-ppt-skill-palette/v1",
+  "_description": "简约风 —— 墨绿配色方案。主色取低饱和墨绿，与同风格门面页（templates/minimal/）的满版墨绿 + 米白底保持一致。",
+  "_role_table": "roles.json",
+  "_scope": "🔴 本方案只作用于创作页（009）；门面页不参与配色替换（见 roles.json 的 _scope_principle）。",
+  "name": "简约风",
+  "id": "minimal",
+  "_is_default": false,
+
+  "tokens": {
+    "ROLE_PRIMARY": "#2F4A42",
+    "ROLE_ACCENT_LIGHT": "#7FA99B",
+    "ROLE_DEEP": "#1B2E29"
+  },
+
+  "_design_notes": {
+    "配色逻辑": "沿用与商务风相同的明度梯度：PRIMARY 主色（大面积色条/标题色/实心数据块）、ACCENT_LIGHT 最亮（渐变亮端、序号圆点、次级色条）、DEEP 较沉（压照片的图注条底、大标题）。",
+    "取色来源": "低饱和墨绿家族 —— 与门面页模板（templates/minimal/）的墨绿主色 #2F4A42 / 浅绿点缀 #7FA99B / 深墨绿压深 #1B2E29 完全同源。",
+    "v2 调整": "首版整体偏深（DEEP #993C1D 几乎发黑）。二次全体提亮一档（原暖橙方案的调整记录）。",
+    "v3 调整（2026-10-09）": "随配色系统收窄至「只服务创作页（009）」，删除 4 个门面页专属 token（ROLE_RING / ROLE_SECONDARY / ROLE_SHADOW_COOL / ROLE_SHADOW_WARM）。原 T1 投影方案随之作废。",
+    "v4 调整（2026-10-13）": "🔴 **配色主题由「暖橙」改为「墨绿」**，与新建的 minimal 门面页模板同步。原因：主题改名后（orange → minimal / 简约风），门面页做成墨绿 + 米白；若 009 仍用暖橙，会产出「绿封面 + 橙正文」的割裂观感 —— 违反 10-09 拍板的「门面页与 009 配色要么都做、要么都不做」。⇒ 三个 token 整体换成墨绿系，与门面页一致。",
+    "红黄语义色": "#C11920（三级·关键）/ #FFD806（二级·重点）刻意不登记，任何方案下恒定。理由见 roles.json 的 _DO_NOT_REGISTER。"
+  }
+}

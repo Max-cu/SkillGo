@@ -1,0 +1,36 @@
+<svg xmlns="http://www.w3.org/2000/svg" version="1.1" width="1280" height="720" viewBox="0 0 1280 720" data-pptx-master="master_01" data-pptx-master-name="slideMaster1" data-pptx-layout="layout_01" data-pptx-layout-name="空白" data-pptx-show-master-shapes="true" data-pptx-show-inherited-shapes="true" font-family="sans-serif"><rect x="0" y="0" width="1280" height="720" fill="#FFFFFF" id="master-master_01-1-1" data-pptx-layer="master" data-pptx-editable="false" />
+<rect x="0" y="0" width="1280" height="720" fill="#FFFFFF" id="layout-layout_01-1-1" data-pptx-layer="layout" data-pptx-editable="false" /><rect x="0" y="0" width="1280" height="720" fill="#2F4A42" data-pptx-layer="slide" data-pptx-editable="false" id="slide-3-background" />
+<g id="s-003-shape-30" data-pptx-semantic-object="shape" data-pptx-bounds="0 0 1280 720" font-family="黑体, Arial, sans-serif" data-pptx-frame="0 0 1280 720">
+<path d="M 0 0 L 1280 0 L 1280 720 L 0 720 Z" fill="#2F4A42" stroke="none" stroke-width="1" data-pptx-part="geometry" />
+
+
+</g>
+<g id="s-003-shape-10" data-pptx-semantic-object="shape" data-pptx-bounds="96 158 320 100" font-family="黑体, Arial, sans-serif" data-pptx-frame="96 158 320 100">
+<path d="M 96 158 L 416 158 L 416 258 L 96 258 Z" fill="none" stroke="none" stroke-width="1" data-pptx-part="geometry" />
+
+
+<text x="96" y="230" text-anchor="start" xml:space="preserve" font-family="黑体, Arial, sans-serif" font-size="72" fill="#7FA99B" font-weight="bold">{{CHAPTER_NUM}}</text>
+</g>
+<g id="s-003-shape-31" data-pptx-semantic-object="shape" data-pptx-bounds="96 300 104 6" font-family="黑体, Arial, sans-serif" data-pptx-frame="96 300 104 6">
+<path d="M 96 300 L 200 300 L 200 306 L 96 306 Z" fill="#7FA99B" stroke="none" stroke-width="1" data-pptx-part="geometry" />
+
+
+</g>
+<g id="s-003-shape-15" data-pptx-semantic-object="shape" data-pptx-bounds="96 360 1000 74" font-family="黑体, Arial, sans-serif" data-pptx-frame="96 360 1000 74">
+<path d="M 96 360 L 1096 360 L 1096 434 L 96 434 Z" fill="none" stroke="none" stroke-width="1" data-pptx-part="geometry" />
+
+
+<text x="96" y="412" text-anchor="start" xml:space="preserve" font-family="黑体, Arial, sans-serif" font-size="53.33" fill="#FFFFFF" font-weight="bold">{{CHAPTER_TITLE}}</text>
+</g>
+<g id="s-003-shape-23" data-pptx-semantic-object="shape" data-pptx-bounds="96 470 900 40" font-family="黑体, Arial, sans-serif" data-pptx-frame="96 470 900 40">
+<path d="M 96 470 L 996 470 L 996 510 L 96 510 Z" fill="none" stroke="none" stroke-width="1" data-pptx-part="geometry" />
+
+
+<text x="96" y="498" text-anchor="start" xml:space="preserve" font-family="黑体, Arial, sans-serif" font-size="21.33" fill="#A8C4BA" data-pptx-text-model="lines" data-paragraph-line-height="27.73">{{CHAPTER_DESC_LINE1}}</text>
+</g>
+<g id="s-003-shape-32" data-pptx-semantic-object="shape" data-pptx-bounds="96 600 1088 2" font-family="黑体, Arial, sans-serif" data-pptx-frame="96 600 1088 2">
+<path d="M 96 600 L 1184 600 L 1184 602 L 96 602 Z" fill="#3F5C54" stroke="none" stroke-width="1" data-pptx-part="geometry" />
+
+
+</g><g id="slot-layout_01-2" data-pptx-placeholder="date" data-pptx-bounds="88 667.33 288 38.33" data-pptx-idx="10" data-pptx-frame="88 667.33 288 38.33"><text x="88" y="691.33" font-size="18" fill="#000000" data-pptx-carrier="true" data-pptx-native-ref="r233" /></g><g id="slot-layout_01-3" data-pptx-placeholder="footer" data-pptx-bounds="424 667.33 432 38.33" data-pptx-idx="11" data-pptx-frame="424 667.33 432 38.33"><text x="424" y="691.33" font-size="18" fill="#000000" data-pptx-carrier="true" data-pptx-native-ref="r109" /></g><g id="slot-layout_01-4" data-pptx-placeholder="slide-number" data-pptx-bounds="904 667.33 288 38.33" data-pptx-idx="12" data-pptx-frame="904 667.33 288 38.33"><text x="904" y="691.33" font-size="18" fill="#000000" data-pptx-carrier="true" data-pptx-native-ref="r237" /></g><image href="../../images/image4.png" x="904" y="17.2" width="342.87" height="52.67" preserveAspectRatio="none" id="master-master_01-7-1" data-pptx-layer="master" data-pptx-editable="false" data-pptx-native-ref="r236" />
+</svg>

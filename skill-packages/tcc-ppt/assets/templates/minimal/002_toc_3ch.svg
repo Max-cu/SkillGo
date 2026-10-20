@@ -1,0 +1,59 @@
+<svg xmlns="http://www.w3.org/2000/svg" version="1.1" width="1280" height="720" viewBox="0 0 1280 720" data-pptx-master="master_01" data-pptx-master-name="slideMaster1" data-pptx-layout="layout_01" data-pptx-layout-name="空白" data-pptx-show-master-shapes="true" data-pptx-show-inherited-shapes="true" font-family="sans-serif"><rect x="0" y="0" width="1280" height="720" fill="#FFFFFF" id="master-master_01-1-1" data-pptx-layer="master" data-pptx-editable="false" />
+<rect x="0" y="0" width="1280" height="720" fill="#FFFFFF" id="layout-layout_01-1-1" data-pptx-layer="layout" data-pptx-editable="false" /><rect x="0" y="0" width="1280" height="720" fill="#F7FAF8" data-pptx-layer="slide" data-pptx-editable="false" id="slide-2-background" />
+<image href="../../images/image1.png" x="904" y="17.2" width="342.87" height="52.67" preserveAspectRatio="none" id="master-master_01-7-1" data-pptx-layer="master" data-pptx-editable="false" data-pptx-native-ref="r236" />
+<g id="s-002-shape-27" data-pptx-semantic-object="shape" data-pptx-bounds="96 96 280 72" data-pptx-frame="96 96 280 72" font-family="黑体, Arial, sans-serif">
+<path d="M 96 96 L 376 96 L 376 168 L 96 168 Z" data-pptx-part="geometry" fill="none" stroke="none" stroke-width="1" />
+<text x="96" y="152" text-anchor="start" xml:space="preserve" font-family="黑体, Arial, sans-serif" font-size="64" fill="#1B2E29" font-weight="bold" letter-spacing="8">目 录</text>
+</g>
+<g id="s-002-shape-28" data-pptx-semantic-object="shape" data-pptx-bounds="260 116 320 44" data-pptx-frame="260 116 320 44" font-family="黑体, Arial, sans-serif">
+<path d="M 260 116 L 580 116 L 580 160 L 260 160 Z" data-pptx-part="geometry" fill="none" stroke="none" stroke-width="1" />
+<text x="260" y="152" text-anchor="start" xml:space="preserve" font-family="Arial, sans-serif" font-size="26" fill="#8A9A94">/ content</text>
+</g>
+<g id="s-002-shape-29" data-pptx-semantic-object="shape" data-pptx-bounds="96 192 1088 3" data-pptx-frame="96 192 1088 3" font-family="黑体, Arial, sans-serif">
+<path d="M 96 192 L 1184 192 L 1184 195 L 96 195 Z" data-pptx-part="geometry" fill="#2F4A42" stroke="none" stroke-width="1" />
+</g>
+<g id="s-002-shape-39" data-pptx-semantic-object="shape" data-pptx-bounds="96 220 140 80" data-pptx-frame="96 220 140 80" font-family="黑体, Arial, sans-serif">
+<path d="M 96 220 L 236 220 L 236 300 L 96 300 Z" data-pptx-part="geometry" fill="none" stroke="none" stroke-width="1" />
+<text x="96" y="290" text-anchor="start" xml:space="preserve" font-family="黑体, Arial, sans-serif" font-size="48" fill="#7FA99B" font-weight="bold">{{TOC_ITEM_1_NUM}}</text>
+</g>
+<g id="s-002-shape-40" data-pptx-semantic-object="shape" data-pptx-bounds="232 224 880 56" data-pptx-frame="232 224 880 56" font-family="黑体, Arial, sans-serif">
+<path d="M 232 224 L 1112 224 L 1112 280 L 232 280 Z" data-pptx-part="geometry" fill="none" stroke="none" stroke-width="1" />
+<text x="232" y="286" text-anchor="start" xml:space="preserve" font-family="黑体, Arial, sans-serif" font-size="26.67" fill="#1B2E29" font-weight="bold">{{TOC_ITEM_1_TITLE}}</text>
+</g>
+<g id="s-002-shape-41" data-pptx-semantic-object="shape" data-pptx-bounds="232 282 880 44" data-pptx-frame="232 282 880 44" font-family="黑体, Arial, sans-serif">
+<path d="M 232 282 L 1112 282 L 1112 326 L 232 326 Z" data-pptx-part="geometry" fill="none" stroke="none" stroke-width="1" />
+<text x="232" y="310" text-anchor="start" xml:space="preserve" font-family="Arial, sans-serif" font-size="16" fill="#8A9A94">{{TOC_ITEM_1_EN}}</text>
+</g>
+<g id="s-002-shape-42" data-pptx-semantic-object="shape" data-pptx-bounds="96 358 1088 1" data-pptx-frame="96 358 1088 1" font-family="黑体, Arial, sans-serif">
+<path d="M 96 358 L 1184 358 L 1184 359 L 96 359 Z" data-pptx-part="geometry" fill="#D3DEDA" stroke="none" stroke-width="1" />
+</g>
+<g id="s-002-shape-48" data-pptx-semantic-object="shape" data-pptx-bounds="96 360 140 80" data-pptx-frame="96 360 140 80" font-family="黑体, Arial, sans-serif">
+<path d="M 96 360 L 236 360 L 236 440 L 96 440 Z" data-pptx-part="geometry" fill="none" stroke="none" stroke-width="1" />
+<text x="96" y="430" text-anchor="start" xml:space="preserve" font-family="黑体, Arial, sans-serif" font-size="48" fill="#7FA99B" font-weight="bold">{{TOC_ITEM_2_NUM}}</text>
+</g>
+<g id="s-002-shape-49" data-pptx-semantic-object="shape" data-pptx-bounds="232 364 880 56" data-pptx-frame="232 364 880 56" font-family="黑体, Arial, sans-serif">
+<path d="M 232 364 L 1112 364 L 1112 420 L 232 420 Z" data-pptx-part="geometry" fill="none" stroke="none" stroke-width="1" />
+<text x="232" y="426" text-anchor="start" xml:space="preserve" font-family="黑体, Arial, sans-serif" font-size="26.67" fill="#1B2E29" font-weight="bold">{{TOC_ITEM_2_TITLE}}</text>
+</g>
+<g id="s-002-shape-50" data-pptx-semantic-object="shape" data-pptx-bounds="232 422 880 44" data-pptx-frame="232 422 880 44" font-family="黑体, Arial, sans-serif">
+<path d="M 232 422 L 1112 422 L 1112 466 L 232 466 Z" data-pptx-part="geometry" fill="none" stroke="none" stroke-width="1" />
+<text x="232" y="450" text-anchor="start" xml:space="preserve" font-family="Arial, sans-serif" font-size="16" fill="#8A9A94">{{TOC_ITEM_2_EN}}</text>
+</g>
+<g id="s-002-shape-51" data-pptx-semantic-object="shape" data-pptx-bounds="96 498 1088 1" data-pptx-frame="96 498 1088 1" font-family="黑体, Arial, sans-serif">
+<path d="M 96 498 L 1184 498 L 1184 499 L 96 499 Z" data-pptx-part="geometry" fill="#D3DEDA" stroke="none" stroke-width="1" />
+</g>
+<g id="s-002-shape-57" data-pptx-semantic-object="shape" data-pptx-bounds="96 500 140 80" data-pptx-frame="96 500 140 80" font-family="黑体, Arial, sans-serif">
+<path d="M 96 500 L 236 500 L 236 580 L 96 580 Z" data-pptx-part="geometry" fill="none" stroke="none" stroke-width="1" />
+<text x="96" y="570" text-anchor="start" xml:space="preserve" font-family="黑体, Arial, sans-serif" font-size="48" fill="#7FA99B" font-weight="bold">{{TOC_ITEM_3_NUM}}</text>
+</g>
+<g id="s-002-shape-58" data-pptx-semantic-object="shape" data-pptx-bounds="232 504 880 56" data-pptx-frame="232 504 880 56" font-family="黑体, Arial, sans-serif">
+<path d="M 232 504 L 1112 504 L 1112 560 L 232 560 Z" data-pptx-part="geometry" fill="none" stroke="none" stroke-width="1" />
+<text x="232" y="566" text-anchor="start" xml:space="preserve" font-family="黑体, Arial, sans-serif" font-size="26.67" fill="#1B2E29" font-weight="bold">{{TOC_ITEM_3_TITLE}}</text>
+</g>
+<g id="s-002-shape-59" data-pptx-semantic-object="shape" data-pptx-bounds="232 562 880 44" data-pptx-frame="232 562 880 44" font-family="黑体, Arial, sans-serif">
+<path d="M 232 562 L 1112 562 L 1112 606 L 232 606 Z" data-pptx-part="geometry" fill="none" stroke="none" stroke-width="1" />
+<text x="232" y="590" text-anchor="start" xml:space="preserve" font-family="Arial, sans-serif" font-size="16" fill="#8A9A94">{{TOC_ITEM_3_EN}}</text>
+</g>
+<g id="s-002-shape-60" data-pptx-semantic-object="shape" data-pptx-bounds="96 638 1088 1" data-pptx-frame="96 638 1088 1" font-family="黑体, Arial, sans-serif">
+<path d="M 96 638 L 1184 638 L 1184 639 L 96 639 Z" data-pptx-part="geometry" fill="#D3DEDA" stroke="none" stroke-width="1" />
+</g><g id="slot-layout_01-2" data-pptx-placeholder="date" data-pptx-bounds="88 667.33 288 38.33" data-pptx-idx="10"><text x="88" y="691.33" font-size="18" fill="#000000" data-pptx-carrier="true" data-pptx-native-ref="r233" /></g><g id="slot-layout_01-3" data-pptx-placeholder="footer" data-pptx-bounds="424 667.33 432 38.33" data-pptx-idx="11"><text x="424" y="691.33" font-size="18" fill="#000000" data-pptx-carrier="true" data-pptx-native-ref="r109" /></g><g id="slot-layout_01-4" data-pptx-placeholder="slide-number" data-pptx-bounds="904 667.33 288 38.33" data-pptx-idx="12"><text x="904" y="691.33" font-size="18" fill="#000000" data-pptx-carrier="true" data-pptx-native-ref="r237" /></g></svg>

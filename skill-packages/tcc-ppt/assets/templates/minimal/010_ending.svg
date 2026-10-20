@@ -1,0 +1,98 @@
+<svg xmlns="http://www.w3.org/2000/svg" version="1.1" width="1280" height="720" viewBox="0 0 1280 720" data-pptx-master="master_01" data-pptx-master-name="slideMaster1" data-pptx-layout="layout_01" data-pptx-layout-name="空白" data-pptx-show-master-shapes="true" data-pptx-show-inherited-shapes="true" font-family="sans-serif"><defs><clipPath id="s-010-qr-clip1" clipPathUnits="userSpaceOnUse"><path d="M 588.155 430.06 A 16.66 16.66 0 0 1 604.825 413.4 L 676.115 413.4 A 16.66 16.66 0 0 1 692.775 430.06 L 692.775 496.7 A 16.66 16.66 0 0 1 676.115 513.36 L 604.825 513.36 A 16.66 16.66 0 0 1 588.155 496.7 Z" /></clipPath><clipPath id="s-010-qr-clip2" clipPathUnits="userSpaceOnUse"><path d="M 0.11974 0.2473 C 0.11974 0.21321 0.13268 0.18051 0.15572 0.1564 C 0.17876 0.13229 0.21 0.11875 0.24258 0.11875 L 0.77226 0.11875 C 0.8401 0.11875 0.8951 0.17631 0.8951 0.2473 L 0.8951 0.76151 C 0.8951 0.83251 0.8401 0.89007 0.77226 0.89007 L 0.24258 0.89007 C 0.21 0.89007 0.17876 0.87652 0.15572 0.85242 C 0.13268 0.82831 0.11974 0.79561 0.11974 0.76151 Z" /></clipPath><clipPath id="s-010-qr-clip3" clipPathUnits="userSpaceOnUse"><path d="M 480.845 425.22 A 7.74 7.74 0 0 1 488.585 417.48 L 569.055 417.48 A 7.74 7.74 0 0 1 576.795 425.22 L 576.795 499.8 A 7.74 7.74 0 0 1 569.055 507.54 L 488.585 507.54 A 7.74 7.74 0 0 1 480.845 499.8 Z" /></clipPath></defs><rect x="0" y="0" width="1280" height="720" fill="#FFFFFF" id="master-master_01-1-1" data-pptx-layer="master" data-pptx-editable="false" />
+<rect x="0" y="0" width="1280" height="720" fill="#FFFFFF" id="layout-layout_01-1-1" data-pptx-layer="layout" data-pptx-editable="false" /><rect x="0" y="0" width="1280" height="720" fill="#2F4A42" data-pptx-layer="slide" data-pptx-editable="false" id="slide-10-background" />
+<g id="s-010-shape-30" data-pptx-semantic-object="shape" data-pptx-bounds="0 0 1280 720" font-family="黑体, Arial, sans-serif" data-pptx-frame="0 0 1280 720">
+<path d="M 0 0 L 1280 0 L 1280 720 L 0 720 Z" fill="#2F4A42" stroke="none" stroke-width="1" data-pptx-part="geometry" />
+
+
+</g>
+<g id="s-010-shape-3" data-pptx-semantic-object="shape" data-pptx-bounds="340 250 600 130" font-family="黑体, Arial, sans-serif" data-pptx-frame="340 250 600 130">
+<path d="M 340 250 L 940 250 L 940 380 L 340 380 Z" fill="none" stroke="none" stroke-width="1" data-pptx-part="geometry" />
+
+
+<text x="640" y="340" text-anchor="middle" xml:space="preserve" font-family="Arial, sans-serif" font-size="96" fill="#FFFFFF" font-weight="bold">THANKS!</text>
+</g>
+<g id="s-010-shape-31" data-pptx-semantic-object="shape" data-pptx-bounds="590 558 100 6" font-family="黑体, Arial, sans-serif" data-pptx-frame="590 558 100 6">
+<path d="M 590 558 L 690 558 L 690 564 L 590 564 Z" fill="#7FA99B" stroke="none" stroke-width="1" data-pptx-part="geometry" />
+
+
+</g>
+<g id="s-010-qr-7" font-family="黑体, Arial, sans-serif" data-pptx-bounds="476.205 413.4 327.59 131.23" data-pptx-frame="476.205 413.4 327.59 131.23">
+<g id="s-010-qr-9" data-pptx-frame="476.205 413.4 321.06 131.23">
+<g id="s-010-qr-5" data-pptx-semantic-object="shape" data-pptx-frame="496.165 520.03 59.53 24.6">
+<path d="M 496.165 520.03 L 555.695 520.03 L 555.695 544.63 L 496.165 544.63 Z" fill="none" data-pptx-part="geometry" />
+
+
+<text x="505.765" y="537.29" text-anchor="start" xml:space="preserve" font-size="14.67" fill="#A8C4BA">公众号</text>
+</g>
+<g id="s-010-qr-11" data-pptx-semantic-object="shape" data-pptx-frame="608.005 520.03 59.53 24.6">
+<path d="M 608.005 520.03 L 667.535 520.03 L 667.535 544.63 L 608.005 544.63 Z" fill="none" data-pptx-part="geometry" />
+
+
+<text x="617.605" y="537.29" text-anchor="start" xml:space="preserve" font-size="14.67" fill="#A8C4BA">视频号</text>
+</g>
+<g id="s-010-qr-12" data-pptx-semantic-object="shape" data-pptx-frame="717.705 520.03 59.53 24.6">
+<path d="M 717.705 520.03 L 777.225 520.03 L 777.225 544.63 L 717.705 544.63 Z" fill="none" data-pptx-part="geometry" />
+
+
+<text x="727.305" y="537.29" text-anchor="start" xml:space="preserve" font-size="14.67" fill="#A8C4BA">抖音号</text>
+</g>
+<g id="s-010-qr-6" data-pptx-frame="588.155 413.4 104.61 99.97">
+<g id="s-010-qr-mid-frame" data-pptx-semantic-object="shape" data-pptx-part="geometry" data-pptx-frame="588.155 413.4 104.55 100.09">
+<path d="M 588.155 430.08 A 16.68 16.68 0 0 1 604.835 413.4 L 676.025 413.4 A 16.68 16.68 0 0 1 692.705 430.08 L 692.705 496.81 A 16.68 16.68 0 0 1 676.025 513.49 L 604.835 513.49 A 16.68 16.68 0 0 1 588.155 496.81 Z" fill="#FFFFFF" stroke-width="1" stroke="#7FA99B" data-pptx-part="geometry" />
+
+
+</g>
+<g id="s-010-qr-14" data-pptx-frame="588.155 413.4 104.61 99.97">
+<g id="s-010-qr-15" data-pptx-frame="588.155 413.4 104.61 99.97">
+<image clip-path="url(#s-010-qr-clip1)" href="../../images/image10.jpeg" x="588.155" y="413.4" width="104.61" height="99.97" preserveAspectRatio="none" data-pptx-frame="588.155 413.4 104.61 99.97" />
+</g>
+<g id="s-010-qr-16" data-pptx-semantic-object="shape" data-pptx-frame="626.215 454.5 21.35 21.9">
+<path d="M 626.705 463.45 A 13.76 11.83 0 0 1 640.465 451.62 A 13.76 11.83 0 0 1 654.225 463.45 A 13.76 11.83 0 0 1 640.465 475.28 A 13.76 11.83 0 0 1 626.705 463.45 Z" fill="#FFFFFF" stroke="none" stroke-width="1" data-pptx-part="geometry" />
+
+
+</g>
+</g>
+<g id="s-010-qr-19" data-pptx-frame="626.405 458.16 23.8 12.18">
+<image href="../../images/image11.png" x="628.565" y="457.3" width="23.8" height="12.18" preserveAspectRatio="none" data-pptx-frame="626.405 458.16 23.8 12.18" />
+</g>
+</g>
+<g id="s-010-qr-42" data-pptx-semantic-object="shape" data-pptx-frame="699.245 413.4 104.55 100.09">
+<path d="M 699.245 430.08 A 16.68 16.68 0 0 1 715.925 413.4 L 787.105 413.4 A 16.68 16.68 0 0 1 803.795 430.08 L 803.795 496.8 A 16.68 16.68 0 0 1 787.105 513.48 L 715.925 513.48 A 16.68 16.68 0 0 1 699.245 496.8 Z" fill="#FFFFFF" stroke-width="1" stroke="#7FA99B" data-pptx-part="geometry" />
+
+
+</g>
+<g id="s-010-qr-24" data-pptx-frame="702.92 417.48 98.33 93.49">
+<g id="s-010-qr-25" data-pptx-frame="702.92 417.48 98.4 93.55">
+<g id="s-010-qr-26" data-pptx-frame="702.92 417.48 98.4 93.55">
+<svg data-pptx-crop="1" x="702.92" y="417.48" width="98.4" height="93.55" viewBox="0.11974 0.11875 0.77536 0.7714" preserveAspectRatio="none" overflow="hidden" data-pptx-frame="702.92 417.48 98.4 93.55"><image clip-path="url(#s-010-qr-clip2)" href="../../images/image12.png" x="0" y="0" width="1" height="1" preserveAspectRatio="none" /></svg>
+</g>
+<g id="s-010-qr-27" data-pptx-semantic-object="shape" data-pptx-frame="732.77 446.28 37.21 34.58">
+<path d="M 729.665 463.57 A 22.46 18.15 0 0 1 752.125 445.42 A 22.46 18.15 0 0 1 774.585 463.57 A 22.46 18.15 0 0 1 752.125 481.72 A 22.46 18.15 0 0 1 729.665 463.57 Z" fill="#FFFFFF" stroke="none" stroke-width="1" data-pptx-part="geometry" />
+
+
+</g>
+</g>
+<g id="s-010-qr-28" data-pptx-frame="732.75 454.5 37.24 19.08">
+<image href="../../images/image11.png" x="733.50" y="454.72" width="37.24" height="19.08" preserveAspectRatio="none" data-pptx-frame="732.75 454.5 37.24 19.08" />
+</g>
+</g>
+<g id="s-010-qr-30" data-pptx-frame="476.205 413.4 104.55 100.09">
+<g id="s-010-qr-36" data-pptx-semantic-object="shape" data-pptx-frame="476.205 413.4 104.55 100.09">
+<path d="M 476.205 430.08 A 16.68 16.68 0 0 1 492.885 413.4 L 564.065 413.4 A 16.68 16.68 0 0 1 580.755 430.08 L 580.755 496.8 A 16.68 16.68 0 0 1 564.065 513.48 L 492.885 513.48 A 16.68 16.68 0 0 1 476.205 496.8 Z" fill="#FFFFFF" stroke-width="1" stroke="#7FA99B" data-pptx-part="geometry" />
+
+
+</g>
+<g id="s-010-qr-35" data-pptx-frame="480.845 417.48 95.95 90.07">
+<image clip-path="url(#s-010-qr-clip3)" href="../../images/image13.jpeg" x="480.845" y="417.48" width="95.95" height="90.07" preserveAspectRatio="none" data-pptx-frame="480.845 417.48 95.95 90.07" />
+</g>
+</g>
+</g>
+</g>
+
+<g id="s-010-shape-32" data-pptx-semantic-object="shape" data-pptx-bounds="340 578 600 40" font-family="黑体, Arial, sans-serif" data-pptx-frame="340 578 600 40">
+<path d="M 340 578 L 940 578 L 940 618 L 340 618 Z" fill="none" stroke="none" stroke-width="1" data-pptx-part="geometry" />
+
+
+<text x="640" y="606" text-anchor="middle" xml:space="preserve" font-family="黑体, Arial, sans-serif" font-size="21.33" fill="#A8C4BA" letter-spacing="6">感谢聆听</text>
+</g><g id="slot-layout_01-2" data-pptx-placeholder="date" data-pptx-bounds="88 667.33 288 38.33" data-pptx-idx="10" data-pptx-frame="88 667.33 288 38.33"><text x="88" y="691.33" font-size="18" fill="#000000" data-pptx-carrier="true" data-pptx-native-ref="r233" /></g><g id="slot-layout_01-3" data-pptx-placeholder="footer" data-pptx-bounds="424 667.33 432 38.33" data-pptx-idx="11" data-pptx-frame="424 667.33 432 38.33"><text x="424" y="691.33" font-size="18" fill="#000000" data-pptx-carrier="true" data-pptx-native-ref="r109" /></g><g id="slot-layout_01-4" data-pptx-placeholder="slide-number" data-pptx-bounds="904 667.33 288 38.33" data-pptx-idx="12" data-pptx-frame="904 667.33 288 38.33"><text x="904" y="691.33" font-size="18" fill="#000000" data-pptx-carrier="true" data-pptx-native-ref="r237" /></g><image href="../../images/image4.png" x="904" y="17.2" width="342.87" height="52.67" preserveAspectRatio="none" id="master-master_01-7-1" data-pptx-layer="master" data-pptx-editable="false" data-pptx-native-ref="r236" />
+</svg>

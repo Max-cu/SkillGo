@@ -24,13 +24,12 @@ Skills and models retain `write_file`.
 
 ## Skill changes
 
-The maintained overlay in `skill-packages/tcc-ppt` preserves company assets and
-all existing validators. Model authoring is concentrated in content selection
-and a structured page plan. Deterministic layout, wrapping and SVG generation
-run locally, with precise overflow errors and unchanged-page preservation.
-Eight text/data layout families, image/text and custom fragments are covered.
-The full manual workflow remains available. No platform context truncation,
-checkpoint frequency or verification exemptions were introduced.
+`skill-packages/tcc-ppt` is the skill package. Photo placement is recorded by
+`scripts/write_photo_plan.py` in `/workspace/_state/photo_plan.json`, declared
+from `SKILL.md` metadata. One-image-per-page, page/spec consistency, page
+split, SVG master, and cross-page checks stay in the skill scripts
+(`scripts/validators/check_ppt_pages.py` and the existing design, SVG, and
+export validators).
 
 ## Evidence and limits
 

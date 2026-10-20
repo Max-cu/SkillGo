@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" version="1.1" width="1280" height="720" viewBox="0 0 1280 720" data-pptx-master="master_01" data-pptx-master-name="slideMaster1" data-pptx-layout="layout_01" data-pptx-layout-name="空白" data-pptx-show-master-shapes="true" data-pptx-show-inherited-shapes="true" font-family="sans-serif"><defs><linearGradient id="m-master_01-ggrad1" x1="0" y1="0.5" x2="1" y2="0.5"><stop offset="0.05" stop-color="#003C96" /><stop offset="0.7" stop-color="#FFFFFF" stop-opacity="0" /></linearGradient></defs><rect x="0" y="0" width="1280" height="720" fill="#FFFFFF" id="master-master_01-1-1" data-pptx-layer="master" data-pptx-editable="false" />
+<rect x="0" y="0" width="1280" height="720" fill="#FFFFFF" id="layout-layout_01-1-1" data-pptx-layer="layout" data-pptx-editable="false" /><rect x="0" y="0" width="1280" height="720" fill="#FFFFFF" data-pptx-layer="slide" data-pptx-editable="false" id="slide-9-background" />
+<image href="../images/image1.png" x="904" y="17.2" width="342.87" height="52.67" preserveAspectRatio="none" id="master-master_01-7-1" data-pptx-layer="master" data-pptx-editable="false" data-pptx-native-ref="r236" />
+<path d="M 54.49 88.54 L 86.47 69.9 L 659.89 69.9 L 627.94 88.54 Z" fill="url(#m-master_01-ggrad1)" stroke-width="1.33333" stroke-linecap="butt" stroke="none" stroke-linejoin="miter" id="master-master_01-8-1" data-pptx-layer="master" data-pptx-editable="false" data-pptx-native-ref="r151" />
+
+
+<g id="s-009-shape-10" data-pptx-semantic-object="shape" data-pptx-frame="52.87 14.53 1128.99 54.8" data-pptx-prst="rect" font-family="黑体, Arial, sans-serif">
+<path d="M 52.87 14.53 L 1181.86 14.53 L 1181.86 69.33 L 52.87 69.33 Z" fill="none" data-pptx-part="geometry" />
+
+
+<text x="60.93" y="51.07" text-anchor="start" xml:space="preserve" font-family="黑体, Arial, sans-serif" font-size="37.33" fill="#262626" font-weight="bold">{{PAGE_TITLE}}</text>
+</g>
+</svg>
