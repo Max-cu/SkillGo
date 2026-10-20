@@ -44,6 +44,8 @@ class FakeSandbox:
     async def write_text(self, path, content):
         self.files[path] = content.encode()
 
+    write_subtask_text = write_text
+
     async def read_text(self, path, offset=0, limit=30000):
         if path not in self.files:
             raise SandboxRuntimeError("SANDBOX_READ_FAILED", f"missing {path}")
@@ -55,6 +57,8 @@ class FakeSandbox:
         if argv in self.fail_argv:
             return SandboxCommandResult(1, "", "failed")
         return SandboxCommandResult(0, "ok", "")
+
+    validation_command = command
 
 
 def lease_engine(tmp_path: Path):
@@ -767,7 +771,11 @@ def test_agent_loop_dispatches_spawn_subtasks_and_records_job_metrics(client, us
         headers=user_headers,
         data={"version_id": version["id"], "instruction": "Build the document PARENT-TRANSCRIPT"},
     ).json()
-    sandbox = MemorySandbox()
+    class SubtaskMemorySandbox(MemorySandbox):
+        write_subtask_text = MemorySandbox.write_text
+        validation_command = MemorySandbox.command
+
+    sandbox = SubtaskMemorySandbox()
     sandbox.files["/workspace/skills/deck/brief.md"] = b"shared brief"
     action = batch(
         task("chapter-1", "Write CHAPTER-ONE-ONLY", ["/workspace/out/chapter-1.md"]),
@@ -833,3 +841,88 @@ def test_agent_loop_dispatches_spawn_subtasks_and_records_job_metrics(client, us
         assert metrics["model_wait_ms"] >= 0
         assert metrics["tool_exec_ms"] >= 0
         assert sandbox.files["/workspace/out/chapter-1.md"] == b"Write CHAPTER-ONE-ONLY"
+
+
+@pytest.mark.parametrize("refresh_raises", [False, True])
+def test_lease_loss_cancels_request_and_isolates_failure(monkeypatch, tmp_path, refresh_raises):
+    use_settings(monkeypatch, parallel_subtasks_lease_ttl_seconds=15)
+    engine = lease_engine(tmp_path)
+    cleaned = []
+
+    def lost(*args, **kwargs):
+        if refresh_raises:
+            raise RuntimeError("lease database unavailable")
+        return False
+
+    monkeypatch.setattr(parallel_subtasks, "refresh_lease", lost)
+
+    async def handler(messages):
+        context = user_context(messages)
+        if context["task_id"] == "lost":
+            try:
+                await asyncio.Event().wait()
+            finally:
+                await asyncio.sleep(0.02)
+                cleaned.append("lost request closed")
+        return calls_result([
+            {"action": "write_file", "path": context["output_paths"][0], "content": "good"},
+            {"action": "command", "argv": context["validation_argv"]},
+            {"action": "finish_task", "summary": "good"},
+        ])
+
+    try:
+        result = run(FakeSandbox(), batch(
+            task("lost", "loses its lease", ["/workspace/out/lost.txt"]),
+            task("good", "must still finish", ["/workspace/out/good.txt"]),
+        ), ScriptedGateway(handler), "lease-loss", engine)
+        assert cleaned == ["lost request closed"]
+        assert result["tasks_ok"] == ["good"]
+        assert result["tasks_failed"][0]["task_id"] == "lost"
+        assert result["tasks_failed"][0]["error_code"] == "MODEL_LEASE_LOST"
+        assert active_lease_count(engine) == 0
+    finally:
+        engine.dispose()
+
+
+def test_parent_cancel_waits_for_model_cleanup_and_releases_leases(monkeypatch, tmp_path):
+    use_settings(monkeypatch)
+    engine = lease_engine(tmp_path)
+    cleaned = []
+
+    async def exercise():
+        started = asyncio.Event()
+
+        async def handler(messages):
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                await asyncio.sleep(0.02)
+                cleaned.append("closed")
+
+        pending = asyncio.create_task(spawn_subtasks(
+            FakeSandbox(), batch(task("a", "work", ["/workspace/out/a.txt"])),
+            gateway=ScriptedGateway(handler), job_id="parent-cancel", engine=engine,
+        ))
+        await started.wait()
+        pending.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await pending
+
+    try:
+        asyncio.run(exercise())
+        assert cleaned == ["closed"]
+        assert active_lease_count(engine) == 0
+    finally:
+        engine.dispose()
+
+
+def test_validation_never_falls_back_to_writable_command(monkeypatch, tmp_path):
+    use_settings(monkeypatch)
+    sandbox = FakeSandbox()
+    sandbox.validation_command = None
+    result = run(sandbox, batch(task("a", "work", ["/workspace/out/a.txt"])),
+                 ScriptedGateway(successful_handler(lambda context, path: "text")),
+                 "unsupported-isolation", lease_engine(tmp_path))
+    assert result["tasks_failed"]
+    assert sandbox.calls == []

@@ -73,7 +73,7 @@ class _ChunkReader:
             raise ValueError('Snapshot archive exceeds size limit')
 
 
-def _collect_entries(archive, *, excluded: frozenset[str] = frozenset()):
+def _collect_entries(archive, *, excluded: frozenset[str] = frozenset(), excluded_prefixes: tuple[str, ...] = ()):
     """Validate and materialize one sequential tar stream as path -> bytes."""
 
     files, modes, directories = {}, {}, []
@@ -89,7 +89,7 @@ def _collect_entries(archive, *, excluded: frozenset[str] = frozenset()):
         # Platform-provisioned immutable Skill files are re-staged from the
         # original package on restore; skipping them keeps asset-rich skills
         # (thousands of small files) out of the bounded mutable snapshot.
-        if name in excluded:
+        if name in excluded or _excluded_prefix(name, excluded_prefixes):
             continue
         if not (entry.isdir() or entry.isfile()):
             raise ValueError('Snapshot contains links or special files')
@@ -111,6 +111,14 @@ def _collect_entries(archive, *, excluded: frozenset[str] = frozenset()):
                 raise ValueError('Snapshot exceeds size limit')
             files[name] = archive.extractfile(entry).read()
     return files, modes, directories
+
+
+def _excluded_prefix(name: str, prefixes: tuple[str, ...]) -> bool:
+    for prefix in prefixes:
+        root = prefix.rstrip("/")
+        if name == root or name.startswith(root + "/"):
+            return True
+    return False
 
 
 def unpack_snapshot(raw, *, excluded: frozenset[str] = frozenset()):
@@ -207,7 +215,13 @@ def export_workspace(sandbox):
         helper.start()
         chunks, _ = helper.get_archive('/workspace')
         excluded = getattr(sandbox, 'immutable_workspace_paths', None) or frozenset()
+        from .tool_output_spill import snapshot_excluded_prefixes
         with tarfile.open(fileobj=_ChunkReader(chunks), mode='r|') as archive:
+            # Omit the extra argument while spill is off so export matches
+            # the previous call.
+            prefixes = snapshot_excluded_prefixes()
+            if prefixes:
+                return _collect_entries(archive, excluded=excluded, excluded_prefixes=prefixes)
             return _collect_entries(archive, excluded=excluded)
     finally:
         if helper is not None:

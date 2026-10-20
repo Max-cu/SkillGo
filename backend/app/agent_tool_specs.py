@@ -39,7 +39,7 @@ def spawn_subtasks_tool() -> dict:
                 "minItems": 1,
                 "maxItems": 64,
                 "items": {"type": "string", "minLength": 1, "maxLength": 4096},
-                "description": "Optional exact command this subtask may run to check its own outputs.",
+                "description": "Optional exact checker, run with a read-only workspace and private /tmp. Fix outputs via write_file, not this command.",
             },
         },
     }

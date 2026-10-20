@@ -68,7 +68,7 @@ RETRYABLE_CODES = frozenset({
 SUBTASK_WORKER_SYSTEM_PROMPT = """You complete exactly one subtask.
 Follow the instruction in this message. Read only the listed files. Shared paths are read-only context and must not be written.
 Write only the declared output paths. Any other write is rejected.
-If a validation command is given, run it with that exact argv after every output exists. If it fails, fix this subtask only and run that same command again. Call finish_task only after it succeeds on the current bytes.
+If a validation command is given, run it with that exact argv after every output exists. Validation has a read-only workspace and private /tmp; it cannot modify outputs or shared files. If it fails, fix your outputs with write_file and run that same command again. Call finish_task only after it succeeds on the current bytes.
 If no validation command is given, call finish_task after every declared output has been written.
 You cannot start further subtasks.
 You do not have the parent conversation. Do not assume files or decisions that are not in this message or in the files you are allowed to read."""
@@ -569,7 +569,10 @@ async def _execute_worker_tool(
         started = time.perf_counter()
         async with sandbox_lock:
             try:
-                await sandbox.write_text(path, content)
+                writer = getattr(sandbox, "write_subtask_text", None)
+                if writer is None:
+                    raise SandboxRuntimeError("SUBTASK_ISOLATION_UNAVAILABLE", "Guarded subtask writes are unavailable")
+                await writer(path, content)
             except SandboxRuntimeError as exc:
                 state.metrics["tool_exec_ms"] += _elapsed_ms(started)
                 return {"ok": False, "error_code": exc.code, "message": str(exc)[:1000], "path": path, "execution_started": True}
@@ -595,7 +598,10 @@ async def _execute_worker_tool(
         started = time.perf_counter()
         async with sandbox_lock:
             try:
-                result = await sandbox.command(argv, cwd=shared["cwd"], timeout_seconds=timeout)
+                validator = getattr(sandbox, "validation_command", None)
+                if validator is None:
+                    raise SandboxRuntimeError("SUBTASK_ISOLATION_UNAVAILABLE", "Read-only validation is unavailable")
+                result = await validator(argv, cwd=shared["cwd"], timeout_seconds=timeout)
             except SandboxRuntimeError as exc:
                 state.metrics["tool_exec_ms"] += _elapsed_ms(started)
                 return {"ok": False, "error_code": exc.code, "message": str(exc)[:1000], "execution_started": True}
@@ -724,6 +730,14 @@ async def _model_slot(
             await _sleep_backoff(0.2 + random.random() * 0.15, deadline, job_cancelled)
     metrics["capacity_wait_ms"] += _elapsed_ms(started)
     stop = asyncio.Event()
+    owner = asyncio.current_task()
+    lost = False
+
+    def lose_lease() -> None:
+        nonlocal lost
+        lost = True
+        if owner is not None:
+            owner.cancel()
 
     async def heartbeat() -> None:
         interval = max(5, ttl // 3)
@@ -733,31 +747,41 @@ async def _model_slot(
                 return
             except TimeoutError:
                 try:
-                    ok = await asyncio.to_thread(refresh_lease, engine, token, ttl_seconds=ttl)
+                    ok = await asyncio.wait_for(
+                        asyncio.to_thread(refresh_lease, engine, token, ttl_seconds=ttl),
+                        timeout=max(1, ttl // 3),
+                    )
                 except Exception:
                     logger.warning("parallel subtask model lease refresh failed job_id=%s", job_id)
+                    lose_lease()
                     return
                 if not ok:
                     logger.warning("parallel subtask model lease lost job_id=%s", job_id)
+                    lose_lease()
                     return
 
     beat = asyncio.create_task(heartbeat())
-
-    def _consume(task: asyncio.Task) -> None:
-        if not task.cancelled():
-            task.exception()
-
-    beat.add_done_callback(_consume)
     try:
-        yield
-    finally:
-        stop.set()
-        if not beat.done():
-            beat.cancel()
         try:
-            release_lease(engine, token)
-        except Exception:
-            logger.warning("parallel subtask model lease release failed job_id=%s", job_id)
+            yield
+        finally:
+            stop.set()
+            if not beat.done():
+                beat.cancel()
+            try:
+                await asyncio.gather(beat, return_exceptions=True)
+            finally:
+                try:
+                    await asyncio.to_thread(release_lease, engine, token)
+                except Exception:
+                    logger.warning("parallel subtask model lease release failed job_id=%s", job_id)
+    except asyncio.CancelledError as exc:
+        if lost and owner is not None:
+            # Consume only our cancellation; preserve simultaneous parent cancellation.
+            owner.uncancel()
+            if not owner.cancelling() and not job_cancelled():
+                raise ModelLeaseError("model request lease was lost") from exc
+        raise
 
 
 async def _run_worker(
@@ -818,6 +842,9 @@ async def _run_worker(
                         job_cancelled=job_cancelled,
                         metrics=state.metrics,
                     ):
+                        remaining = deadline - time.monotonic()
+                        if remaining <= 0:
+                            raise SubtaskTimeout()
                         result = await asyncio.wait_for(
                             gateway.agent_step(messages=messages, tools=SUBTASK_WORKER_TOOLS),
                             timeout=remaining,
@@ -833,6 +860,15 @@ async def _run_worker(
                     if attempt >= retries or not retryable_model_error(exc):
                         break
                     await _sleep_backoff(backoff_seconds(attempt, exc), deadline, job_cancelled)
+                except ModelLeaseError as exc:
+                    state.metrics["model_wait_ms"] += _elapsed_ms(call_started)
+                    state.metrics["rounds"] += 1
+                    state.metrics["status"] = "failed"
+                    state.metrics["duration_ms"] = _elapsed_ms(started)
+                    return SubtaskOutcome(
+                        task.task_id, False, "MODEL_LEASE_LOST", str(exc),
+                        wrote=state.wrote, metrics=state.metrics,
+                    )
             state.metrics["rounds"] += 1
             if result is None:
                 reason = str(last_error)[:500] if last_error else "model call failed"
