@@ -3,8 +3,10 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import inspect
 import json
 import logging
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -15,10 +17,12 @@ from app.context_thinning import ThinContextPolicy
 from app.model_gateway import AgentToolCall, ModelGatewayError, ModelResult
 from app.photo_plan import (
     PHOTO_PLAN_PATH,
+    annotate_photo_plan_age,
     evaluate_photo_plan,
     load_photo_plan,
     validate_photo_plan,
 )
+from app.sandbox_agent_loop import AgentJobCancelled, release_job_timing
 from test_orchestration import MemorySandbox
 
 
@@ -238,6 +242,52 @@ def test_photo_plan_respects_the_token_cap():
     assert "WARNING: stale/duplicate assignment: image_001" in block["content"]
 
 
+def test_missing_photo_plan_warns_once_per_job(caplog):
+    with caplog.at_level(logging.WARNING, logger="app.photo_plan"):
+        evaluate_photo_plan(text=None, mtime=None, read_error=None, job_id="job-once")
+        evaluate_photo_plan(text=None, mtime=None, read_error=None, job_id="job-once")
+        evaluate_photo_plan(text=None, mtime=None, read_error=None, job_id="job-other")
+    missing = [record.message for record in caplog.records if "validation=missing" in record.message]
+    assert sum("job-once" in message for message in missing) == 1
+    assert sum("job-other" in message for message in missing) == 1
+    release_job_timing("job-once")
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger="app.photo_plan"):
+        evaluate_photo_plan(text=None, mtime=None, read_error=None, job_id="job-once")
+    assert sum("job-once" in record.message for record in caplog.records) == 1
+    release_job_timing("job-once")
+    release_job_timing("job-other")
+
+
+def test_photo_plan_older_than_the_job_is_marked_stale():
+    messages = [{"role": "system", "content": "rules"}, {"role": "user", "content": "build"}]
+    old = annotate_photo_plan_age(_snapshot(_plan(), mtime=1_000.0), job_started_at=2_000.0)
+    same = annotate_photo_plan_age(_snapshot(_plan(), mtime=2_000.0), job_started_at=2_000.0)
+    newer = annotate_photo_plan_age(_snapshot(_plan(), mtime=2_500.0), job_started_at=2_000.0)
+    assert old["stale"] is True
+    assert same["stale"] is False
+    assert newer["stale"] is False
+    diagnostics = {}
+    projected = _project(messages, policy=_fast(), plan=old, state_inject=True, diagnostics=diagnostics)
+    assert "WARNING: stale photo plan:" in projected[-2]["content"]
+    assert diagnostics["photo_plan"]["stale"] is True
+    assert diagnostics["photo_plan"]["file_mtime"] == 1_000.0
+    fresh_diag = {}
+    _project(messages, policy=_fast(), plan=newer, state_inject=True, diagnostics=fresh_diag)
+    assert fresh_diag["photo_plan"]["stale"] is False
+
+
+def test_worker_releases_process_timing_after_the_closing_event():
+    from app.sandbox_agent_loop import _JOB_TIMING
+    from app.sandbox_worker import execute_sandbox_job
+
+    _JOB_TIMING["job-release"] = {"model_wait_ms": 3, "tool_exec_ms": 4, "rounds": 1}
+    release_job_timing("job-release")
+    assert "job-release" not in _JOB_TIMING
+    source = inspect.getsource(execute_sandbox_job)
+    assert source.rindex("add_job_event") < source.rindex("release_job_timing")
+
+
 def test_load_photo_plan_reads_mtime_and_tolerates_a_missing_file(caplog):
     class Sandbox(MemorySandbox):
         def __init__(self, raw):
@@ -297,7 +347,7 @@ def test_fast_loop_injects_plan_metrics_and_logs_timing(client, user_headers, fa
             data = self.files[path]
             if len(data) > max_bytes:
                 return {"exists": True, "mtime": 99.0, "error": "too_large"}
-            return {"exists": True, "mtime": 99.0, "content": data.decode()}
+            return {"exists": True, "mtime": time.time() + 3600, "content": data.decode()}
 
     class Gateway:
         connection = SimpleNamespace(context_tokens=48000)
@@ -348,10 +398,63 @@ def test_fast_loop_injects_plan_metrics_and_logs_timing(client, user_headers, fa
             JobEvent.job_id == created["id"], JobEvent.event_type == "tool",
         ))
     assert reasoning[0].data["context_budget"]["photo_plan"]["validation"] == "ok"
-    assert reasoning[0].data["context_budget"]["photo_plan"]["file_mtime"] == 99.0
+    assert reasoning[0].data["context_budget"]["photo_plan"]["file_mtime"] > time.time()
     assert reasoning[0].data["context_budget"]["photo_plan"]["injected_tokens"] > 0
     assert reasoning[0].data["context_budget"]["photo_plan"]["duplicates"] == ["image_001"]
+    assert reasoning[0].data["context_budget"]["photo_plan"]["stale"] is False
+    assert "WARNING: stale photo plan:" not in gateway.seen[-2]["content"]
     assert reasoning[0].data["timing"]["rounds"] == 1
     assert tool.data["timing"]["tool_exec_ms"] >= 0
     assert tool.data["timing"]["model_wait_ms"] >= 0
     assert tool.data["timing"]["rounds"] == 1
+
+
+def test_cancelled_model_call_counts_toward_model_wait(client, user_headers, fake_model_gateway, monkeypatch):
+    from dataclasses import replace
+
+    from app import sandbox_agent_loop
+    from app.database import SessionLocal
+    from app.models import WorkflowJob
+    from test_workflow_jobs import create_version, sandbox_skill_zip
+
+    monkeypatch.setattr(
+        sandbox_agent_loop,
+        "settings",
+        replace(sandbox_agent_loop.settings, orchestration_mode="fast", state_inject_enabled=False),
+    )
+    original_wait = sandbox_agent_loop._await_model_with_cancellation
+
+    async def fast_wait(operation, job_cancelled, *, poll_seconds=1.0):
+        return await original_wait(operation, job_cancelled, poll_seconds=0.01)
+
+    monkeypatch.setattr(sandbox_agent_loop, "_await_model_with_cancellation", fast_wait)
+    _, version = create_version(client, user_headers, slug="photo-plan-cancel-wait", package=sandbox_skill_zip())
+    created = client.post(
+        "/api/v1/jobs", headers=user_headers, data={"version_id": version["id"], "instruction": "stop"},
+    ).json()
+    phase = {"cancel": False}
+
+    class Gateway:
+        connection = SimpleNamespace(context_tokens=48000)
+
+        async def agent_step(self, *, messages):
+            phase["cancel"] = True
+            await asyncio.Event().wait()
+
+    with SessionLocal() as db:
+        job = db.get(WorkflowJob, created["id"])
+        with pytest.raises(AgentJobCancelled):
+            asyncio.run(sandbox_agent_loop._run_agent_loop(
+                db, job, MemorySandbox(),
+                skill_contexts=[{
+                    "name": "Test", "version": "1", "root": "/workspace/skill",
+                    "skill_md": "# Guide", "runtime_requirements": {},
+                }],
+                gateway=Gateway(), job_cancelled=lambda: phase["cancel"],
+            ))
+        timing = job.memory.data["timing"]
+        assert timing["rounds"] == 1
+        assert timing["model_wait_ms"] >= 1
+        assert created["id"] in sandbox_agent_loop._JOB_TIMING
+        release_job_timing(created["id"])
+        assert created["id"] not in sandbox_agent_loop._JOB_TIMING

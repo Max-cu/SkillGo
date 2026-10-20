@@ -51,6 +51,7 @@ from .sandbox_agent_loop import (
     _safe_tool_event,
     _trim_messages,
     job_end_timing,
+    release_job_timing,
 )
 from .sandbox_runtime import (
     DockerSandbox,
@@ -959,6 +960,8 @@ async def execute_sandbox_job(
             )
             db.commit()
         finally:
+            # Closing result/error/cancel events have already copied timing.
+            release_job_timing(job_id)
             # A request arriving during the final turn must not remain pending.
             try:
                 from .models import JobEvent

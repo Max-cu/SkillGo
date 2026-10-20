@@ -66,7 +66,7 @@ SKILLGO_ORCHESTRATION_MODE=audit
 
 已固定的 reference 正文如果还在保留的交互里，不会被压缩；最近一段交互原样发送。落库的消息、任务事件和工作区文件仍是全文。推理事件的 `context_budget` 会写下 `summarized_count`、`removed_tokens`、`preserved_exchange_count`、`exchange_cap_dropped_count`。在旁路实验量过延迟、每轮 token 和 PPT 通过率之前，不要在生产 anti-loop 路径打开 `fast`。
 
-`SKILLGO_STATE_INJECT=1`（默认关闭）只在 `fast` 模式下生效，不改变 audit 投影。技能可以把照片清单和页码分配写到工作区 `/workspace/_state/photo_plan.json`（`photos[]` 含 `image_id` / `path` / `source`，`assignments` 是页码到 `image_id` 列表；`version` 和 `updated_at` 可选）。每一轮推理如果该文件存在且通过校验，会在稳定历史前缀之后、最后一条执行状态消息之前注入一份有 token 上限的摘要。文件缺失或校验失败只记 WARNING 并跳过注入。同一个 `image_id` 出现在两页时，注入块里会带重复分配警告。推理事件的 `context_budget.photo_plan` 记录 `injected_tokens`、`file_mtime` 和 `validation`。任务结束时的 JobEvent `timing` 记录累计模型等待、累计工具耗时和轮数。
+`SKILLGO_STATE_INJECT=1`（默认关闭）只在 `fast` 模式下生效，不改变 audit 投影。技能可以把照片清单和页码分配写到工作区 `/workspace/_state/photo_plan.json`（`photos[]` 含 `image_id` / `path` / `source`，`assignments` 是页码到 `image_id` 列表；`version` 和 `updated_at` 可选）。每一轮推理如果该文件存在且通过校验，会在稳定历史前缀之后、最后一条执行状态消息之前注入一份有 token 上限的摘要。文件缺失或校验失败只记 WARNING 并跳过注入；缺失文件每个任务只警告一次。同一个 `image_id` 出现在两页时，注入块里会带重复分配警告。文件 mtime 早于任务开始时间时，摘要和 `context_budget.photo_plan.stale` 会标出过期计划。推理事件的 `context_budget.photo_plan` 记录 `injected_tokens`、`file_mtime`、`validation` 和 `stale`。任务结束时的 JobEvent `timing` 记录累计模型等待、累计工具耗时和轮数；取消发生在等模型返回期间时，这段等待也计入 `model_wait_ms`。
 
 如果模型不支持 `response_format: {"type":"json_object"}`，把 `SKILLGO_MODEL_JSON_MODE` 设为 `false`。内网 HTTPS 使用自签名证书时，优先把企业 CA 安装到运行环境；不要在生产环境关闭 TLS 校验。
 

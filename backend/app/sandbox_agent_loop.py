@@ -25,7 +25,7 @@ from .agent_kernel import AgentSession, ToolCallContext, ToolPipeline
 from .agent_policy import AgentExecutionState, PRE_PLAN_INSPECTION_HINT, action_fingerprint, is_reference_path
 from .agent_context import project_context, estimate_tokens
 from .context_thinning import resolve_thin_context_policy
-from .photo_plan import load_photo_plan
+from .photo_plan import annotate_photo_plan_age, load_photo_plan
 from .skill_phase_contracts import stage_contracts, available_reference_paths, expand_reference_actions
 from .workflow_tools import run_verifier, snapshot_step_files, effective_instruction
 from .artifact_collection import receive_declared_artifacts, delivery_only_job
@@ -51,6 +51,7 @@ from .workflow_execution import add_job_event, set_step
 logger = logging.getLogger(__name__)
 
 # Process-local totals so a worker rollback still sees the last stamp.
+# Released after the closing job event is recorded.
 _JOB_TIMING: dict[str, dict[str, int]] = {}
 
 
@@ -90,6 +91,26 @@ def log_job_end_timing(job: WorkflowJob) -> None:
         timing["tool_exec_ms"],
         timing["rounds"],
     )
+
+
+def release_job_timing(job_id: str) -> None:
+    """Drop process-local timing and one-shot photo-plan warnings for a job."""
+
+    from .photo_plan import forget_photo_plan_warning
+
+    _JOB_TIMING.pop(str(job_id), None)
+    forget_photo_plan_warning(str(job_id))
+
+
+def _job_started_timestamp(job: WorkflowJob) -> float | None:
+    moment = getattr(job, "started_at", None) or getattr(job, "created_at", None)
+    timestamp = getattr(moment, "timestamp", None)
+    if not callable(timestamp):
+        return None
+    try:
+        return float(timestamp())
+    except (OSError, OverflowError, ValueError):
+        return None
 
 
 class AgentJobCancelled(RuntimeError):
@@ -1021,6 +1042,7 @@ async def _run_agent_loop_body(
                     "duplicates": [],
                     "error": "load_failed",
                 }
+            photo_snapshot = annotate_photo_plan_age(photo_snapshot, _job_started_timestamp(job))
         try:
             model_messages = project_context(messages, checkpoint=execution_state.checkpoint(),
                 skill_contexts=skill_contexts, loaded=execution_state.loaded_skills,
@@ -1046,27 +1068,31 @@ async def _run_agent_loop_body(
         }
         db.commit()
         model_started_at = time.perf_counter()
+        model_error: ModelGatewayError | None = None
         try:
             result = await _await_model_with_cancellation(
                 gateway.agent_step(messages=model_messages), job_cancelled)
         except ModelGatewayError as exc:
+            model_error = exc
+        finally:
+            # Includes calls cancelled while still waiting on the model.
             job_timing["model_wait_ms"] += _event_duration_ms(model_started_at)
+            model_timing = _publish_timing()
+        if model_error is not None:
             reasoning_event.status = "failed"
-            reasoning_event.detail = str(exc)
+            reasoning_event.detail = str(model_error)
             reasoning_event.data = {
                 **(reasoning_event.data or {}),
                 "duration_ms": _event_duration_ms(reasoning_started_at),
-                "error_code": exc.code,
-                "timing": _publish_timing(),
+                "error_code": model_error.code,
+                "timing": model_timing,
             }
-            if exc.details:
-                diagnostic_key = "model_http" if "http_status" in exc.details else "model_transport"
-                reasoning_event.data[diagnostic_key] = exc.details
+            if model_error.details:
+                diagnostic_key = "model_http" if "http_status" in model_error.details else "model_transport"
+                reasoning_event.data[diagnostic_key] = model_error.details
             db.commit()
-            raise
-        job_timing["model_wait_ms"] += _event_duration_ms(model_started_at)
+            raise model_error
         if job_cancelled():
-            _publish_timing()
             raise AgentJobCancelled("Workflow job was cancelled")
 
         native_calls = getattr(result, "tool_calls", ()) or ()

@@ -18,6 +18,9 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
+# Missing-file warnings are once per job. Cleared with the job timing entry.
+_MISSING_PLAN_WARNED: set[str] = set()
+
 PHOTO_PLAN_PATH = "/workspace/_state/photo_plan.json"
 PHOTO_PLAN_TOKEN_CAP = 1024
 PHOTO_PLAN_MAX_BYTES = 128 * 1024
@@ -147,16 +150,36 @@ def assignment_warnings(document: dict[str, Any]) -> list[str]:
     return warnings
 
 
+def annotate_photo_plan_age(snapshot: dict[str, Any], job_started_at: float | None) -> dict[str, Any]:
+    """Flag a plan whose file mtime is earlier than the job start."""
+
+    mtime = _coerce_mtime(snapshot.get("file_mtime"))
+    started = _coerce_mtime(job_started_at)
+    snapshot["stale"] = bool(mtime is not None and started is not None and mtime < started)
+    return snapshot
+
+
+def forget_photo_plan_warning(job_id: str) -> None:
+    _MISSING_PLAN_WARNED.discard(str(job_id))
+
+
 def render_photo_plan(
     document: dict[str, Any],
     *,
     mtime: float | None,
     token_cap: int,
+    stale: bool = False,
 ) -> str:
     """Compact text that stays within ``token_cap`` estimated tokens."""
 
     header = _header_lines(document, mtime)
     warnings = assignment_warnings(document)
+    if stale:
+        warnings = [
+            "WARNING: stale photo plan: file mtime is earlier than this job's start. "
+            f"Rewrite {PHOTO_PLAN_PATH} for this run before placing photos.",
+            *warnings,
+        ]
     photo_lines = [
         f"- {item['image_id']} {item['path']} source={item['source']}"
         for item in document.get("photos", [])
@@ -263,6 +286,7 @@ def apply_photo_plan(
         "validation": validation,
         "injected_tokens": 0,
         "file_mtime": _coerce_mtime(snapshot.get("file_mtime")),
+        "stale": bool(snapshot.get("stale")),
     }
     document = snapshot.get("document")
     if validation != "ok" or not isinstance(document, dict):
@@ -271,7 +295,9 @@ def apply_photo_plan(
         return projected, metrics
     duplicates = snapshot.get("duplicates")
     metrics["duplicates"] = list(duplicates) if isinstance(duplicates, list) else duplicate_image_ids(document)
-    content = render_photo_plan(document, mtime=metrics["file_mtime"], token_cap=token_cap)
+    content = render_photo_plan(
+        document, mtime=metrics["file_mtime"], token_cap=token_cap, stale=metrics["stale"],
+    )
     message = {"role": "user", "content": content}
     injected_tokens = estimate_tokens([message])
     if injected_tokens > token_cap:
@@ -368,6 +394,10 @@ async def _optional_mtime(sandbox: Any) -> float | None:
 
 
 def _log_skip(job_id: str | None, validation: str, detail: str) -> None:
+    if validation == "missing" and job_id:
+        if job_id in _MISSING_PLAN_WARNED:
+            return
+        _MISSING_PLAN_WARNED.add(job_id)
     logger.warning(
         "photo plan skipped job_id=%s path=%s validation=%s detail=%s",
         job_id or "-",
