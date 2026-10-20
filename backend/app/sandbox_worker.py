@@ -509,6 +509,7 @@ async def execute_sandbox_job(
                         "extract_root": extract_root,
                         "archive_path": f"/workspace/{archive_path}",
                         "skill_md": version.skill_md,
+                        "manifest": version.manifest or {},
                         "fixed_execution": fixed_execution_spec(version.manifest or {}),
                         "runtime_requirements": runtime_requirements,
                     }

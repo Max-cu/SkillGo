@@ -157,8 +157,8 @@ class Settings:
     context_max_exchanges: int | None = _optional_int("SKILLGO_CONTEXT_MAX_EXCHANGES")
     compact_older_tools: bool | None = _optional_bool("SKILLGO_COMPACT_OLDER_TOOLS")
     thin_reference_shelf: bool | None = _optional_bool("SKILLGO_THIN_REFERENCE_SHELF")
-    # Re-read /workspace/_state/photo_plan.json into each fast-mode model round.
-    # Default off. Audit mode does not inject, even when this flag is on.
+    # Re-read skill-declared /workspace/_state/*.json files into each fast-mode
+    # model round. Default off. Audit mode does not inject, even when this flag is on.
     state_inject_enabled: bool = _bool("SKILLGO_STATE_INJECT", False)
     # A reasoning turn may now contain several native tool calls. Keep the
     # model-turn budget separate from the sandbox-operation budget so a useful
