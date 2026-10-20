@@ -37,6 +37,8 @@ from .artifact_validation import (
 from .config import settings
 from .execution_runtime import ensure_job_run
 from .model_gateway import OpenAICompatibleGateway, ModelGatewayError, SANDBOX_AGENT_TOOLS
+from .agent_tool_specs import sandbox_tools_for_request
+from .parallel_subtasks import SubtaskRunCancelled, merge_job_metrics, run_parallel_subtasks
 from .models import JobEvent, JobStepStatus, WorkflowJob, WorkflowJobMemory
 from .sandbox_runtime import DockerSandbox, SandboxRuntimeError
 from .sandbox_tool_registry import (
@@ -125,6 +127,10 @@ def _safe_tool_event(action_name: str, action: dict[str, Any]) -> tuple[str, str
         return "确认任务受阻", "正在记录无法完成目标的真实证据", {"tool": action_name}
     if action_name == "finish":
         return "整理最终结果", "正在确认产物文件", {"tool": action_name}
+    if action_name == "run_parallel_subtasks":
+        tasks = action.get("tasks")
+        count = len(tasks) if isinstance(tasks, list) else 0
+        return "并行执行子任务", f"正在同时执行 {count} 个子任务", {"tool": action_name, "task_count": count}
     return "调用运行工具", action_name or "正在执行", {"tool": action_name or "unknown"}
 
 
@@ -913,7 +919,7 @@ async def _run_agent_loop(
         db.commit()
         reasoning_started_at = time.perf_counter()
         budget_diagnostics: dict[str, Any] = {}
-        tool_tokens = (estimate_tokens(SANDBOX_AGENT_TOOLS)
+        tool_tokens = (estimate_tokens(sandbox_tools_for_request(SANDBOX_AGENT_TOOLS))
                        if getattr(gateway, '_native_tools_available', False) else 0)
         try:
             model_messages = project_context(messages, checkpoint=execution_state.checkpoint(),
@@ -965,6 +971,8 @@ async def _run_agent_loop(
         native_call_count = len(calls)
         batch = None
         batch_turn_error = None
+        if any(action.get('action') == 'run_parallel_subtasks' for _, action in calls) and len(calls) != 1:
+            batch_turn_error = 'Call run_parallel_subtasks alone in a reasoning turn.'
         if any(action.get('action') in {'read_files', 'run_commands', 'run_skill_workflow'} for _, action in calls):
             if len(calls) != 1:
                 batch_turn_error = 'Call read_files, run_commands or run_skill_workflow alone in a reasoning turn.'
@@ -1124,7 +1132,7 @@ async def _run_agent_loop(
             if action_name in {'request_capability', 'request_python_dependencies'} and len(calls) != 1:
                 validation_error = 'Environment requests must be the only tool call in this turn'
             pre_plan_inspection_remaining: int | None = None
-            if not validation_error and action_name in {'command', 'run_python', 'write_file', 'run_fixed_skill', 'run_commands', 'run_skill_workflow'}:
+            if not validation_error and action_name in {'command', 'run_python', 'write_file', 'run_fixed_skill', 'run_commands', 'run_skill_workflow', 'run_parallel_subtasks'}:
                 if action_name in {'command', 'run_python'} and execution_state.pre_plan_inspection_allowed():
                     # Binary inputs (PDF/DOCX/images) can only be inspected
                     # via command/run_python, and the model needs that
@@ -1727,6 +1735,50 @@ async def _run_agent_loop(
                     operation_number=tool_operation_count,
                     tool_call_id=tool_call_id,
                 )
+            elif action_name == "run_parallel_subtasks":
+                try:
+                    payload = await run_parallel_subtasks(
+                        sandbox,
+                        action,
+                        gateway=gateway,
+                        job_id=job.id,
+                        job_cancelled=job_cancelled,
+                        cwd=str(action.get("cwd") or skill_root),
+                    )
+                except SubtaskRunCancelled as exc:
+                    raise AgentJobCancelled("Workflow job was cancelled") from exc
+                metrics = payload.get("metrics") if isinstance(payload, dict) else None
+                if isinstance(metrics, dict) and metrics.get("attempted"):
+                    if job.memory is None:
+                        job.memory = WorkflowJobMemory(data={})
+                    merged = merge_job_metrics((job.memory.data or {}).get("parallel_subtask_metrics"), metrics)
+                    job.memory.data = {**(job.memory.data or {}), "parallel_subtask_metrics": merged}
+                    logger.info(
+                        "parallel subtask job totals job_id=%s model_wait_ms=%s tool_exec_ms=%s rounds=%s calls=%s",
+                        job.id,
+                        merged["model_wait_ms"],
+                        merged["tool_exec_ms"],
+                        merged["rounds"],
+                        merged["calls"],
+                    )
+                    tool_event.data = {
+                        **(tool_event.data or {}),
+                        "parallel_subtasks": {
+                            "model_wait_ms": metrics.get("model_wait_ms"),
+                            "tool_exec_ms": metrics.get("tool_exec_ms"),
+                            "rounds": metrics.get("rounds"),
+                            "tasks_ok": (payload or {}).get("tasks_ok"),
+                            "tasks_failed": [
+                                item.get("task_id")
+                                for item in (payload or {}).get("tasks_failed") or []
+                                if isinstance(item, dict)
+                            ],
+                        },
+                    }
+                ok_tasks = len(payload.get("tasks_ok") or []) if isinstance(payload, dict) else 0
+                failed_tasks = len(payload.get("tasks_failed") or []) if isinstance(payload, dict) else 0
+                progress_detail = f"并行子任务完成 {ok_tasks} 项，失败 {failed_tasks} 项"
+                _append_tool_result(messages, result, action_name, payload, tool_call_id=tool_call_id)
             elif action_name == "block":
                 payload = execution_state.block_workflow(
                     str(action.get("summary") or ""),
@@ -2004,7 +2056,7 @@ async def _run_agent_loop(
             str(action.get("action") or "") for _, action in calls
             if str(action.get("action") or "") != "finish"
         ]
-        if len(calls) == 1 and len(non_finish_actions) == 1:
+        if len(calls) == 1 and len(non_finish_actions) == 1 and non_finish_actions[0] != "run_parallel_subtasks":
             singleton_tool_turns += 1
         else:
             singleton_tool_turns = 0

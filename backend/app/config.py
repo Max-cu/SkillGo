@@ -189,6 +189,24 @@ class Settings:
     platform_document_tools_enabled: bool = _bool(
         "SKILLGO_PLATFORM_DOCUMENT_TOOLS_ENABLED", False
     )
+    # Fan out skill-declared subtasks inside one job. Off unless explicitly enabled.
+    parallel_subtasks_enabled: bool = _bool("SKILLGO_PARALLEL_SUBTASKS_ENABLED", False)
+    # Subtask workers running at once inside a single job. One job lives in one worker process.
+    parallel_subtasks_job_concurrency: int = int(os.getenv("SKILLGO_PARALLEL_SUBTASKS_JOB_CONCURRENCY", "5"))
+    # In-flight model requests from those subtask workers. The count is stored in
+    # this deployment's database so every worker process shares it. Another
+    # deployment has its own database and cannot see this count. Deployments
+    # that share one model server must keep the sum of this setting at or
+    # below 20 until a long-input load test says otherwise.
+    parallel_subtasks_global_model_concurrency: int = int(
+        os.getenv("SKILLGO_PARALLEL_SUBTASKS_GLOBAL_MODEL_CONCURRENCY", "10")
+    )
+    parallel_subtasks_max_rounds: int = int(os.getenv("SKILLGO_PARALLEL_SUBTASKS_MAX_ROUNDS", "8"))
+    parallel_subtasks_timeout_seconds: int = int(os.getenv("SKILLGO_PARALLEL_SUBTASKS_TIMEOUT_SECONDS", "720"))
+    # Extra model attempts after a rate-limit, timeout, or 5xx response, per subtask.
+    # The global slot is released while backing off.
+    parallel_subtasks_model_retries: int = int(os.getenv("SKILLGO_PARALLEL_SUBTASKS_MODEL_RETRIES", "3"))
+    parallel_subtasks_lease_ttl_seconds: int = int(os.getenv("SKILLGO_PARALLEL_SUBTASKS_LEASE_TTL_SECONDS", "120"))
     agent_run_success_detail_days: int = int(
         os.getenv("SKILLGO_AGENT_RUN_SUCCESS_DETAIL_DAYS", "7")
     )
@@ -233,3 +251,21 @@ if settings.orchestration_mode not in {"audit", "fast"}:
 
 if settings.context_max_exchanges is not None and settings.context_max_exchanges < 0:
     raise RuntimeError("SKILLGO_CONTEXT_MAX_EXCHANGES must be >= 0")
+
+if settings.parallel_subtasks_job_concurrency < 1:
+    raise RuntimeError("SKILLGO_PARALLEL_SUBTASKS_JOB_CONCURRENCY must be at least 1")
+
+if settings.parallel_subtasks_global_model_concurrency < 1:
+    raise RuntimeError("SKILLGO_PARALLEL_SUBTASKS_GLOBAL_MODEL_CONCURRENCY must be at least 1")
+
+if settings.parallel_subtasks_max_rounds < 1:
+    raise RuntimeError("SKILLGO_PARALLEL_SUBTASKS_MAX_ROUNDS must be at least 1")
+
+if settings.parallel_subtasks_timeout_seconds < 1:
+    raise RuntimeError("SKILLGO_PARALLEL_SUBTASKS_TIMEOUT_SECONDS must be at least 1")
+
+if settings.parallel_subtasks_model_retries < 0:
+    raise RuntimeError("SKILLGO_PARALLEL_SUBTASKS_MODEL_RETRIES must be at least 0")
+
+if settings.parallel_subtasks_lease_ttl_seconds < 15:
+    raise RuntimeError("SKILLGO_PARALLEL_SUBTASKS_LEASE_TTL_SECONDS must be at least 15")
