@@ -5,6 +5,7 @@ import json
 import hashlib
 from typing import Any
 from .context_thinning import ThinContextPolicy, compact_tool_message, project_shelf_entry
+from .photo_plan import PHOTO_PLAN_TOKEN_CAP, apply_photo_plan
 from .skill_phase_contracts import reference_payloads
 
 
@@ -71,7 +72,10 @@ def project_context(messages: list[dict[str, Any]], *, checkpoint: str,
                     tool_tokens: int = 0, initial_exchange_reserve: int = 1024,
                     deduplicate_references: bool = True,
                     diagnostics: dict[str, Any] | None = None,
-                    thin: ThinContextPolicy | None = None) -> list[dict[str, Any]]:
+                    thin: ThinContextPolicy | None = None,
+                    photo_plan: dict[str, Any] | None = None,
+                    state_inject: bool = False,
+                    photo_plan_token_cap: int | None = None) -> list[dict[str, Any]]:
     # Default policy is a no-op so existing callers keep the audit projection.
     # The sandbox loop passes resolve_thin_context_policy(settings).
     policy = thin or ThinContextPolicy()
@@ -205,6 +209,19 @@ def project_context(messages: list[dict[str, Any]], *, checkpoint: str,
     ]
     memory = memory_message(recent, shelf_view)
     projected = [*history, memory]
+    # Fast-mode photo state is not part of the stable prefix. It is rebuilt
+    # from the workspace file every round and sits immediately before the
+    # mutable execution-state message (the last user message).
+    photo_metrics = None
+    if state_inject and policy.mode == "fast":
+        projected, photo_metrics = apply_photo_plan(
+            projected,
+            history_len=len(history),
+            snapshot=photo_plan,
+            token_cap=PHOTO_PLAN_TOKEN_CAP if photo_plan_token_cap is None else photo_plan_token_cap,
+            max_tokens=max_tokens,
+            tool_tokens=tool_tokens,
+        )
     if diagnostics is not None:
         diagnostics.update({
             'state_estimated_tokens': estimate_tokens([memory]),
@@ -222,6 +239,8 @@ def project_context(messages: list[dict[str, Any]], *, checkpoint: str,
             'summarized_count': summarized_count,
             'removed_tokens': removed_tokens,
         })
+        if photo_metrics is not None:
+            diagnostics['photo_plan'] = photo_metrics
     return projected
 
 

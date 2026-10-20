@@ -66,6 +66,8 @@ SKILLGO_ORCHESTRATION_MODE=audit
 
 已固定的 reference 正文如果还在保留的交互里，不会被压缩；最近一段交互原样发送。落库的消息、任务事件和工作区文件仍是全文。推理事件的 `context_budget` 会写下 `summarized_count`、`removed_tokens`、`preserved_exchange_count`、`exchange_cap_dropped_count`。在旁路实验量过延迟、每轮 token 和 PPT 通过率之前，不要在生产 anti-loop 路径打开 `fast`。
 
+`SKILLGO_STATE_INJECT=1`（默认关闭）只在 `fast` 模式下生效，不改变 audit 投影。技能可以把照片清单和页码分配写到工作区 `/workspace/_state/photo_plan.json`（`photos[]` 含 `image_id` / `path` / `source`，`assignments` 是页码到 `image_id` 列表；`version` 和 `updated_at` 可选）。每一轮推理如果该文件存在且通过校验，会在稳定历史前缀之后、最后一条执行状态消息之前注入一份有 token 上限的摘要。文件缺失或校验失败只记 WARNING 并跳过注入。同一个 `image_id` 出现在两页时，注入块里会带重复分配警告。推理事件的 `context_budget.photo_plan` 记录 `injected_tokens`、`file_mtime` 和 `validation`。任务结束时的 JobEvent `timing` 记录累计模型等待、累计工具耗时和轮数。
+
 如果模型不支持 `response_format: {"type":"json_object"}`，把 `SKILLGO_MODEL_JSON_MODE` 设为 `false`。内网 HTTPS 使用自签名证书时，优先把企业 CA 安装到运行环境；不要在生产环境关闭 TLS 校验。
 
 平台设置中的每个模型连接可以声明“对话”“视觉”“OCR”一种或多种能力，并分别设置默认模型。视觉与 OCR 当前都使用 OpenAI-compatible `chat/completions` 多模态消息格式，图片以内联 `image_url` Data URL 发送给私有模型服务。视觉模型是图片附件的默认理解链路；工作台的“开启 OCR 识别”默认关闭，开启后平台先提取文字，再把 OCR 结果连同原图交给视觉模型，最后仍由用户选择的对话模型组织回答。OCR 失败时视觉理解继续执行并记录警告，视觉模型不可用且没有 OCR 结果时请求硬失败，不会假装已经理解图片。
