@@ -53,7 +53,18 @@ SKILLGO_MODEL_TLS_VERIFY=true
 SKILLGO_CONTEXT_MAX_MESSAGES=20
 SKILLGO_CONTEXT_MAX_CHARS=30000
 SKILLGO_CONVERSATION_LOCK_SECONDS=180
+SKILLGO_ORCHESTRATION_MODE=audit
 ```
+
+`SKILLGO_CONTEXT_MAX_MESSAGES` / `SKILLGO_CONTEXT_MAX_CHARS` 只限制普通对话上下文。沙箱 Agent 另有一条投影。`SKILLGO_ORCHESTRATION_MODE=audit` 是默认值，行为与现在一致：旧交互整段保留，直到 token 预算装不下才整段丢弃；超大命令输出仍在写入历史时落到 `/workspace/work/tool-results/`。
+
+`SKILLGO_ORCHESTRATION_MODE=fast` 是实验开关，不改变 `SKILLGO_DURABLE_CHECKPOINTS_ENABLED`，也不改变工作区快照频率。它只改变每次发给模型的投影：
+
+- 最多保留最近 4 段交互（`SKILLGO_CONTEXT_MAX_EXCHANGES`，设为 `0` 表示不封顶）；
+- 更早的工具正文超过 800 字符时，改成头 400 / 尾 200、sha256，以及指向持久历史或 `full_result_path` 的指针（`SKILLGO_COMPACT_OLDER_TOOLS`）；
+- `references/deep/` 参考架只投影 path + sha256 + 短摘要（`SKILLGO_THIN_REFERENCE_SHELF`）。
+
+已固定的 reference 正文如果还在保留的交互里，不会被压缩；最近一段交互原样发送。落库的消息、任务事件和工作区文件仍是全文。推理事件的 `context_budget` 会写下 `summarized_count`、`removed_tokens`、`preserved_exchange_count`、`exchange_cap_dropped_count`。在旁路实验量过延迟、每轮 token 和 PPT 通过率之前，不要在生产 anti-loop 路径打开 `fast`。
 
 如果模型不支持 `response_format: {"type":"json_object"}`，把 `SKILLGO_MODEL_JSON_MODE` 设为 `false`。内网 HTTPS 使用自签名证书时，优先把企业 CA 安装到运行环境；不要在生产环境关闭 TLS 校验。
 

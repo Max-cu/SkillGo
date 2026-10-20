@@ -16,6 +16,20 @@ def _bool(name: str, default: bool) -> bool:
     return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _optional_int(name: str) -> int | None:
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return None
+    return int(raw)
+
+
+def _optional_bool(name: str) -> bool | None:
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return None
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
 @dataclass(frozen=True)
 class Settings:
     environment_preparation_enabled: bool = _bool("SKILLGO_ENVIRONMENT_PREPARATION_ENABLED", False)
@@ -130,9 +144,19 @@ class Settings:
         # fully inline (two-tier pruning, aligned with QwenPaw's 50KB recent
         # tier); larger results are persisted to tool-results/ and replaced by
         # a head+tail excerpt. Older exchanges are dropped wholesale by
-        # project_context. Default 52 KiB.
+        # project_context unless orchestration_mode=fast compacts them first.
+        # Default 52 KiB. This knob is independent of workspace snapshots.
         os.getenv("SKILLGO_SANDBOX_TOOL_INLINE_BYTES", str(52 * 1024))
     )
+    # Model-context thinning. audit = current projection. fast caps retained
+    # exchanges and compacts older tool bodies / deep reference pointers.
+    # It does not change SKILLGO_DURABLE_CHECKPOINTS_ENABLED or snapshot cadence.
+    orchestration_mode: str = (
+        os.getenv("SKILLGO_ORCHESTRATION_MODE", "audit").strip().lower() or "audit"
+    )
+    context_max_exchanges: int | None = _optional_int("SKILLGO_CONTEXT_MAX_EXCHANGES")
+    compact_older_tools: bool | None = _optional_bool("SKILLGO_COMPACT_OLDER_TOOLS")
+    thin_reference_shelf: bool | None = _optional_bool("SKILLGO_THIN_REFERENCE_SHELF")
     # A reasoning turn may now contain several native tool calls. Keep the
     # model-turn budget separate from the sandbox-operation budget so a useful
     # batch is not reported as several rounds of "thinking".
@@ -203,3 +227,9 @@ if settings.storage_retention_days < 1:
 
 if settings.environment == "production" and settings.jwt_secret.startswith("development-"):
     raise RuntimeError("SKILLGO_JWT_SECRET must be changed in production")
+
+if settings.orchestration_mode not in {"audit", "fast"}:
+    raise RuntimeError("SKILLGO_ORCHESTRATION_MODE must be 'audit' or 'fast'")
+
+if settings.context_max_exchanges is not None and settings.context_max_exchanges < 0:
+    raise RuntimeError("SKILLGO_CONTEXT_MAX_EXCHANGES must be >= 0")

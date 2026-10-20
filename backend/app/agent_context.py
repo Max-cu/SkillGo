@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import hashlib
 from typing import Any
+from .context_thinning import ThinContextPolicy, compact_tool_message, project_shelf_entry
 from .skill_phase_contracts import reference_payloads
 
 
@@ -69,7 +70,11 @@ def project_context(messages: list[dict[str, Any]], *, checkpoint: str,
                     completed: set[int], max_tokens: int,
                     tool_tokens: int = 0, initial_exchange_reserve: int = 1024,
                     deduplicate_references: bool = True,
-                    diagnostics: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+                    diagnostics: dict[str, Any] | None = None,
+                    thin: ThinContextPolicy | None = None) -> list[dict[str, Any]]:
+    # Default policy is a no-op so existing callers keep the audit projection.
+    # The sandbox loop passes resolve_thin_context_policy(settings).
+    policy = thin or ThinContextPolicy()
     pinned = messages[:2]
     # Single-Skill instructions already live in the pinned system message.
     # Keep that stable prefix intact and avoid sending the full guide twice.
@@ -80,7 +85,10 @@ def project_context(messages: list[dict[str, Any]], *, checkpoint: str,
               if i in loaded and i not in completed and item['skill_md'] not in pinned_system]
     state = json.loads(checkpoint)
     observations = state.pop('recent_observations', [])
-    shelf_entries = state.pop('reference_shelf', []) or []
+    shelf_entries = [
+        project_shelf_entry(entry, policy)
+        for entry in (state.pop('reference_shelf', []) or [])
+    ]
     # Only observation excerpts are expendable. Requirements, plan, validation
     # evidence and active guides remain intact or the request fails explicitly.
     def memory_message(recent: list[dict], shelf: list[dict]) -> dict[str, Any]:
@@ -150,29 +158,90 @@ def project_context(messages: list[dict[str, Any]], *, checkpoint: str,
         recent = candidate
         memory = trial
 
-    selected = [latest] if latest else []
-    for group in reversed(groups[:-1]):
-        candidate = [group, *selected]
-        projected = [*pinned, *(message for exchange in candidate for message in exchange), memory]
-        if estimate_tokens(projected) + tool_tokens > max_tokens:
+    # Exchange cap drops the oldest whole turns before the budget walk.
+    # Compaction is applied to the copies the budget walk measures, so a
+    # thinned older tool result can stay while its full body remains in
+    # ``messages`` for replay. The latest exchange is never compacted:
+    # the model still receives the result it just produced.
+    exchange_cap_dropped = 0
+    older_groups = groups[:-1]
+    if policy.max_exchanges and len(groups) > policy.max_exchanges:
+        exchange_cap_dropped = len(groups) - policy.max_exchanges
+        older_groups = groups[-policy.max_exchanges:-1]
+    summarized_count = 0
+    removed_tokens = 0
+    # Pairs keep the original group for reference dedup and a projected
+    # group for the model request. With compaction off they are the same list.
+    selected_pairs: list[tuple[list[dict[str, Any]], list[dict[str, Any]]]] = (
+        [(latest, latest)] if latest else []
+    )
+    for group in reversed(older_groups):
+        projected_group, count, removed = _project_exchange(group, policy)
+        candidate = [(group, projected_group), *selected_pairs]
+        projected_messages = [message for _original, item in candidate for message in item]
+        trial = [*pinned, *projected_messages, memory]
+        if estimate_tokens(trial) + tool_tokens > max_tokens:
             break
-        selected = candidate
+        selected_pairs = candidate
+        summarized_count += count
+        removed_tokens += removed
+    # Dedup against the uncompacted retained exchanges so an identical
+    # reference still drops out of the shelf. The model copy may then
+    # replace older non-reference tool bodies with a head/tail pointer.
+    history_for_dedup = [
+        *pinned,
+        *(message for original, _projected in selected_pairs for message in original),
+    ]
+    shelf_view, duplicate_count, duplicate_chars = (
+        _deduplicate_reference_shelf(shelf, history_for_dedup)
+        if deduplicate_references else (shelf, 0, 0)
+    )
     # The mutable state message goes LAST: history is append-only between
     # turns, so [pinned + history] stays a stable token prefix and providers
     # with prefix caching skip re-prefilling the whole exchange log each turn.
-    history = [*pinned, *(message for exchange in selected for message in exchange)]
-    shelf_view, duplicate_count, duplicate_chars = (
-        _deduplicate_reference_shelf(shelf, history) if deduplicate_references else (shelf, 0, 0)
-    )
+    history = [
+        *pinned,
+        *(message for _original, projected in selected_pairs for message in projected),
+    ]
     memory = memory_message(recent, shelf_view)
     projected = [*history, memory]
     if diagnostics is not None:
         diagnostics.update({
             'state_estimated_tokens': estimate_tokens([memory]),
             'request_estimated_tokens': estimate_tokens(projected) + tool_tokens,
-            'dropped_exchange_count': len(groups) - len(selected),
+            'dropped_exchange_count': len(groups) - len(selected_pairs),
             'retained_observation_count': len(recent),
             'reference_duplicate_copies_removed': duplicate_count,
             'reference_duplicate_chars_removed': duplicate_chars,
+            'orchestration_mode': policy.mode,
+            'max_exchanges': policy.max_exchanges,
+            'compact_older_tools': policy.compact_older_tools,
+            'thin_reference_shelf': policy.thin_reference_shelf,
+            'exchange_cap_dropped_count': exchange_cap_dropped,
+            'preserved_exchange_count': len(selected_pairs),
+            'summarized_count': summarized_count,
+            'removed_tokens': removed_tokens,
         })
     return projected
+
+
+def _project_exchange(
+    group: list[dict[str, Any]], policy: ThinContextPolicy,
+) -> tuple[list[dict[str, Any]], int, int]:
+    """Compact tool results inside one older exchange. Return the same list if unchanged."""
+    if not policy.compact_older_tools:
+        return group, 0, 0
+    projected: list[dict[str, Any]] = []
+    count = 0
+    removed = 0
+    changed = False
+    for message in group:
+        compacted = compact_tool_message(message, policy)
+        if compacted is not message:
+            changed = True
+            count += 1
+            removed += max(0, estimate_tokens(message) - estimate_tokens(compacted))
+        projected.append(compacted)
+    if not changed:
+        return group, 0, 0
+    return projected, count, removed
