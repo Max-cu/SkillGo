@@ -612,3 +612,22 @@ def test_summary_cannot_displace_declared_state(spare_tokens):
         assert state_messages[0]["content"].endswith(text)
         assert estimate_tokens(on) <= budget
     assert project(on_policy, budget)[:-1] == off[:-1]
+
+
+def test_summary_distinguishes_planned_and_failed_writes_from_written_files():
+    from app.context_thinning import build_structured_compaction_summary
+
+    planned = "/workspace/output/planned.txt"
+    failed = "/workspace/output/failed.txt"
+    summary = build_structured_compaction_summary(
+        [{"role": "assistant", "content": json.dumps({
+            "action": "write_file", "path": failed, "content": "draft",
+        })}, {"role": "tool", "content": json.dumps({
+            "tool_result": "write_file", "payload": {"ok": False, "path": failed},
+        })}],
+        checkpoint={"plan": {"steps": [{"id": "export", "output_refs": [planned]}]}},
+        pinned_messages=[], omitted_exchange_count=1, compacted_tool_count=0,
+    )
+    assert f"Planned: {planned}" in summary
+    assert f"Attempted write: {failed}" in summary
+    assert "Written:" not in summary

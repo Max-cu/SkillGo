@@ -463,7 +463,7 @@ def _payloads_from_message(message: dict[str, Any]) -> list[tuple[object, dict[s
 
 def _absorb_paths(paths: list[str], files: list[str]) -> None:
     for path in paths:
-        _append_unique(files, path, _MAX_FILE_ITEMS)
+        _append_unique(files, f"Mentioned: {path}", _MAX_FILE_ITEMS)
 
 
 def _absorb_action(
@@ -479,7 +479,7 @@ def _absorb_action(
         label = f"{name}: {reason.strip()}" if name else reason.strip()
         _append_unique(decisions, label, _MAX_SUMMARY_ITEMS)
     if name == "write_file" and isinstance(action.get("path"), str):
-        _append_unique(files, action["path"].strip(), _MAX_FILE_ITEMS)
+        _append_unique(files, f"Attempted write: {action['path'].strip()}", _MAX_FILE_ITEMS)
     if name == "update_plan":
         plan_goal = action.get("goal")
         if isinstance(plan_goal, str) and plan_goal.strip():
@@ -497,12 +497,12 @@ def _absorb_action(
                 if isinstance(refs, list):
                     for ref in refs:
                         if isinstance(ref, str) and ref.strip():
-                            _append_unique(files, ref.strip(), _MAX_FILE_ITEMS)
+                            _append_unique(files, f"Planned: {ref.strip()}", _MAX_FILE_ITEMS)
     artifacts = action.get("artifacts")
     if isinstance(artifacts, list):
         for artifact in artifacts:
             if isinstance(artifact, str) and artifact.startswith("/"):
-                _append_unique(files, artifact.strip(), _MAX_FILE_ITEMS)
+                _append_unique(files, f"Declared: {artifact.strip()}", _MAX_FILE_ITEMS)
     discovered: list[str] = []
     if name == "command" and isinstance(action.get("argv"), list):
         _collect_output_paths(
@@ -515,19 +515,19 @@ def _absorb_action(
 
 
 def _absorb_payload(tool: object, payload: dict[str, Any], *, files: list[str], errors: list[str]) -> None:
-    if tool == "write_file" and isinstance(payload.get("path"), str):
-        _append_unique(files, payload["path"].strip(), _MAX_FILE_ITEMS)
+    if tool == "write_file" and payload.get("ok") is True and isinstance(payload.get("path"), str):
+        _append_unique(files, f"Written: {payload['path'].strip()}", _MAX_FILE_ITEMS)
     elif (
         payload.get("ok") is True
         and isinstance(payload.get("bytes"), int)
         and isinstance(payload.get("path"), str)
     ):
-        _append_unique(files, payload["path"].strip(), _MAX_FILE_ITEMS)
+        _append_unique(files, f"Observed: {payload['path'].strip()}", _MAX_FILE_ITEMS)
     artifacts = payload.get("artifacts")
     if isinstance(artifacts, list):
         for artifact in artifacts:
             if isinstance(artifact, str) and artifact.startswith("/"):
-                _append_unique(files, artifact.strip(), _MAX_FILE_ITEMS)
+                _append_unique(files, f"Observed artifact: {artifact.strip()}", _MAX_FILE_ITEMS)
     discovered: list[str] = []
     for field in ("stdout", "stderr"):
         _collect_output_paths(payload.get(field), discovered)
@@ -634,9 +634,10 @@ def build_structured_compaction_summary(
         if isinstance(refs, list):
             for ref in refs:
                 if isinstance(ref, str) and ref.strip():
-                    _append_unique(files, ref.strip(), _MAX_FILE_ITEMS)
+                    _append_unique(files, f"Planned: {ref.strip()}", _MAX_FILE_ITEMS)
 
-    for message in omitted_messages:
+    # Prefer recent decisions when the fixed-size sections fill up.
+    for message in reversed(omitted_messages):
         if not isinstance(message, dict):
             continue
         note = _assistant_note(message)
