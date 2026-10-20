@@ -2,6 +2,13 @@
 
 所有重要变更都记录在此文件中。版本号遵循 [Semantic Versioning](https://semver.org/)。
 
+## [Unreleased]
+
+### Added
+
+- 可选的工具结果落盘（`SKILLGO_TOOL_OUTPUT_SPILL`，默认关闭）。关闭时模型上下文与既有 tool-results 落盘行为保持不变。打开后，序列化结果超过 `SKILLGO_TOOL_OUTPUT_SPILL_BYTES`（默认 32 KiB）时，全文写入任务沙箱 `/workspace/_tool_output/<round>_<call>.txt`，上下文只保留头尾摘录、绝对路径和字节数，模型用现有 `read_file` 回读。该目录随任务沙箱回收，且不进入工作区快照。
+- 每个任务在结束时记录累计模型等待时间与工具执行时间（`model_wait_ms`、`tool_run_ms`）。
+
 ## [0.4.4] - 2026-09-24
 
 ### Changed

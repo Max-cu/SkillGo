@@ -148,6 +148,15 @@ class Settings:
         # Default 52 KiB. This knob is independent of workspace snapshots.
         os.getenv("SKILLGO_SANDBOX_TOOL_INLINE_BYTES", str(52 * 1024))
     )
+    # Opt-in spill of oversized tool results into the job workspace.
+    # Default off: tool results stay on the inline / tool-results path above.
+    # When on, a result larger than tool_output_spill_bytes is written to
+    # /workspace/_tool_output/<round>_<call>.txt and the model sees a
+    # head+tail excerpt, the path, and the byte size.
+    tool_output_spill_enabled: bool = _bool("SKILLGO_TOOL_OUTPUT_SPILL", False)
+    tool_output_spill_bytes: int = int(
+        os.getenv("SKILLGO_TOOL_OUTPUT_SPILL_BYTES", str(32 * 1024))
+    )
     # Model-context thinning. audit = current projection. fast caps retained
     # exchanges and compacts older tool bodies / deep reference pointers.
     # It does not change SKILLGO_DURABLE_CHECKPOINTS_ENABLED or snapshot cadence.
@@ -233,3 +242,6 @@ if settings.orchestration_mode not in {"audit", "fast"}:
 
 if settings.context_max_exchanges is not None and settings.context_max_exchanges < 0:
     raise RuntimeError("SKILLGO_CONTEXT_MAX_EXCHANGES must be >= 0")
+
+if settings.tool_output_spill_bytes < 1:
+    raise RuntimeError("SKILLGO_TOOL_OUTPUT_SPILL_BYTES must be at least 1")
