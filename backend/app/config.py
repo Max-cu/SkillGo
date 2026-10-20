@@ -166,6 +166,10 @@ class Settings:
     context_max_exchanges: int | None = _optional_int("SKILLGO_CONTEXT_MAX_EXCHANGES")
     compact_older_tools: bool | None = _optional_bool("SKILLGO_COMPACT_OLDER_TOOLS")
     thin_reference_shelf: bool | None = _optional_bool("SKILLGO_THIN_REFERENCE_SHELF")
+    # Fixed summary of dropped or compacted history. Default off: the model
+    # projection stays identical to the build without this summary. When on,
+    # the summary is attached only to the trailing state message.
+    structured_compaction_summary: bool = _bool("SKILLGO_STRUCTURED_COMPACTION_SUMMARY", False)
     # Re-read skill-declared /workspace/_state/*.json files into each fast-mode
     # model round. Default off. Audit mode does not inject, even when this flag is on.
     state_inject_enabled: bool = _bool("SKILLGO_STATE_INJECT", False)

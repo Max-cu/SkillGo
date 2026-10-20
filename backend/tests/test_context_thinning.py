@@ -5,9 +5,16 @@ import inspect
 import json
 from types import SimpleNamespace
 
-from app.agent_context import estimate_tokens, project_context
-from app.config import Settings
-from app.context_thinning import ThinContextPolicy, resolve_thin_context_policy
+import pytest
+
+from app.agent_context import _fit_compaction_summary, estimate_tokens, project_context
+from app.config import Settings, settings
+from app.context_thinning import (
+    COMPACTION_SUMMARY_HEADINGS,
+    ThinContextPolicy,
+    resolve_thin_context_policy,
+)
+from app.sandbox_agent_loop import _run_agent_loop_body
 from app import sandbox_agent_loop
 
 
@@ -297,3 +304,330 @@ def test_thin_context_does_not_gate_durable_snapshots():
     assert "SKILLGO_DURABLE_CHECKPOINTS_ENABLED" in settings_source
     assert "DURABLE_CHECKPOINT_EVERY" not in settings_source
     assert "orchestration_mode" in settings_source
+    assert '_bool("SKILLGO_STRUCTURED_COMPACTION_SUMMARY", False)' in settings_source
+
+
+def _memory(projected):
+    return json.loads(projected[-1]["content"].split("\n", 1)[1])
+
+
+def _summary_fixture():
+    secret_path = "/workspace/output/quarterly-report.pptx"
+    hidden_error = "ERROR_CODE_QUARTERLY_LAYOUT_FAILED"
+    decision = "Use the quarterly template and skip the appendix."
+    stdout = (
+        "HEAD-"
+        + ("x" * 1500)
+        + f" wrote {secret_path} {hidden_error} "
+        + ("y" * 1500)
+        + "-TAIL"
+    )
+    messages = [
+        {"role": "system", "content": "rules"},
+        {"role": "user", "content": "Build the quarterly report"},
+        {
+            "role": "assistant",
+            "content": decision,
+            "tool_calls": [{
+                "id": "call-write",
+                "function": {
+                    "name": "write_file",
+                    "arguments": json.dumps({
+                        "path": "/workspace/work/notes.md",
+                        "content": "outline",
+                        "reason": "Save the outline",
+                    }),
+                },
+            }],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "call-write",
+            "content": json.dumps({
+                "tool_result": "write_file",
+                "payload": {"ok": True, "path": "/workspace/work/notes.md", "bytes": 12},
+            }),
+        },
+    ]
+    messages.extend(_exchange(1, {"ok": False, "exit_code": 1, "stdout": stdout, "stderr": ""}))
+    messages.extend(_exchange(2, {"ok": True, "stdout": "latest-ok"}))
+    spec = "UNIQUE_REFERENCE_BODY " * 400
+    messages[2:2] = [
+        {
+            "role": "assistant",
+            "tool_calls": [{"id": "call-ref", "function": {"name": "read_file", "arguments": "{}"}}],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "call-ref",
+            "content": json.dumps({
+                "tool_result": "read_file",
+                "payload": {
+                    "ok": True,
+                    "path": "/workspace/skills/demo/references/spec.md",
+                    "reference": True,
+                    "retained": True,
+                    "complete": True,
+                    "content": spec,
+                },
+            }),
+        },
+    ]
+    checkpoint = {
+        "requirements": ["封面日期保持三月"],
+        "plan": {
+            "goal": "Publish the quarterly report",
+            "success_criteria": ["封面日期保持三月"],
+            "steps": [
+                {"id": "draft", "title": "Draft the deck", "status": "completed"},
+                {"id": "export", "title": "Export the deck", "status": "pending"},
+            ],
+        },
+        "unresolved_failures": [{"tool": "command", "diagnostic": "LAYOUT_ENGINE_MISSING"}],
+        "reference_shelf": [{
+            "path": "/workspace/skills/demo/references/spec.md",
+            "sha256": "a" * 64,
+            "bytes": len(spec.encode()),
+            "chars": len(spec),
+            "content": spec,
+        }],
+    }
+    return messages, checkpoint, {
+        "path": secret_path,
+        "error": hidden_error,
+        "decision": decision,
+        "spec": spec,
+    }
+
+
+def test_structured_summary_defaults_off_and_projection_is_identical():
+    messages, checkpoint, markers = _summary_fixture()
+    off_diag, explicit_diag = {}, {}
+    off_policy = _fast(max_exchanges=2, thin_reference_shelf=False)
+    explicit_off = _fast(max_exchanges=2, thin_reference_shelf=False, structured_compaction_summary=False)
+    off = _project(messages, checkpoint, 500_000, off_policy, off_diag)
+    explicit = _project(messages, checkpoint, 500_000, explicit_off, explicit_diag)
+    assert off == explicit
+    assert off_diag == explicit_diag
+    assert "structured_compaction_summary" not in off_diag
+    assert "compaction_summary_chars" not in off_diag
+    blob = json.dumps(off, ensure_ascii=False)
+    assert "compaction_summary" not in blob
+    for heading in COMPACTION_SUMMARY_HEADINGS:
+        assert heading not in blob
+    assert markers["error"] not in blob
+    assert settings.structured_compaction_summary is False
+    assert resolve_thin_context_policy(settings).structured_compaction_summary is False
+
+    untouched = resolve_thin_context_policy(SimpleNamespace(
+        orchestration_mode="fast",
+        context_max_exchanges=None,
+        compact_older_tools=None,
+        thin_reference_shelf=None,
+    ))
+    assert untouched.structured_compaction_summary is False
+    enabled = resolve_thin_context_policy(SimpleNamespace(
+        orchestration_mode="audit",
+        context_max_exchanges=None,
+        compact_older_tools=False,
+        thin_reference_shelf=False,
+        structured_compaction_summary=True,
+    ))
+    assert enabled.structured_compaction_summary is True
+    with pytest.raises(ValueError, match="SKILLGO_STRUCTURED_COMPACTION_SUMMARY"):
+        resolve_thin_context_policy(SimpleNamespace(
+            orchestration_mode="audit",
+            context_max_exchanges=None,
+            compact_older_tools=None,
+            thin_reference_shelf=None,
+            structured_compaction_summary="true",
+        ))
+
+
+def test_structured_summary_keeps_compacted_facts_outside_the_cached_prefix():
+    messages, checkpoint, markers = _summary_fixture()
+    off_diag, on_diag = {}, {}
+    off = _project(
+        messages, checkpoint, 500_000,
+        _fast(max_exchanges=2, thin_reference_shelf=False),
+        off_diag,
+    )
+    on = _project(
+        messages, checkpoint, 500_000,
+        _fast(max_exchanges=2, thin_reference_shelf=False, structured_compaction_summary=True),
+        on_diag,
+    )
+    assert len(on) == len(off)
+    assert on[:-1] == off[:-1]
+    prefix = json.dumps(on[:-1], ensure_ascii=False)
+    for heading in COMPACTION_SUMMARY_HEADINGS:
+        assert heading not in prefix
+    assert markers["decision"] not in prefix
+    assert "/workspace/work/notes.md" not in prefix
+    assert markers["error"] not in prefix
+    assert "latest-ok" in prefix
+
+    on_memory = _memory(on)
+    off_memory = _memory(off)
+    summary = on_memory.pop("compaction_summary")
+    assert on_memory == off_memory
+    assert on_diag["structured_compaction_summary"] is True
+    assert on_diag["compaction_summary_chars"] == len(summary)
+    positions = [summary.index(heading) for heading in COMPACTION_SUMMARY_HEADINGS]
+    assert positions == sorted(positions)
+    assert summary.startswith(
+        "User goal:\n"
+        "Publish the quarterly report\n"
+        "\n"
+        "Constraints:\n"
+        "- 封面日期保持三月\n"
+    )
+    assert markers["decision"] in summary
+    assert "Save the outline" in summary
+    assert "/workspace/work/notes.md" in summary
+    assert markers["path"] in summary
+    assert markers["error"] in summary
+    assert "LAYOUT_ENGINE_MISSING" in summary
+    assert "Draft the deck" in summary
+    assert "Export the deck (pending)" in summary
+    assert "Omitted exchanges: 2. Compacted tool results: 1." in summary
+    assert markers["spec"] not in summary
+    assert "latest-ok" not in summary
+    assert estimate_tokens(on) <= 500_000
+
+
+def test_dropped_exchange_summary_is_opt_in_and_prefix_stable():
+    messages = [
+        {"role": "system", "content": "rules"},
+        {"role": "user", "content": "Ship the notes"},
+        {
+            "role": "assistant",
+            "tool_calls": [{
+                "id": "old",
+                "function": {
+                    "name": "write_file",
+                    "arguments": json.dumps({"path": "/workspace/output/dropped.txt", "content": "v1"}),
+                },
+            }],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "old",
+            "content": json.dumps({
+                "tool_result": "write_file",
+                "payload": {"ok": True, "path": "/workspace/output/dropped.txt", "bytes": 2},
+            }),
+        },
+        {"role": "assistant", "content": "latest"},
+        {"role": "tool", "tool_call_id": "new", "content": '{"tool_result":"command","payload":{"ok":true}}'},
+    ]
+    checkpoint = {"requirements": ["keep the title"], "plan": {"goal": "Ship the notes", "steps": []}}
+    off_diag, on_diag = {}, {}
+    off_policy = ThinContextPolicy(max_exchanges=1, structured_compaction_summary=False)
+    on_policy = ThinContextPolicy(max_exchanges=1, structured_compaction_summary=True)
+    explicit_diag = {}
+    off = _project(messages, checkpoint, 500_000, off_policy, off_diag)
+    explicit = _project(messages, checkpoint, 500_000, ThinContextPolicy(max_exchanges=1), explicit_diag)
+    on = _project(messages, checkpoint, 500_000, on_policy, on_diag)
+    assert off == explicit
+    assert off_diag == explicit_diag
+    assert "structured_compaction_summary" not in off_diag
+    assert on[:-1] == off[:-1]
+    assert "/workspace/output/dropped.txt" not in json.dumps(off)
+    summary = _memory(on)["compaction_summary"]
+    assert "/workspace/output/dropped.txt" in summary
+    assert "Ship the notes" in summary
+    assert "keep the title" in summary
+    assert "User goal:" not in json.dumps(on[:-1])
+    assert on_diag["dropped_exchange_count"] == off_diag["dropped_exchange_count"] == 1
+    assert on_diag["summarized_count"] == 0
+
+
+def test_summary_flag_without_compaction_matches_the_unsummarized_projection():
+    messages = [{"role": "system", "content": "rules"}, {"role": "user", "content": "request"}]
+    messages.extend(_exchange(1, {"ok": True, "stdout": "tiny"}))
+    messages.extend(_exchange(2, {"ok": True, "stdout": "also tiny"}))
+    off_diag, on_diag = {}, {}
+    off = _project(messages, {}, 500_000, ThinContextPolicy(), off_diag)
+    on = _project(
+        messages, {}, 500_000,
+        ThinContextPolicy(structured_compaction_summary=True),
+        on_diag,
+    )
+    assert on == off
+    assert on_diag["structured_compaction_summary"] is False
+    assert on_diag["compaction_summary_chars"] == 0
+    assert "structured_compaction_summary" not in off_diag
+
+
+def test_summary_shrinks_or_drops_instead_of_exceeding_the_budget():
+    summary = "User goal:\n" + ("goal " * 800) + "\n"
+    base = [{"role": "user", "content": "pinned"}]
+
+    def render(text):
+        return {"role": "user", "content": text}
+
+    fitted = _fit_compaction_summary(
+        summary, base_messages=base, tool_tokens=0, max_tokens=80, render=render,
+    )
+    assert fitted is None or estimate_tokens([*base, render(fitted)]) <= 80
+    roomy = _fit_compaction_summary(
+        summary, base_messages=base, tool_tokens=0, max_tokens=400, render=render,
+    )
+    assert roomy is not None
+    assert "summary truncated to fit context budget" in roomy
+    assert estimate_tokens([*base, render(roomy)]) <= 400
+    assert roomy.startswith("User goal:")
+
+
+@pytest.mark.parametrize("spare_tokens", [0, 50, 200])
+def test_summary_cannot_displace_declared_state(spare_tokens):
+    from dataclasses import replace
+    from app.context_thinning import recovery_thin_policy
+    from app.state_inject import evaluate_state_file
+
+    messages, checkpoint, _markers = _summary_fixture()
+    path = "/workspace/_state/progress.json"
+    text = '{"completed":["draft"],"pending":["export"]}'
+    snapshots = [evaluate_state_file(path=path, text=text, mtime=None, read_error=None)]
+    policy = _fast(max_exchanges=2, thin_reference_shelf=False)
+
+    def project(active_policy, budget, diagnostics=None):
+        return project_context(
+            messages, checkpoint=json.dumps(checkpoint), skill_contexts=[],
+            loaded=set(), completed=set(), max_tokens=budget,
+            initial_exchange_reserve=0, thin=active_policy,
+            state_inject=True, state_files=snapshots, diagnostics=diagnostics,
+        )
+
+    budget = estimate_tokens(project(policy, 500_000)) + spare_tokens
+    off = project(policy, budget)
+    on_policy = replace(policy, structured_compaction_summary=True)
+    for active_policy in (on_policy, recovery_thin_policy(on_policy)):
+        # Recovery retains the summary option; optional summary must yield to state.
+        assert active_policy.structured_compaction_summary is True
+        on = project(active_policy, budget)
+        state_messages = [m for m in on if m.get("content", "").startswith(f"State file {path}")]
+        assert len(state_messages) == 1
+        assert state_messages[0]["content"].endswith(text)
+        assert estimate_tokens(on) <= budget
+    assert project(on_policy, budget)[:-1] == off[:-1]
+
+
+def test_summary_distinguishes_planned_and_failed_writes_from_written_files():
+    from app.context_thinning import build_structured_compaction_summary
+
+    planned = "/workspace/output/planned.txt"
+    failed = "/workspace/output/failed.txt"
+    summary = build_structured_compaction_summary(
+        [{"role": "assistant", "content": json.dumps({
+            "action": "write_file", "path": failed, "content": "draft",
+        })}, {"role": "tool", "content": json.dumps({
+            "tool_result": "write_file", "payload": {"ok": False, "path": failed},
+        })}],
+        checkpoint={"plan": {"steps": [{"id": "export", "output_refs": [planned]}]}},
+        pinned_messages=[], omitted_exchange_count=1, compacted_tool_count=0,
+    )
+    assert f"Planned: {planned}" in summary
+    assert f"Attempted write: {failed}" in summary
+    assert "Written:" not in summary
