@@ -24,6 +24,7 @@ from .durable_checkpoint import (
 from .agent_kernel import AgentSession, ToolCallContext, ToolPipeline
 from .agent_policy import AgentExecutionState, PRE_PLAN_INSPECTION_HINT, action_fingerprint, is_reference_path
 from .agent_context import project_context, estimate_tokens
+from .context_thinning import resolve_thin_context_policy
 from .skill_phase_contracts import stage_contracts, available_reference_paths, expand_reference_actions
 from .workflow_tools import run_verifier, snapshot_step_files, effective_instruction
 from .artifact_collection import receive_declared_artifacts, delivery_only_job
@@ -459,9 +460,14 @@ Execution protocol updates (these refine the earlier rules):
 
 
 def _trim_messages(messages: list[dict[str, Any]], execution_checkpoint: str | None = None) -> list[dict[str, Any]]:
-    """Compatibility entry point; retain complete provider exchanges."""
+    """Compatibility entry point; retain complete provider exchanges.
+
+    Honors the same opt-in thinning policy as the live loop. The default
+    audit policy does not compact or cap exchanges.
+    """
     return project_context(messages, checkpoint=execution_checkpoint or '{}',
-        skill_contexts=[], loaded=set(), completed=set(), max_tokens=48000)
+        skill_contexts=[], loaded=set(), completed=set(), max_tokens=48000,
+        thin=resolve_thin_context_policy(settings))
 
 
 def _append_tool_result(
@@ -914,7 +920,8 @@ async def _run_agent_loop(
                 skill_contexts=skill_contexts, loaded=execution_state.loaded_skills,
                 completed=execution_state.completed_skill_indexes,
                 max_tokens=input_budget, tool_tokens=tool_tokens,
-                initial_exchange_reserve=2048, diagnostics=budget_diagnostics)
+                initial_exchange_reserve=2048, diagnostics=budget_diagnostics,
+                thin=resolve_thin_context_policy(settings))
         except ValueError as exc:
             reasoning_event.status = 'failed'
             reasoning_event.detail = str(exc)
