@@ -3,9 +3,17 @@ from __future__ import annotations
 
 import json
 import hashlib
+import logging
 from typing import Any
-from .context_thinning import ThinContextPolicy, compact_tool_message, project_shelf_entry
+from .context_thinning import (
+    ThinContextPolicy,
+    compact_tool_message,
+    pinned_hits,
+    project_shelf_entry,
+)
 from .skill_phase_contracts import reference_payloads
+
+logger = logging.getLogger(__name__)
 
 
 def estimate_tokens(value: object) -> int:
@@ -159,32 +167,76 @@ def project_context(messages: list[dict[str, Any]], *, checkpoint: str,
         memory = trial
 
     # Exchange cap drops the oldest whole turns before the budget walk.
-    # Compaction is applied to the copies the budget walk measures, so a
-    # thinned older tool result can stay while its full body remains in
-    # ``messages`` for replay. The latest exchange is never compacted:
-    # the model still receives the result it just produced.
-    exchange_cap_dropped = 0
-    older_groups = groups[:-1]
+    # Fast-mode pins are extra: a matching tool result outside that window
+    # stays verbatim and does not consume a cap slot. Only the latest result
+    # for each pin key is eligible, then the ceiling keeps higher-priority
+    # keys first (count_photos, then other image commands, then file reads).
+    # Compaction runs on the copies the budget walk measures. The latest
+    # exchange is never compacted. Durable ``messages`` stay intact.
+    hit_groups = [pinned_hits(group, policy) for group in groups]
     if policy.max_exchanges and len(groups) > policy.max_exchanges:
-        exchange_cap_dropped = len(groups) - policy.max_exchanges
-        older_groups = groups[-policy.max_exchanges:-1]
+        window_start = len(groups) - policy.max_exchanges
+    else:
+        window_start = 0
+    protected_by_group, ceiling_dropped = _protect_pinned_results(groups, hit_groups, policy)
+    rescued = [gi for gi in range(window_start) if protected_by_group.get(gi)]
+    if policy.max_exchanges and len(groups) > policy.max_exchanges:
+        exchange_cap_dropped = len(groups) - policy.max_exchanges - len(rescued)
+    else:
+        exchange_cap_dropped = 0
     summarized_count = 0
     removed_tokens = 0
     # Pairs keep the original group for reference dedup and a projected
     # group for the model request. With compaction off they are the same list.
-    selected_pairs: list[tuple[list[dict[str, Any]], list[dict[str, Any]]]] = (
-        [(latest, latest)] if latest else []
-    )
-    for group in reversed(older_groups):
-        projected_group, count, removed = _project_exchange(group, policy)
-        candidate = [(group, projected_group), *selected_pairs]
-        projected_messages = [message for _original, item in candidate for message in item]
+    selected: list[tuple[int, list[dict[str, Any]], list[dict[str, Any]]]] = []
+    if groups:
+        latest_index = len(groups) - 1
+        selected.append((latest_index, groups[latest_index], groups[latest_index]))
+
+    def _within_budget(pairs: list[tuple[int, list[dict[str, Any]], list[dict[str, Any]]]]) -> bool:
+        projected_messages = [message for _gi, _original, item in pairs for message in item]
         trial = [*pinned, *projected_messages, memory]
-        if estimate_tokens(trial) + tool_tokens > max_tokens:
-            break
-        selected_pairs = candidate
+        return estimate_tokens(trial) + tool_tokens <= max_tokens
+
+    def _append_older(gi: int) -> bool:
+        nonlocal summarized_count, removed_tokens
+        group = groups[gi]
+        projected_group, count, removed = _project_exchange(
+            group, policy, pinned_indexes=protected_by_group.get(gi, set()),
+        )
+        candidate = [*selected, (gi, group, projected_group)]
+        if not _within_budget(candidate):
+            return False
+        selected.append((gi, group, projected_group))
         summarized_count += count
         removed_tokens += removed
+        return True
+
+    # Newest rescued pins first. A pin that does not fit ends the rescue;
+    # older pins are not backfilled ahead of it.
+    for gi in reversed(rescued):
+        if not _append_older(gi):
+            break
+    cap_older = list(range(window_start, max(len(groups) - 1, 0)))
+    for gi in reversed(cap_older):
+        if not _append_older(gi):
+            break
+    selected.sort(key=lambda item: item[0])
+    selected_pairs: list[tuple[list[dict[str, Any]], list[dict[str, Any]]]] = [
+        (original, projected) for _gi, original, projected in selected
+    ]
+    pinned_result_tokens, pinned_result_count = _measure_pinned_results(
+        groups, protected_by_group, selected,
+    )
+    if ceiling_dropped:
+        logger.info(
+            "fast pin token ceiling exceeded: dropped %s older pinned result(s); "
+            "kept %s pinned result(s) (~%s tokens, ceiling %s)",
+            ceiling_dropped,
+            pinned_result_count,
+            pinned_result_tokens,
+            policy.pin_token_ceiling,
+        )
     # Dedup against the uncompacted retained exchanges so an identical
     # reference still drops out of the shelf. The model copy may then
     # replace older non-reference tool bodies with a head/tail pointer.
@@ -221,21 +273,99 @@ def project_context(messages: list[dict[str, Any]], *, checkpoint: str,
             'preserved_exchange_count': len(selected_pairs),
             'summarized_count': summarized_count,
             'removed_tokens': removed_tokens,
+            'pinned_result_estimated_tokens': pinned_result_tokens,
+            'pinned_result_count': pinned_result_count,
+            'pinned_ceiling_dropped_count': ceiling_dropped,
         })
     return projected
 
 
+def _protect_pinned_results(
+    groups: list[list[dict[str, Any]]],
+    hit_groups: list,
+    policy: ThinContextPolicy,
+) -> tuple[dict[int, set[int]], int]:
+    """Keep one verbatim result per pin key, then apply the token ceiling.
+
+    Repeats of the same command or the same file read collapse to the latest
+    message so pinned tokens stay flat as rounds grow. Among those winners,
+    smaller priority numbers are kept first (count_photos, then other image
+    commands, then file reads); ties keep the newer result. The latest
+    exchange is already retained whole and does not spend the ceiling.
+    Anything not selected falls back to normal cap and compaction.
+    """
+
+    latest_gi = len(groups) - 1
+    best: dict[str, tuple[int, int, int]] = {}
+    for gi, hits in enumerate(hit_groups):
+        for hit in hits:
+            current = best.get(hit.key)
+            if current is None or (gi, hit.index) >= (current[0], current[1]):
+                best[hit.key] = (gi, hit.index, hit.priority)
+    candidates: list[tuple[int, int, int, int, int, int]] = []
+    for gi, mi, priority in best.values():
+        if gi == latest_gi:
+            continue
+        candidates.append((
+            priority, -gi, -mi, gi, mi, estimate_tokens(groups[gi][mi]),
+        ))
+    candidates.sort()
+    protected: dict[int, set[int]] = {}
+    running = 0
+    dropped = 0
+    for _priority, _newer_gi, _newer_mi, gi, mi, tok in candidates:
+        if running + tok > policy.pin_token_ceiling:
+            dropped += 1
+            continue
+        protected.setdefault(gi, set()).add(mi)
+        running += tok
+    return protected, dropped
+
+
+def _measure_pinned_results(
+    groups: list[list[dict[str, Any]]],
+    protected_by_group: dict[int, set[int]],
+    selected: list[tuple[int, list[dict[str, Any]], list[dict[str, Any]]]],
+) -> tuple[int, int]:
+    """Tokens of older pinned results kept verbatim in the projection.
+
+    The latest exchange is omitted. It is already retained in full and does
+    not spend the ceiling, so this field stays within ``pin_token_ceiling``
+    and shows whether pinned history is growing.
+    """
+
+    selected_ids = {gi for gi, _original, _projected in selected}
+    last_gi = len(groups) - 1
+    tokens = 0
+    count = 0
+    for gi, group in enumerate(groups):
+        if gi not in selected_ids or gi == last_gi:
+            continue
+        for mi in protected_by_group.get(gi, ()):
+            tokens += estimate_tokens(group[mi])
+            count += 1
+    return tokens, count
+
+
 def _project_exchange(
     group: list[dict[str, Any]], policy: ThinContextPolicy,
+    *, pinned_indexes: set[int] | None = None,
 ) -> tuple[list[dict[str, Any]], int, int]:
-    """Compact tool results inside one older exchange. Return the same list if unchanged."""
+    """Compact tool results inside one older exchange. Return the same list if unchanged.
+
+    Messages in ``pinned_indexes`` stay verbatim. Other tool bodies still compact.
+    """
     if not policy.compact_older_tools:
         return group, 0, 0
+    protected = pinned_indexes or set()
     projected: list[dict[str, Any]] = []
     count = 0
     removed = 0
     changed = False
-    for message in group:
+    for index, message in enumerate(group):
+        if index in protected:
+            projected.append(message)
+            continue
         compacted = compact_tool_message(message, policy)
         if compacted is not message:
             changed = True

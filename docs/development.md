@@ -62,9 +62,10 @@ SKILLGO_ORCHESTRATION_MODE=audit
 
 - 最多保留最近 4 段交互（`SKILLGO_CONTEXT_MAX_EXCHANGES`，设为 `0` 表示不封顶）；
 - 更早的工具正文超过 800 字符时，改成头 400 / 尾 200、sha256，以及指向持久历史或 `full_result_path` 的指针（`SKILLGO_COMPACT_OLDER_TOOLS`）；
-- `references/deep/` 参考架只投影 path + sha256 + 短摘要（`SKILLGO_THIN_REFERENCE_SHELF`）。
+- `references/deep/` 参考架只投影 path + sha256 + 短摘要（`SKILLGO_THIN_REFERENCE_SHELF`）；
+- 命中固定清单的工具结果原样保留（含 stderr）：不做头尾压缩，落在这 4 段之外时额外保留，不占用这 4 个名额。默认按命令文本里的脚本名匹配 `count_photos.py`、`fetch_web_images.py`、`inject_image_credits.py`、`icon_sync.py`（`SKILLGO_FAST_PIN_TOOLS`，逗号分隔，可用 `名字@优先级`；设为空字符串则不按命令固定）。对不上命令时，再用结果正文里的这些正则兜底（`SKILLGO_FAST_PIN_PATTERNS`，`;;` 分隔）：`✅ 可用照片: N 张`、`[✓] image_N`、`联网补图 N 张`、`[[image_N.ext]]`、`_web_images.json`。另外，读取 `assets/sources/文本.md`、`_web_images.json`、`assets/design_spec.md` 也会钉住（`SKILLGO_FAST_PIN_READS`；`design_spec.md` 不在 `assets/sources/` 下也算）。同一命令或同一文件只保留最新一条，所以重复调用不会让钉住 token 随轮次增长。超过 `SKILLGO_FAST_PIN_TOKEN_CEILING`（默认 8192）时按优先级取舍：`count_photos.py` 的最新结果，然后是另外三个脚本的最新结果，最后才是文件读取；放不下的退回普通上限和压缩，并写日志。不因 `§0d` / `§0f` 这类章节号钉住。`audit` 忽略这些配置。
 
-已固定的 reference 正文如果还在保留的交互里，不会被压缩；最近一段交互原样发送。落库的消息、任务事件和工作区文件仍是全文。推理事件的 `context_budget` 会写下 `summarized_count`、`removed_tokens`、`preserved_exchange_count`、`exchange_cap_dropped_count`。在旁路实验量过延迟、每轮 token 和 PPT 通过率之前，不要在生产 anti-loop 路径打开 `fast`。
+已固定的 reference 正文如果还在保留的交互里，不会被压缩；最近一段交互原样发送。落库的消息、任务事件和工作区文件仍是全文。推理事件的 `context_budget` 会写下 `summarized_count`、`removed_tokens`、`preserved_exchange_count`、`exchange_cap_dropped_count`，以及单独的 `pinned_result_estimated_tokens`（比最新一轮更早、且仍原样保留的钉住结果；不超过 token 上限。它不是固定前缀的 `pinned_estimated_tokens`）。在旁路实验量过延迟、每轮 token 和 PPT 通过率之前，不要在生产 anti-loop 路径打开 `fast`。
 
 如果模型不支持 `response_format: {"type":"json_object"}`，把 `SKILLGO_MODEL_JSON_MODE` 设为 `false`。内网 HTTPS 使用自签名证书时，优先把企业 CA 安装到运行环境；不要在生产环境关闭 TLS 校验。
 

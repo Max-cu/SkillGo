@@ -30,6 +30,22 @@ def _optional_bool(name: str) -> bool | None:
     return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _optional_csv(name: str) -> tuple[str, ...] | None:
+    raw = os.getenv(name)
+    if raw is None:
+        return None
+    return tuple(item.strip() for item in raw.split(",") if item.strip())
+
+
+def _optional_pin_patterns(name: str) -> tuple[str, ...] | None:
+    """Split pin regexes on ``;;`` so a single pattern may contain commas."""
+
+    raw = os.getenv(name)
+    if raw is None:
+        return None
+    return tuple(item.strip() for item in raw.split(";;") if item.strip())
+
+
 @dataclass(frozen=True)
 class Settings:
     environment_preparation_enabled: bool = _bool("SKILLGO_ENVIRONMENT_PREPARATION_ENABLED", False)
@@ -157,6 +173,13 @@ class Settings:
     context_max_exchanges: int | None = _optional_int("SKILLGO_CONTEXT_MAX_EXCHANGES")
     compact_older_tools: bool | None = _optional_bool("SKILLGO_COMPACT_OLDER_TOOLS")
     thin_reference_shelf: bool | None = _optional_bool("SKILLGO_THIN_REFERENCE_SHELF")
+    # Fast-mode pins. Unset means "use the mode default" (resolved later).
+    # Empty string disables that list. Patterns are ``;;``-separated regexes.
+    # These knobs do not change checkpoint or snapshot settings.
+    fast_pin_tools: tuple[str, ...] | None = _optional_csv("SKILLGO_FAST_PIN_TOOLS")
+    fast_pin_patterns: tuple[str, ...] | None = _optional_pin_patterns("SKILLGO_FAST_PIN_PATTERNS")
+    fast_pin_reads: tuple[str, ...] | None = _optional_csv("SKILLGO_FAST_PIN_READS")
+    fast_pin_token_ceiling: int | None = _optional_int("SKILLGO_FAST_PIN_TOKEN_CEILING")
     # A reasoning turn may now contain several native tool calls. Keep the
     # model-turn budget separate from the sandbox-operation budget so a useful
     # batch is not reported as several rounds of "thinking".
@@ -233,3 +256,17 @@ if settings.orchestration_mode not in {"audit", "fast"}:
 
 if settings.context_max_exchanges is not None and settings.context_max_exchanges < 0:
     raise RuntimeError("SKILLGO_CONTEXT_MAX_EXCHANGES must be >= 0")
+
+if settings.fast_pin_token_ceiling is not None and settings.fast_pin_token_ceiling < 0:
+    raise RuntimeError("SKILLGO_FAST_PIN_TOKEN_CEILING must be >= 0")
+
+if settings.fast_pin_patterns:
+    import re as _re
+
+    for _pattern in settings.fast_pin_patterns:
+        try:
+            _re.compile(_pattern)
+        except _re.error as exc:
+            raise RuntimeError(
+                "SKILLGO_FAST_PIN_PATTERNS contains an invalid regex: " + _pattern
+            ) from exc
