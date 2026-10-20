@@ -763,15 +763,44 @@ def test_icon_sync_stderr_is_pinned_verbatim():
     assert _tool_body(projected, "call-4")["context_compacted"] is True
 
 
+def _spec_document(marker: str) -> str:
+    return (
+        f"{marker}-PREAMBLE\n" + ("P" * 4500) + "\n"
+        "## §VIII Image Resource List\n\n"
+        "- image_001.png cover\n"
+        "- image_002.png body\n\n"
+        "## §IX Page assignments\n\n"
+        "### page 04\n"
+        "hero image_010.png\n\n"
+        "### page 05\n"
+        "PAGE05_EMPTY no photo\n\n"
+        "### page 10\n"
+        "planned image_003.png\n\n"
+        "## §X Notes\n"
+        f"{marker}-TAIL\n" + ("T" * 4500)
+    )
+
+
+def _text_document(marker: str) -> str:
+    return (
+        f"{marker}-BODY\n" + ("B" * 4500) + "\n"
+        "## 附加图片\n\n"
+        "- [[image_003.png]] 封面\n"
+        "- [[image_010.jpg]] 第4页\n\n"
+        "## 其他\n"
+        f"{marker}-AFTER\n" + ("A" * 4500)
+    )
+
+
 def test_file_rereads_keep_only_the_latest_including_design_spec():
     spec_path = "/workspace/ppt/assets/design_spec.md"
     text_path = "/workspace/ppt/assets/sources/文本.md"
     assert "assets/sources" not in spec_path
     messages = [{"role": "system", "content": "rules"}, {"role": "user", "content": "build the deck"}]
-    messages.extend(_read_exchange(0, text_path, _photo_stdout("T0")))
-    messages.extend(_read_exchange(1, spec_path, _photo_stdout("S0")))
-    messages.extend(_read_exchange(2, text_path, _photo_stdout("T1")))
-    messages.extend(_read_exchange(3, spec_path, _photo_stdout("S1")))
+    messages.extend(_read_exchange(0, text_path, _text_document("T0")))
+    messages.extend(_read_exchange(1, spec_path, _spec_document("S0")))
+    messages.extend(_read_exchange(2, text_path, _text_document("T1")))
+    messages.extend(_read_exchange(3, spec_path, _spec_document("S1")))
     # Mentioning the path in a later command is not a read and must not
     # replace the pinned design_spec.md body.
     messages.extend(_tool_exchange(4, ["python3", "scripts/render.py", spec_path], {
@@ -782,28 +811,40 @@ def test_file_rereads_keep_only_the_latest_including_design_spec():
     }))
     diag = {}
     projected = _project(messages, {}, 500_000, _pin_policy(max_exchanges=None), diag)
-    assert _tool_body(projected, "call-2")["payload"]["content"] == _photo_stdout("T1")
-    assert _tool_body(projected, "call-3")["payload"]["content"] == _photo_stdout("S1")
+    text_body = _tool_body(projected, "call-2")["payload"]["content"]
+    spec_body = _tool_body(projected, "call-3")["payload"]["content"]
+    assert "附加图片" in text_body and "[[image_003.png]]" in text_body
+    assert "T1-BODY" not in text_body and "T1-AFTER" not in text_body
+    assert "Image Resource List" in spec_body and "image_010" in spec_body
+    assert "image_003.png" in spec_body
+    assert "PAGE05_EMPTY" not in spec_body
+    assert "S1-PREAMBLE" not in spec_body and "S1-TAIL" not in spec_body
     assert "context_compacted" not in _tool_body(projected, "call-2")
     assert "context_compacted" not in _tool_body(projected, "call-3")
     mention = _tool_body(projected, "call-4")
     assert mention["context_compacted"] is True
     assert "NO-MID-" not in mention["payload"]["stdout"]
-    for call_id, tag in (("call-0", "T0"), ("call-1", "S0")):
+    for call_id in ("call-0", "call-1"):
         earlier = _tool_body(projected, call_id)
         assert earlier["context_compacted"] is True
-        assert f"{tag}-MID-" not in earlier["payload"]["content"]
+        assert "附加图片" not in earlier["payload"]["content"]
+        assert "Image Resource List" not in earlier["payload"]["content"]
     assert diag["pinned_result_count"] == 2
     kept = diag["pinned_result_estimated_tokens"]
+    assert {item["key"] for item in diag["pinned_keys"]} == {
+        "read:assets/sources/文本.md",
+        "read:assets/design_spec.md",
+    }
+    assert diag["pinned_dropped_keys"] == []
     # Another full re-read of both files does not grow the pinned token total
-    # when the newest bodies stay the same size.
+    # when the newest image sections stay the same size.
     longer = [{"role": "system", "content": "rules"}, {"role": "user", "content": "build the deck"}]
-    longer.extend(_read_exchange(0, text_path, _photo_stdout("T0")))
-    longer.extend(_read_exchange(1, spec_path, _photo_stdout("S0")))
-    longer.extend(_read_exchange(2, text_path, _photo_stdout("T1")))
-    longer.extend(_read_exchange(3, spec_path, _photo_stdout("S1")))
-    longer.extend(_read_exchange(4, text_path, _photo_stdout("T2")))
-    longer.extend(_read_exchange(5, spec_path, _photo_stdout("S2")))
+    longer.extend(_read_exchange(0, text_path, _text_document("T0")))
+    longer.extend(_read_exchange(1, spec_path, _spec_document("S0")))
+    longer.extend(_read_exchange(2, text_path, _text_document("T1")))
+    longer.extend(_read_exchange(3, spec_path, _spec_document("S1")))
+    longer.extend(_read_exchange(4, text_path, _text_document("T2")))
+    longer.extend(_read_exchange(5, spec_path, _spec_document("S2")))
     longer.extend(_tool_exchange(6, ["python3", "scripts/render.py"], {
         "ok": True, "stdout": _long_stdout("TAIL"), "stderr": "",
     }))
@@ -811,8 +852,10 @@ def test_file_rereads_keep_only_the_latest_including_design_spec():
     longer_projected = _project(longer, {}, 500_000, _pin_policy(max_exchanges=None), longer_diag)
     assert longer_diag["pinned_result_count"] == 2
     assert longer_diag["pinned_result_estimated_tokens"] == kept
-    assert _tool_body(longer_projected, "call-4")["payload"]["content"] == _photo_stdout("T2")
-    assert _tool_body(longer_projected, "call-5")["payload"]["content"] == _photo_stdout("S2")
+    assert "[[image_010.jpg]]" in _tool_body(longer_projected, "call-4")["payload"]["content"]
+    assert "image_010" in _tool_body(longer_projected, "call-5")["payload"]["content"]
+    assert "T2-BODY" not in _tool_body(longer_projected, "call-4")["payload"]["content"]
+    assert "S2-PREAMBLE" not in _tool_body(longer_projected, "call-5")["payload"]["content"]
 
 
 def test_pin_ceiling_prefers_count_photos_over_newer_file_reads(caplog):
@@ -846,6 +889,9 @@ def test_pin_ceiling_prefers_count_photos_over_newer_file_reads(caplog):
     assert diag["pinned_result_estimated_tokens"] == one_result
     assert diag["pinned_result_estimated_tokens"] <= one_result
     assert diag["pinned_ceiling_dropped_count"] == 1
+    assert diag["pinned_keys"] == [{"key": "count_photos.py", "tokens": one_result}]
+    assert [item["key"] for item in diag["pinned_dropped_keys"]] == ["read:assets/design_spec.md"]
+    assert diag["pinned_dropped_keys"][0]["tokens"] > 0
     assert "fast pin token ceiling exceeded" in caplog.text
     assert "dropped 1 older pinned result" in caplog.text
 
@@ -929,6 +975,127 @@ def test_tight_budget_rescues_count_photos_ahead_of_a_newer_file_read():
     assert diag["pinned_rescued_exchange_tokens"] >= diag["pinned_result_estimated_tokens"] > 0
 
 
+def test_image_sections_fit_with_count_photos_under_the_default_ceiling():
+    photo = _photo_stdout("PH")
+    spec = _spec_document("SPEC")
+    source = _text_document("TEXT")
+    messages = [{"role": "system", "content": "rules"}, {"role": "user", "content": "build the deck"}]
+    messages.extend(_tool_exchange(0, ["python3", "scripts/count_photos.py"], {
+        "ok": True, "stdout": photo, "stderr": "",
+    }))
+    messages.extend(_read_exchange(1, "/workspace/ppt/assets/sources/文本.md", source))
+    messages.extend(_read_exchange(2, "/workspace/ppt/assets/design_spec.md", spec))
+    messages.extend(_tool_exchange(3, ["python3", "scripts/render.py"], {
+        "ok": True, "stdout": "done", "stderr": "",
+    }))
+    raw_text = estimate_tokens(messages[5])
+    raw_spec = estimate_tokens(messages[7])
+    raw_photo = estimate_tokens(messages[3])
+    assert raw_text > 3400
+    assert raw_spec > 3400
+    assert raw_photo + raw_text + raw_spec > DEFAULT_FAST_PIN_TOKEN_CEILING
+    diag = {}
+    projected = _project(messages, {}, 500_000, _pin_policy(max_exchanges=None), diag)
+    spec_body = _tool_body(projected, "call-2")["payload"]["content"]
+    text_body = _tool_body(projected, "call-1")["payload"]["content"]
+    assert _tool_body(projected, "call-0")["payload"]["stdout"] == photo
+    assert "image_010" in spec_body and "page 04" in spec_body and "page 10" in spec_body
+    assert "PAGE05_EMPTY" not in spec_body and "SPEC-PREAMBLE" not in spec_body
+    assert "[[image_003.png]]" in text_body and "TEXT-BODY" not in text_body
+    assert diag["pinned_dropped_keys"] == []
+    assert diag["pinned_ceiling_dropped_count"] == 0
+    assert diag["pinned_result_count"] == 3
+    assert diag["pinned_result_estimated_tokens"] <= DEFAULT_FAST_PIN_TOKEN_CEILING
+    assert sum(item["tokens"] for item in diag["pinned_keys"]) <= DEFAULT_FAST_PIN_TOKEN_CEILING
+    assert {item["key"] for item in diag["pinned_keys"]} == {
+        "count_photos.py",
+        "read:assets/sources/文本.md",
+        "read:assets/design_spec.md",
+    }
+
+
+def test_file_read_without_an_image_section_falls_back_to_head_tail():
+    padding = "NOSECTION-" + ("Q" * 3000) + "-MIDGONE-" + ("Z" * 3000) + "-END"
+    messages = [{"role": "system", "content": "rules"}, {"role": "user", "content": "build the deck"}]
+    messages.extend(_read_exchange(0, "/workspace/ppt/assets/design_spec.md", padding))
+    messages.extend(_tool_exchange(1, ["python3", "scripts/render.py"], {
+        "ok": True, "stdout": "done", "stderr": "",
+    }))
+    projected = _project(messages, {}, 500_000, _pin_policy(max_exchanges=None))
+    body = _tool_body(projected, "call-0")
+    assert body["context_compacted"] is True
+    assert "NOSECTION-" in body["payload"]["content"]
+    assert "-END" in body["payload"]["content"]
+    assert "MIDGONE" not in body["payload"]["content"]
+
+
+def test_rescued_stub_arguments_are_truncated_and_count_toward_the_ceiling():
+    def arguments(middle: int) -> str:
+        code = "HEADARG-" + ("A" * middle) + "-TAILARG"
+        return json.dumps({"argv": ["python3", "scripts/count_photos.py"], "code": code})
+
+    def build(middle: int):
+        messages = [{"role": "system", "content": "rules"}, {"role": "user", "content": "build the deck"}]
+        messages.append({
+            "role": "assistant",
+            "tool_calls": [{
+                "id": "call-0",
+                "function": {"name": "command", "arguments": arguments(middle)},
+            }],
+        })
+        messages.append({
+            "role": "tool",
+            "tool_call_id": "call-0",
+            "content": json.dumps({
+                "tool_result": "command",
+                "payload": {"stdout": "PHOTO-LIST", "stderr": ""},
+            }),
+        })
+        for index in range(1, 5):
+            messages.extend(_tool_exchange(index, ["python3", "scripts/render.py"], {
+                "ok": True, "stdout": f"TURN{index}", "stderr": "",
+            }))
+        return messages
+
+    short = build(2000)
+    before = copy.deepcopy(short)
+    diag = {}
+    projected = _project(short, {}, 500_000, _pin_policy(), diag)
+    assert short == before
+    assert "A" * 2000 in short[2]["tool_calls"][0]["function"]["arguments"]
+    stubs = [
+        message for message in projected
+        if message.get("role") == "assistant" and any(
+            isinstance(call, dict) and call.get("id") == "call-0"
+            for call in (message.get("tool_calls") or [])
+        )
+    ]
+    assert len(stubs) == 1
+    assert stubs[0]["content"] is None
+    rendered = stubs[0]["tool_calls"][0]["function"]["arguments"]
+    assert "HEADARG-" in rendered and "-TAILARG" in rendered
+    assert "omitted from pinned tool_call arguments" in rendered
+    assert "A" * 2000 not in rendered
+    assert len(rendered) < len(arguments(2000))
+    _assert_tool_calls_paired(projected)
+    tool_tokens = estimate_tokens(short[3])
+    assert diag["pinned_keys"][0]["key"] == "count_photos.py"
+    assert diag["pinned_keys"][0]["tokens"] == tool_tokens + estimate_tokens(stubs[0])
+    assert diag["pinned_rescued_exchange_tokens"] > tool_tokens
+    longer_diag = {}
+    _project(build(8000), {}, 500_000, _pin_policy(), longer_diag)
+    assert longer_diag["pinned_rescued_exchange_tokens"] == diag["pinned_rescued_exchange_tokens"]
+    assert longer_diag["pinned_keys"] == diag["pinned_keys"]
+
+    tight = {}
+    dropped = _project(short, {}, 500_000, _pin_policy(pin_token_ceiling=tool_tokens), tight)
+    assert all(message.get("tool_call_id") != "call-0" for message in dropped)
+    assert tight["pinned_keys"] == []
+    assert tight["pinned_dropped_keys"][0]["key"] == "count_photos.py"
+    assert tight["pinned_dropped_keys"][0]["tokens"] > tool_tokens
+    assert tight["pinned_ceiling_dropped_count"] == 1
+
+
 def test_audit_mode_does_not_apply_fast_pins():
     photo_stdout = _long_stdout("PHOTO_LIST")
     exchanges = []
@@ -954,8 +1121,12 @@ def test_audit_mode_does_not_apply_fast_pins():
     assert plain_diag["pinned_result_count"] == 0
     assert plain_diag["pinned_ceiling_dropped_count"] == 0
     assert plain_diag["pinned_rescued_exchange_tokens"] == 0
+    assert plain_diag["pinned_keys"] == []
+    assert plain_diag["pinned_dropped_keys"] == []
     assert pinned_diag["pinned_result_estimated_tokens"] == 0
     assert pinned_diag["pinned_rescued_exchange_tokens"] == 0
+    assert pinned_diag["pinned_keys"] == []
+    assert pinned_diag["pinned_dropped_keys"] == []
     assert "PHOTO_LIST-" in json.dumps(plain)
     assert "omitted from model context" not in json.dumps(plain)
 

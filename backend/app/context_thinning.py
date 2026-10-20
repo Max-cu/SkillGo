@@ -215,6 +215,188 @@ def _protected_reference(payload: dict[str, Any]) -> bool:
     )
 
 
+_VIII_TITLE = re.compile(
+    r"图片资源|Image Resource|(?<![A-Za-z])§\s*VIII\b",
+    re.IGNORECASE,
+)
+_IX_TITLE = re.compile(
+    r"(?<![A-Za-z])§\s*IX\b|(?<![IVXivx])IX\b",
+    re.IGNORECASE,
+)
+_MD_HEADING = re.compile(r"^(#{1,6})\s+(\S.*?)\s*$")
+_BARE_SECTION = re.compile(r"^(§\s*(?:VIII|IX)\b.*)$", re.IGNORECASE)
+_IMAGE_TOKEN = re.compile(r"image_\d+", re.IGNORECASE)
+_IMAGE_REGISTRY_LINE = re.compile(r"\[\[image_\d+", re.IGNORECASE)
+
+
+def _heading_level_and_title(line: str) -> tuple[int, str] | None:
+    match = _MD_HEADING.match(line)
+    if match:
+        return len(match.group(1)), match.group(2).strip()
+    match = _BARE_SECTION.match(line.strip())
+    if match:
+        return 2, match.group(1).strip()
+    return None
+
+
+def _section_kind(title: str) -> str | None:
+    if _VIII_TITLE.search(title):
+        return "VIII"
+    if _IX_TITLE.search(title):
+        return "IX"
+    return None
+
+
+def _section_span(lines: list[str], headings: list[tuple[int, int, str, str | None]], index: int) -> tuple[int, int]:
+    start, level, _title, _kind = headings[index]
+    end = len(lines)
+    for later in headings[index + 1:]:
+        if later[1] <= level:
+            end = later[0]
+            break
+    return start, end
+
+
+def excerpt_design_spec(text: str) -> str | None:
+    """Image allocation only: §VIII, plus §IX lines that name image_NNN.
+
+    Returns None when neither section can be identified, so the caller can
+    fall back to a head/tail excerpt.
+    """
+
+    lines = text.splitlines()
+    headings: list[tuple[int, int, str, str | None]] = []
+    for index, line in enumerate(lines):
+        parsed = _heading_level_and_title(line)
+        if parsed is None:
+            continue
+        level, title = parsed
+        headings.append((index, level, title, _section_kind(title)))
+    parts: list[str] = []
+    for index, (_start, _level, _title, kind) in enumerate(headings):
+        if kind != "VIII":
+            continue
+        start, end = _section_span(lines, headings, index)
+        block = "\n".join(lines[start:end]).strip()
+        if block:
+            parts.append(block)
+    for index, (_start, _level, _title, kind) in enumerate(headings):
+        if kind != "IX":
+            continue
+        start, end = _section_span(lines, headings, index)
+        block = lines[start:end]
+        nearest: int | None = None
+        heading_at: list[int | None] = []
+        for offset, line in enumerate(block):
+            if _heading_level_and_title(line) is not None:
+                nearest = offset
+            heading_at.append(nearest)
+        kept: set[int] = set()
+        for offset, line in enumerate(block):
+            if not _IMAGE_TOKEN.search(line):
+                continue
+            if heading_at[offset] is not None:
+                kept.add(heading_at[offset])
+            kept.add(offset)
+        if not kept:
+            continue
+        kept.add(0)
+        parts.append("\n".join(block[offset] for offset in range(len(block)) if offset in kept).strip())
+    excerpt = "\n\n".join(part for part in parts if part).strip()
+    return excerpt or None
+
+
+def excerpt_source_text(text: str) -> str | None:
+    """Image registry only: the ``附加图片`` section and ``[[image_N]]`` lines."""
+
+    lines = text.splitlines()
+    start: int | None = None
+    level = 0
+    for index, line in enumerate(lines):
+        parsed = _heading_level_and_title(line)
+        if parsed is not None and "附加图片" in parsed[1]:
+            start = index
+            level = parsed[0]
+            break
+    chunks: list[str] = []
+    section = ""
+    if start is not None:
+        end = len(lines)
+        for index in range(start + 1, len(lines)):
+            parsed = _heading_level_and_title(lines[index])
+            if parsed is not None and parsed[0] <= level:
+                end = index
+                break
+        section = "\n".join(lines[start:end]).strip()
+        if section:
+            chunks.append(section)
+    extra = [
+        line for line in lines
+        if _IMAGE_REGISTRY_LINE.search(line) and line not in section
+    ]
+    if extra:
+        chunks.append("\n".join(extra))
+    excerpt = "\n\n".join(chunks).strip()
+    return excerpt or None
+
+
+def _file_pin_kind(path: str) -> str | None:
+    folded = path.replace("\\", "/")
+    if "design_spec.md" in folded.casefold():
+        return "design_spec"
+    if folded.endswith("文本.md"):
+        return "text_md"
+    return None
+
+
+def prepare_pinned_tool_message(message: dict[str, Any], policy: ThinContextPolicy) -> dict[str, Any]:
+    """Return the model copy of a pinned tool result.
+
+    ``assets/design_spec.md`` keeps §VIII and the §IX lines that assign
+    ``image_NNN``. ``文本.md`` keeps the ``附加图片`` registry and
+    ``[[image_N]]`` lines. Other pins, including command results and
+    ``_web_images.json``, stay whole. A long file with no identifiable
+    section falls back to the usual head/tail compaction. The original
+    message is not modified.
+    """
+
+    content = message.get("content")
+    if not isinstance(content, str):
+        return message
+    try:
+        body = json.loads(content)
+    except ValueError:
+        return message
+    if not isinstance(body, dict):
+        return message
+    payload = body.get("payload")
+    if not isinstance(payload, dict):
+        return message
+    text = payload.get("content")
+    path = payload.get("path") if isinstance(payload.get("path"), str) else ""
+    if not isinstance(text, str):
+        return message
+    kind = _file_pin_kind(path)
+    if kind is None:
+        return message
+    excerpt = excerpt_design_spec(text) if kind == "design_spec" else excerpt_source_text(text)
+    if excerpt is None:
+        clipped = _clip_text(text, policy, location=path or "durable history")
+        if clipped is None or len(clipped) >= len(text):
+            return message
+        new_payload = {**payload, "content": clipped}
+        new_body = {**body, "payload": new_payload, "context_compacted": True}
+    else:
+        if excerpt == text:
+            return message
+        new_payload = {**payload, "content": excerpt}
+        new_body = {**body, "payload": new_payload}
+    new_content = json.dumps(new_body, ensure_ascii=False)
+    if len(new_content) >= len(content):
+        return message
+    return {**message, "content": new_content}
+
+
 def _clip_text(text: str, policy: ThinContextPolicy, *, location: str, sha: str | None = None) -> str | None:
     if len(text) < policy.compact_min_chars:
         return None

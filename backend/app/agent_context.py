@@ -9,6 +9,7 @@ from .context_thinning import (
     ThinContextPolicy,
     compact_tool_message,
     pinned_hits,
+    prepare_pinned_tool_message,
     project_shelf_entry,
 )
 from .skill_phase_contracts import reference_payloads
@@ -181,7 +182,10 @@ def project_context(messages: list[dict[str, Any]], *, checkpoint: str,
         window_start = len(groups) - policy.max_exchanges
     else:
         window_start = 0
-    protected_by_group, ceiling_dropped = _protect_pinned_results(groups, hit_groups, policy)
+    protected_by_group, kept_keys, dropped_keys, prepared_messages = _protect_pinned_results(
+        groups, hit_groups, policy, window_start,
+    )
+    ceiling_dropped = len(dropped_keys)
     rescued = [gi for gi in range(window_start) if protected_by_group.get(gi)]
     summarized_count = 0
     removed_tokens = 0
@@ -201,13 +205,22 @@ def project_context(messages: list[dict[str, Any]], *, checkpoint: str,
         nonlocal summarized_count, removed_tokens
         group = groups[gi]
         pinned_indexes = protected_by_group.get(gi, set())
+        prepared_by_index = {
+            mi: prepared_messages[(gi, mi)]
+            for mi in pinned_indexes
+            if (gi, mi) in prepared_messages
+        }
         if rescue:
-            projected_group = _project_rescued_exchange(group, pinned_indexes)
+            projected_group = _project_rescued_exchange(
+                group, pinned_indexes, prepared_by_index=prepared_by_index,
+            )
             count = 0
             removed = max(0, estimate_tokens(group) - estimate_tokens(projected_group))
         else:
             projected_group, count, removed = _project_exchange(
-                group, policy, pinned_indexes=pinned_indexes,
+                group, policy,
+                pinned_indexes=pinned_indexes,
+                prepared_by_index=prepared_by_index,
             )
         candidate = [*selected, (gi, group, projected_group)]
         if not _within_budget(candidate):
@@ -245,7 +258,7 @@ def project_context(messages: list[dict[str, Any]], *, checkpoint: str,
     else:
         exchange_cap_dropped = 0
     pinned_result_tokens, pinned_result_count = _measure_pinned_results(
-        groups, protected_by_group, selected,
+        groups, protected_by_group, selected, prepared_messages,
     )
     rescued_exchange_tokens = sum(
         estimate_tokens(projected)
@@ -254,9 +267,10 @@ def project_context(messages: list[dict[str, Any]], *, checkpoint: str,
     )
     if ceiling_dropped:
         logger.info(
-            "fast pin token ceiling exceeded: dropped %s older pinned result(s); "
+            "fast pin token ceiling exceeded: dropped %s older pinned result(s) %s; "
             "kept %s pinned result(s) (~%s tokens, ceiling %s)",
             ceiling_dropped,
+            ", ".join(f"{item['key']}~{item['tokens']}" for item in dropped_keys),
             pinned_result_count,
             pinned_result_tokens,
             policy.pin_token_ceiling,
@@ -301,6 +315,8 @@ def project_context(messages: list[dict[str, Any]], *, checkpoint: str,
             'pinned_result_count': pinned_result_count,
             'pinned_ceiling_dropped_count': ceiling_dropped,
             'pinned_rescued_exchange_tokens': rescued_exchange_tokens,
+            'pinned_keys': kept_keys,
+            'pinned_dropped_keys': dropped_keys,
         })
     return projected
 
@@ -309,15 +325,18 @@ def _protect_pinned_results(
     groups: list[list[dict[str, Any]]],
     hit_groups: list,
     policy: ThinContextPolicy,
-) -> tuple[dict[int, set[int]], int]:
-    """Keep one verbatim result per pin key, then apply the token ceiling.
+    window_start: int,
+) -> tuple[dict[int, set[int]], list[dict[str, Any]], list[dict[str, Any]], dict[tuple[int, int], dict[str, Any]]]:
+    """Keep one result per pin key, then apply the token ceiling.
 
     Repeats of the same command or the same file read collapse to the latest
-    message so pinned tokens stay flat as rounds grow. Among those winners,
-    smaller priority numbers are kept first (count_photos, then other image
-    commands, then file reads, then regex-only hits); ties keep the newer
-    result. The latest exchange is already retained whole and does not spend
-    the ceiling.
+    message so pinned tokens stay flat as rounds grow. File reads of
+    ``design_spec.md`` and ``文本.md`` are charged at their image-section
+    size (or head/tail when the section is missing), not the whole file.
+    A rescued pin also pays for its truncated assistant stub. Smaller
+    priority numbers are kept first (count_photos, then other image commands,
+    then file reads, then regex-only hits); ties keep the newer result. The
+    latest exchange is already retained whole and does not spend the ceiling.
     Anything not selected falls back to normal cap and compaction.
     """
 
@@ -328,36 +347,46 @@ def _protect_pinned_results(
             current = best.get(hit.key)
             if current is None or (gi, hit.index) >= (current[0], current[1]):
                 best[hit.key] = (gi, hit.index, hit.priority)
-    candidates: list[tuple[int, int, int, int, int, int]] = []
-    for gi, mi, priority in best.values():
+    candidates: list[tuple[int, int, int, int, int, str, dict[str, Any]]] = []
+    prepared: dict[tuple[int, int], dict[str, Any]] = {}
+    for key, (gi, mi, priority) in best.items():
         if gi == latest_gi:
             continue
-        candidates.append((
-            priority, -gi, -mi, gi, mi, estimate_tokens(groups[gi][mi]),
-        ))
+        message = prepare_pinned_tool_message(groups[gi][mi], policy)
+        prepared[(gi, mi)] = message
+        candidates.append((priority, -gi, -mi, gi, mi, key, message))
     candidates.sort()
     protected: dict[int, set[int]] = {}
+    kept: list[dict[str, Any]] = []
+    dropped_keys: list[dict[str, Any]] = []
     running = 0
-    dropped = 0
-    for _priority, _newer_gi, _newer_mi, gi, mi, tok in candidates:
-        if running + tok > policy.pin_token_ceiling:
-            dropped += 1
+    for _priority, _newer_gi, _newer_mi, gi, mi, key, message in candidates:
+        tool_tokens = estimate_tokens(message)
+        stub_tokens = 0
+        if gi < window_start:
+            stub = _stub_for_tool_message(groups[gi], groups[gi][mi])
+            if stub is not None:
+                stub_tokens = estimate_tokens(stub)
+        cost = tool_tokens + stub_tokens
+        if running + cost > policy.pin_token_ceiling:
+            dropped_keys.append({"key": key, "tokens": cost})
             continue
         protected.setdefault(gi, set()).add(mi)
-        running += tok
-    return protected, dropped
+        running += cost
+        kept.append({"key": key, "tokens": cost})
+    return protected, kept, dropped_keys, prepared
 
 
 def _measure_pinned_results(
     groups: list[list[dict[str, Any]]],
     protected_by_group: dict[int, set[int]],
     selected: list[tuple[int, list[dict[str, Any]], list[dict[str, Any]]]],
+    prepared_messages: dict[tuple[int, int], dict[str, Any]],
 ) -> tuple[int, int]:
-    """Tokens of older pinned results kept verbatim in the projection.
+    """Tokens of older pinned tool results kept in the projection.
 
-    The latest exchange is omitted. It is already retained in full and does
-    not spend the ceiling, so this field stays within ``pin_token_ceiling``
-    and shows whether pinned history is growing.
+    The latest exchange is omitted. Stub tokens are not included here; they
+    are part of ``pinned_keys`` and ``pinned_rescued_exchange_tokens``.
     """
 
     selected_ids = {gi for gi, _original, _projected in selected}
@@ -368,25 +397,79 @@ def _measure_pinned_results(
         if gi not in selected_ids or gi == last_gi:
             continue
         for mi in protected_by_group.get(gi, ()):
-            tokens += estimate_tokens(group[mi])
+            tokens += estimate_tokens(prepared_messages.get((gi, mi), group[mi]))
             count += 1
     return tokens, count
 
 
 _RESCUE_FALLBACK_PRIORITY = 99
+_STUB_ARGUMENT_MAX_CHARS = 500
+_STUB_ARGUMENT_HEAD = 250
+_STUB_ARGUMENT_TAIL = 200
+
+
+def _truncate_argument(text: str) -> str:
+    if len(text) <= _STUB_ARGUMENT_MAX_CHARS:
+        return text
+    omitted = len(text) - _STUB_ARGUMENT_HEAD - _STUB_ARGUMENT_TAIL
+    marker = f"\n[... {omitted} chars omitted from pinned tool_call arguments ...]\n"
+    clipped = text[:_STUB_ARGUMENT_HEAD] + marker + text[-_STUB_ARGUMENT_TAIL:]
+    if len(clipped) >= len(text):
+        return text
+    return clipped
+
+
+def _truncate_tool_call(call: dict[str, Any]) -> dict[str, Any]:
+    function = call.get("function")
+    if not isinstance(function, dict):
+        return call
+    arguments = function.get("arguments")
+    if isinstance(arguments, (dict, list)):
+        rendered = json.dumps(arguments, ensure_ascii=False)
+    elif isinstance(arguments, str):
+        rendered = arguments
+    else:
+        return call
+    if len(rendered) <= _STUB_ARGUMENT_MAX_CHARS:
+        return call
+    return {**call, "function": {**function, "arguments": _truncate_argument(rendered)}}
+
+
+def _stub_for_tool_message(group: list[dict[str, Any]], tool_message: dict[str, Any]) -> dict[str, Any] | None:
+    call_id = tool_message.get("tool_call_id")
+    if not isinstance(call_id, str) or not call_id:
+        return None
+    for message in group:
+        if message.get("role") != "assistant":
+            continue
+        calls = message.get("tool_calls") or []
+        if not isinstance(calls, list):
+            continue
+        kept = [call for call in calls if isinstance(call, dict) and call.get("id") == call_id]
+        if not kept:
+            continue
+        return {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [_truncate_tool_call(call) for call in kept],
+        }
+    return None
 
 
 def _project_rescued_exchange(
-    group: list[dict[str, Any]], pinned_indexes: set[int],
+    group: list[dict[str, Any]],
+    pinned_indexes: set[int],
+    prepared_by_index: dict[int, dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """Pinned tool results, each preceded by the assistant call that produced it.
 
     Every assistant message in the exchange is scanned. A stub is emitted for
     each one that owns a pinned call, with ``content`` null, immediately
-    before that call's tool results. Reasoning, prose, and sibling results
-    stay in durable history.
+    before that call's tool results. Long tool_call arguments are head/tail
+    truncated. Reasoning, prose, and sibling results stay in durable history.
     """
 
+    prepared = prepared_by_index or {}
     needed_ids = {
         group[index].get("tool_call_id")
         for index in pinned_indexes
@@ -408,17 +491,18 @@ def _project_rescued_exchange(
                 projected.append({
                     "role": "assistant",
                     "content": None,
-                    "tool_calls": kept,
+                    "tool_calls": [_truncate_tool_call(call) for call in kept],
                 })
             continue
         if index in pinned_indexes:
-            projected.append(message)
+            projected.append(prepared.get(index, message))
     return projected
 
 
 def _project_exchange(
     group: list[dict[str, Any]], policy: ThinContextPolicy,
     *, pinned_indexes: set[int] | None = None,
+    prepared_by_index: dict[int, dict[str, Any]] | None = None,
 ) -> tuple[list[dict[str, Any]], int, int]:
     """Compact tool results inside one older exchange. Return the same list if unchanged.
 
@@ -427,13 +511,17 @@ def _project_exchange(
     if not policy.compact_older_tools:
         return group, 0, 0
     protected = pinned_indexes or set()
+    prepared = prepared_by_index or {}
     projected: list[dict[str, Any]] = []
     count = 0
     removed = 0
     changed = False
     for index, message in enumerate(group):
         if index in protected:
-            projected.append(message)
+            replacement = prepared.get(index, message)
+            if replacement is not message:
+                changed = True
+            projected.append(replacement)
             continue
         compacted = compact_tool_message(message, policy)
         if compacted is not message:
