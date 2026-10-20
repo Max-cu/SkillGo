@@ -421,6 +421,48 @@ def test_flag_on_retries_once_after_a_context_length_error(
     assert timing["rounds"] == 1
 
 
+def test_context_retry_preserves_declared_state_injection(
+    client, user_headers, fake_model_gateway, monkeypatch,
+):
+    loop = _enable(monkeypatch, enabled=True)
+    monkeypatch.setattr(loop, "settings", replace(
+        loop.settings, orchestration_mode="fast", state_inject_enabled=True,
+    ))
+    contexts = _contexts()
+    contexts[0]["skill_md"] = (
+        "---\nname: demo\ndescription: State-aware task\nmetadata:\n"
+        "  state_files:\n    - _state/progress.json\n---\n# Guide"
+    )
+    monkeypatch.setattr(f"{__name__}._contexts", lambda: contexts)
+    SessionLocal, WorkflowJob, job_id = _job(client, user_headers, "recovery-declared-state")
+    from test_orchestration import MemorySandbox
+
+    sandbox = MemorySandbox()
+    state_body = '{"completed":["step-a"],"pending":["step-b"]}'
+    sandbox.files["/workspace/_state/progress.json"] = state_body.encode()
+    seen = []
+
+    class Gateway:
+        connection = SimpleNamespace(context_tokens=48000)
+
+        async def agent_step(self, *, messages):
+            seen.append(copy.deepcopy(messages))
+            if len(seen) == 1:
+                raise _context_length_error()
+            raise _Stop()
+
+    with SessionLocal() as db:
+        job = db.get(WorkflowJob, job_id)
+        with pytest.raises(_Stop):
+            _run(loop, db, job, sandbox, Gateway())
+    assert len(seen) == 2
+    for messages in seen:
+        assert messages[-2]["content"].startswith("State file /workspace/_state/progress.json")
+        assert messages[-2]["content"].endswith(state_body)
+        assert messages[-1]["content"].startswith("Execution state and active Skill instructions")
+    assert seen[0][:2] == seen[1][:2]
+
+
 def test_flag_on_does_not_retry_a_second_context_length_error(
     client, user_headers, fake_model_gateway, monkeypatch,
 ):
