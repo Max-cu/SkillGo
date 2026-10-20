@@ -17,6 +17,7 @@ from app.config import settings
 from app.context_thinning import (
     ThinContextPolicy,
     compact_transcript_for_retry,
+    recovery_exchange_cap,
     recovery_thin_policy,
 )
 from app.model_gateway import ModelGatewayError, ModelResult, is_context_length_error
@@ -133,48 +134,110 @@ def test_context_length_classifier_ignores_bad_arguments():
     assert not is_context_length_error(timeout)
 
 
-def test_compact_transcript_shrinks_latest_body_and_keeps_durable_history():
-    huge = "UNIQUE_BODY_" + ("x" * 5000)
-    payload = {
-        "ok": True,
-        "path": "/workspace/work/notes.txt",
-        "content": huge,
-        "reference": False,
-        "retained": False,
+def _tool_message(name: str, payload: dict) -> dict:
+    return {
+        "role": "tool",
+        "tool_call_id": f"call-{name}",
+        "content": json.dumps({"tool_result": name, "payload": payload}, ensure_ascii=False),
     }
+
+
+def test_compact_transcript_leaves_the_latest_exchange_untouched():
+    older_body = "OLDER_HEAD_" + ("o" * 2500) + "OLDER_MIDDLE_SECRET" + ("o" * 2500)
+    latest_a = "LATEST_RESULT_A_" + ("a" * 2500)
+    latest_b = "LATEST_RESULT_B_" + ("b" * 2500)
     messages = [
         {"role": "system", "content": "rules"},
         {"role": "user", "content": "task"},
-        {"role": "assistant", "content": "{\"action\":\"read_file\"}"},
-        {"role": "user", "content": json.dumps(
-            {"tool_result": "read_file", "payload": payload}, ensure_ascii=False)},
+        {"role": "assistant", "content": "{\"action\":\"read_file\",\"path\":\"/older\"}"},
+        _tool_message("read_file", {"ok": True, "path": "/workspace/work/older.txt", "content": older_body}),
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {"id": "call-a", "function": {"name": "read_file", "arguments": "{}"}},
+                {"id": "call-b", "function": {"name": "list_files", "arguments": "{}"}},
+            ],
+        },
+        _tool_message("read_file", {"ok": True, "path": "/workspace/work/latest-a.txt", "content": latest_a}),
+        _tool_message("list_files", {"ok": True, "path": "/workspace/work", "content": latest_b}),
     ]
     before = copy.deepcopy(messages)
     policy = recovery_thin_policy(ThinContextPolicy())
     compacted = compact_transcript_for_retry(messages, policy)
+
     assert messages == before
-    assert huge not in compacted[-1]["content"]
-    assert "omitted from model context" in compacted[-1]["content"]
     assert compacted[0] is messages[0]
+    assert compacted[1] is messages[1]
+    assert "OLDER_MIDDLE_SECRET" not in compacted[3]["content"]
+    assert "omitted from model context" in compacted[3]["content"]
+    assert compacted[4] is messages[4]
+    assert compacted[5] is messages[5]
+    assert compacted[6] is messages[6]
+    assert latest_a in compacted[5]["content"]
+    assert latest_b in compacted[6]["content"]
     assert policy.compact_older_tools is True
-    assert policy.max_exchanges == 2
-
-    protected = {
-        "ok": True,
-        "reference": True,
-        "retained": True,
-        "path": "/workspace/skill/SKILL.md",
-        "content": huge,
-    }
-    pinned = [
-        {"role": "system", "content": "rules"},
-        {"role": "user", "content": json.dumps(
-            {"tool_result": "read_file", "payload": protected}, ensure_ascii=False)},
-    ]
-    assert huge in compact_transcript_for_retry(pinned, policy)[1]["content"]
+    assert policy.max_exchanges is None
 
 
-def test_recovery_projection_fits_when_the_audit_projection_does_not():
+@pytest.mark.parametrize(
+    ("current", "expected"),
+    [
+        (None, None),
+        (0, None),
+        (1, 2),
+        (2, 2),
+        (3, 2),
+        (4, 2),
+        (5, 2),
+        (6, 3),
+        (8, 4),
+    ],
+)
+def test_retry_exchange_cap_is_half_the_current_limit(current, expected):
+    assert recovery_exchange_cap(current) == expected
+    policy = recovery_thin_policy(ThinContextPolicy(max_exchanges=current))
+    assert policy.max_exchanges == expected
+
+
+def test_retry_projection_keeps_latest_exchange_under_the_halved_cap():
+    def exchange(index: int, body: str) -> list[dict]:
+        return [
+            {"role": "assistant", "content": f"call-{index}"},
+            _tool_message("read_file", {"ok": True, "path": f"/workspace/work/{index}.txt", "content": body}),
+        ]
+
+    latest_body = "LATEST_FULL_" + ("L" * 1200)
+    older_body = "OLDER_FULL_" + ("O" * 1200)
+    messages = [{"role": "system", "content": "rules"}, {"role": "user", "content": "task"}]
+    for index in range(6):
+        messages.extend(exchange(index, older_body + str(index)))
+    messages.extend(exchange(99, latest_body))
+    policy = recovery_thin_policy(ThinContextPolicy(max_exchanges=8, compact_older_tools=False))
+    assert policy.max_exchanges == 4
+    compacted = compact_transcript_for_retry(messages, policy)
+    assert compacted[-1]["content"] == messages[-1]["content"]
+    assert compacted[-2]["content"] == messages[-2]["content"]
+    diagnostics: dict = {}
+    projected = project_context(
+        compacted,
+        checkpoint="{}",
+        skill_contexts=[],
+        loaded=set(),
+        completed=set(),
+        max_tokens=20000,
+        initial_exchange_reserve=0,
+        thin=policy,
+        diagnostics=diagnostics,
+    )
+    rendered = json.dumps(projected, ensure_ascii=False)
+    assert latest_body in rendered
+    assert "OLDER_FULL_" not in rendered or "omitted from model context" in rendered
+    assert diagnostics["preserved_exchange_count"] == 4
+    assert diagnostics["max_exchanges"] == 4
+
+
+def test_retry_does_not_shrink_a_latest_exchange_past_the_budget():
     huge = "Y" * 8000
     messages = [
         {"role": "system", "content": "rules"},
@@ -185,6 +248,9 @@ def test_recovery_projection_fits_when_the_audit_projection_does_not():
             "payload": {"ok": True, "path": "/workspace/work/notes.txt", "content": huge},
         })},
     ]
+    policy = recovery_thin_policy(ThinContextPolicy())
+    compacted = compact_transcript_for_retry(messages, policy)
+    assert compacted[-1]["content"] == messages[-1]["content"]
     kwargs = dict(
         checkpoint="{}",
         skill_contexts=[],
@@ -195,12 +261,8 @@ def test_recovery_projection_fits_when_the_audit_projection_does_not():
     )
     with pytest.raises(ValueError, match="上下文预算不足"):
         project_context(messages, thin=ThinContextPolicy(), **kwargs)
-    policy = recovery_thin_policy(ThinContextPolicy())
-    projected = project_context(
-        compact_transcript_for_retry(messages, policy), thin=policy, **kwargs)
-    rendered = json.dumps(projected, ensure_ascii=False)
-    assert huge not in rendered
-    assert messages[3]["content"].count("Y") == 8000
+    with pytest.raises(ValueError, match="上下文预算不足"):
+        project_context(compacted, thin=policy, **kwargs)
 
 
 def test_flag_off_repeated_tool_stalls_without_a_note(
@@ -468,46 +530,83 @@ def test_flag_on_still_fails_when_compaction_cannot_make_the_budget(
     assert calls["compacts"] == 1
 
 
-def test_flag_on_compacts_a_too_large_tool_result_and_continues(
+def test_flag_on_does_not_slice_the_latest_exchange_to_fit_the_budget(
     client, user_headers, fake_model_gateway, monkeypatch,
 ):
-    loop = _enable(monkeypatch, enabled=False)
-    SessionLocal, WorkflowJob, job_id = _job(client, user_headers, "recovery-on-budget-retry")
+    loop = _enable(monkeypatch, enabled=True)
+    SessionLocal, WorkflowJob, job_id = _job(client, user_headers, "recovery-on-latest-budget")
     from test_orchestration import MemorySandbox
 
-    marker = "UNIQUE_OVERFLOW_MARKER_"
     sandbox = MemorySandbox()
-    sandbox.files["/workspace/work/notes.txt"] = (marker + ("z" * 20000)).encode()
-
+    sandbox.files["/workspace/work/notes.txt"] = ("UNIQUE_OVERFLOW_MARKER_" + ("z" * 20000)).encode()
     with SessionLocal() as db:
         job = db.get(WorkflowJob, job_id)
         budget = _budget_that_fits_the_opening_turn(loop, job, sandbox)
-    _enable(monkeypatch, enabled=True)
-    seen = []
+    calls = {"n": 0}
 
     class Gateway:
         connection = SimpleNamespace(context_tokens=budget)
 
         async def agent_step(self, *, messages):
+            calls["n"] += 1
+            return ModelResult(
+                {"action": "read_file", "path": "/workspace/work/notes.txt", "reason": "inspect"},
+                "scripted",
+                {},
+            )
+
+    with SessionLocal() as db:
+        job = db.get(WorkflowJob, job_id)
+        with pytest.raises(SandboxRuntimeError, match="上下文预算不足") as exc:
+            _run(loop, db, job, sandbox, Gateway())
+    assert exc.value.code == "AGENT_CONTEXT_LIMIT"
+    assert calls["n"] == 1
+
+
+def test_flag_on_context_retry_compacts_older_exchanges_only(
+    client, user_headers, fake_model_gateway, monkeypatch,
+):
+    loop = _enable(monkeypatch, enabled=True)
+    SessionLocal, WorkflowJob, job_id = _job(client, user_headers, "recovery-on-older-compact")
+    from test_orchestration import MemorySandbox
+
+    middle = "OLDER_MIDDLE_SECRET"
+    sandbox = MemorySandbox()
+    sandbox.files["/workspace/work/notes.txt"] = (
+        "OLDER_HEAD_" + ("m" * 2500) + middle + ("m" * 2500) + "OLDER_TAIL_"
+    ).encode()
+    seen = []
+
+    class Gateway:
+        connection = SimpleNamespace(context_tokens=48000)
+
+        async def agent_step(self, *, messages):
             seen.append(json.dumps(messages, ensure_ascii=False))
             if len(seen) == 1:
                 return ModelResult(
-                    {"action": "read_file", "path": "/workspace/work/notes.txt", "reason": "inspect"},
+                    {"action": "read_file", "path": "/workspace/work/notes.txt", "reason": "inspect older"},
                     "scripted",
                     {},
                 )
+            if len(seen) == 2:
+                return ModelResult(
+                    {"action": "ask_user", "question": "LATEST_QUESTION_TOKEN", "reason": "latest"},
+                    "scripted",
+                    {},
+                )
+            if len(seen) == 3:
+                raise _context_length_error()
             raise _Stop()
 
     with SessionLocal() as db:
         job = db.get(WorkflowJob, job_id)
         with pytest.raises(_Stop):
             _run(loop, db, job, sandbox, Gateway())
-        assert job.memory.data["timing"]["tool_exec_ms"] >= 0
-        assert job.memory.data["timing"]["model_wait_ms"] >= 0
-    assert len(seen) == 2
-    assert "omitted from model context" in seen[1]
-    assert "z" * 5000 not in seen[1]
-    assert marker in seen[1]
+    assert len(seen) == 4
+    assert middle in seen[2]
+    assert "LATEST_QUESTION_TOKEN" in seen[3]
+    assert middle not in seen[3]
+    assert "omitted from model context" in seen[3]
 
 
 def test_flag_off_same_tool_result_fails_instead_of_compacting(
@@ -671,17 +770,4 @@ def _budget_that_fits_the_opening_turn(loop, job, sandbox) -> int:
     budget = opening + 1500
     assert fits(budget)
     assert not fits(budget, extra)
-    recovery = recovery_thin_policy(policy)
-    compacted = compact_transcript_for_retry([*messages, *extra], recovery)
-    project_context(
-        compacted,
-        checkpoint=state.checkpoint(),
-        skill_contexts=_contexts(),
-        loaded={1},
-        completed=set(),
-        max_tokens=budget,
-        tool_tokens=0,
-        initial_exchange_reserve=0,
-        thin=recovery,
-    )
     return budget

@@ -6,7 +6,7 @@
 
 ### Added
 
-- 沙箱 Agent 循环增加可选恢复（`SKILLGO_AGENT_LOOP_RECOVERY_ENABLED`，默认关闭）。关闭时行为与原来一致。打开后，同一工具、同一组规范化参数连续达到 `SKILLGO_AGENT_REPEAT_TOOL_NOTE`（默认 3）次时向模型追加纠正说明，达到更高的 `SKILLGO_AGENT_REPEAT_TOOL_STOP`（默认 5）次时以 `SANDBOX_REPEATED_TOOL` 结束任务。本地上下文预算不足或模型网关返回上下文长度错误时，复用现有历史压缩重试一次；持久历史不改写，同一轮只压缩一次。重试的等待时间计入任务累计 `model_wait_ms`。
+- 沙箱 Agent 循环增加可选恢复（`SKILLGO_AGENT_LOOP_RECOVERY_ENABLED`，默认关闭）。关闭时行为与原来一致。打开后，同一工具、同一组规范化参数连续达到 `SKILLGO_AGENT_REPEAT_TOOL_NOTE`（默认 3）次时向模型追加纠正说明，达到更高的 `SKILLGO_AGENT_REPEAT_TOOL_STOP`（默认 5）次时以 `SANDBOX_REPEATED_TOOL` 结束任务。本地上下文预算不足或模型网关返回上下文长度错误时，复用现有历史压缩重试一次：最近一段交互保持原样，交换上限为当前保留上限的一半（向下取整，且至少保留最近一段之外的一段）；持久历史不改写，同一轮只压缩一次。重试的等待时间计入任务累计 `model_wait_ms`。
 
 ## [0.4.4] - 2026-09-24
 
