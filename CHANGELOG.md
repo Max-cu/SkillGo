@@ -6,6 +6,7 @@
 
 ### Added
 
+- 沙箱 Agent 循环增加可选恢复（`SKILLGO_AGENT_LOOP_RECOVERY_ENABLED`，默认关闭）。关闭时行为与原来一致。打开后，同一工具、同一组规范化参数连续达到 `SKILLGO_AGENT_REPEAT_TOOL_NOTE`（默认 3）次时向模型追加纠正说明，达到更高的 `SKILLGO_AGENT_REPEAT_TOOL_STOP`（默认 5）次时以 `SANDBOX_REPEATED_TOOL` 结束任务。本地上下文预算不足或模型网关返回上下文长度错误时，复用现有历史压缩重试一次：最近一段交互保持原样，交换上限为当前保留上限的一半（向下取整，且至少保留最近一段之外的一段）；持久历史不改写，同一轮只压缩一次。重试的等待时间计入任务累计 `model_wait_ms`。
 - 可选的工具结果落盘（`SKILLGO_TOOL_OUTPUT_SPILL`，默认关闭）。关闭时模型上下文与既有 tool-results 落盘行为保持不变。打开后，序列化结果超过 `SKILLGO_TOOL_OUTPUT_SPILL_BYTES`（默认 32 KiB）时，全文写入任务沙箱 `/workspace/_tool_output/<round>_<call>.txt`，上下文只保留头尾摘录、绝对路径和字节数，模型用现有 `read_file` 回读。该目录随任务沙箱回收，且不进入工作区快照。
 - 复用已有任务计时（`model_wait_ms`、`tool_exec_ms`）；恢复快照后若工具落盘原文不可用，向模型注明原文已丢失，保留头尾摘录。
 

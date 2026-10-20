@@ -184,6 +184,83 @@ def _clip_text(text: str, policy: ThinContextPolicy, *, location: str, sha: str 
     return text[:head] + marker + text[-tail:]
 
 
+def recovery_exchange_cap(current: int | None) -> int | None:
+    """Half of a kept-exchange limit, floored, for one overflow retry.
+
+    The latest exchange is always one of the kept exchanges. Keep at least
+    one older exchange as well, so the floor is 2 when a cap exists. A
+    missing or non-positive cap stays uncapped.
+    """
+
+    if current is None or current <= 0:
+        return None
+    return max(current // 2, 2)
+
+
+def recovery_thin_policy(policy: ThinContextPolicy | None = None) -> ThinContextPolicy:
+    """Tighter projection used for one overflow retry.
+
+    Reuses the same levers as a normal thin policy: an exchange cap, older
+    tool compaction, and deep-reference pointers. Head and tail stay within
+    the caller's sizes when those are already smaller. The exchange cap is
+    half the current limit (see ``recovery_exchange_cap``), not a fixed 2.
+    """
+
+    current = policy or ThinContextPolicy()
+    return ThinContextPolicy(
+        mode=current.mode,
+        max_exchanges=recovery_exchange_cap(current.max_exchanges),
+        compact_older_tools=True,
+        thin_reference_shelf=True,
+        compact_head_chars=min(current.compact_head_chars, 240),
+        compact_tail_chars=min(current.compact_tail_chars, 120),
+        compact_min_chars=min(current.compact_min_chars, 400),
+    )
+
+
+def _latest_exchange_start(messages: list[dict[str, Any]]) -> int:
+    """Index of the latest exchange, using the same grouping as projection.
+
+    The first two messages are the pinned prefix. After that, an exchange
+    starts at each assistant message and includes the tool results and notes
+    that follow it. Messages before the first assistant are their own
+    exchange. Returns ``len(messages)`` when there is no tail.
+    """
+
+    start: int | None = None
+    for index, message in enumerate(messages):
+        if index < 2 or not isinstance(message, dict):
+            continue
+        if message.get("role") == "assistant" or start is None:
+            start = index
+    return len(messages) if start is None else start
+
+
+def compact_transcript_for_retry(
+    messages: list[dict[str, Any]], policy: ThinContextPolicy,
+) -> list[dict[str, Any]]:
+    """Return a slimmer copy of a transcript for one model retry.
+
+    The pinned prefix and the latest exchange stay as they are. The latest
+    exchange is the last assistant tool-call message plus its tool results.
+    Older tool and user bodies go through ``compact_tool_message``. The input
+    list and its message dicts are not mutated; durable history stays intact
+    when the caller keeps the original list.
+    """
+
+    latest = _latest_exchange_start(messages)
+    compacted: list[dict[str, Any]] = []
+    for index, message in enumerate(messages):
+        if not isinstance(message, dict):
+            continue
+        if index < 2 or index >= latest or not policy.compact_older_tools:
+            compacted.append(message)
+            continue
+        updated = compact_tool_message(message, policy)
+        compacted.append(updated if updated is not message else message)
+    return compacted
+
+
 def _compact_value(value: Any, policy: ThinContextPolicy, *, location_hint: str = "durable history") -> tuple[Any, bool]:
     if isinstance(value, dict):
         if _protected_reference(value):

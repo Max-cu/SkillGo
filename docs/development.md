@@ -70,6 +70,12 @@ SKILLGO_ORCHESTRATION_MODE=audit
 
 每一轮推理按声明顺序读取这些文件，把原文放在稳定历史前缀之后、最后一条执行状态消息之前。每个文件有 token 上限；超出时保留正文前缀，并注明需要回读原文件。文件缺失或读取失败只记 WARNING 并跳过该文件；同一个缺失文件每个任务只警告一次。文件 mtime 早于任务开始时间（`started_at`，否则 `created_at`；没有时区的时间按 UTC 解释）时，注入块和指标标出过期。推理事件的 `context_budget.state_inject` 按文件路径记录 `injected_tokens`、`file_mtime`、`validation` 和 `stale`。任务结束时的 JobEvent `timing` 记录累计模型等待、累计工具耗时和轮数；取消发生在等模型返回期间时，这段等待也计入 `model_wait_ms`。
 
+`SKILLGO_AGENT_LOOP_RECOVERY_ENABLED` 默认关闭。关闭时，连续相同动作仍在第 4 次触发 `SANDBOX_AGENT_STALLED`，上下文预算不足或模型返回上下文长度错误时立即失败，不会重试。打开后：
+
+- 同一个工具、同一组规范化参数（忽略 `reason` 和 `timeout_seconds`）连续出现 `SKILLGO_AGENT_REPEAT_TOOL_NOTE` 次（默认 3）时，向模型追加一句纠正说明；
+- 连续次数达到 `SKILLGO_AGENT_REPEAT_TOOL_STOP`（默认比纠正阈值大 2）时，任务以 `SANDBOX_REPEATED_TOOL` 失败，错误信息写明工具名和次数；
+- 本地投影超过上下文预算，或网关返回上下文长度错误时，用现有的工具正文压缩和交换上限把历史压缩一次再请求模型。最近一段交互（最后一条助手工具调用及其工具结果）保持原样，只压缩更早的正文。交换上限取当前保留上限的一半并向下取整，且至少再保留最近一段之外的一段；原来没有交换上限时，重试也不另加固定上限。持久消息不被改写。同一轮只压缩一次，第二次仍超限则按原来的错误失败。
+
 如果模型不支持 `response_format: {"type":"json_object"}`，把 `SKILLGO_MODEL_JSON_MODE` 设为 `false`。内网 HTTPS 使用自签名证书时，优先把企业 CA 安装到运行环境；不要在生产环境关闭 TLS 校验。
 
 平台设置中的每个模型连接可以声明“对话”“视觉”“OCR”一种或多种能力，并分别设置默认模型。视觉与 OCR 当前都使用 OpenAI-compatible `chat/completions` 多模态消息格式，图片以内联 `image_url` Data URL 发送给私有模型服务。视觉模型是图片附件的默认理解链路；工作台的“开启 OCR 识别”默认关闭，开启后平台先提取文字，再把 OCR 结果连同原图交给视觉模型，最后仍由用户选择的对话模型组织回答。OCR 失败时视觉理解继续执行并记录警告，视觉模型不可用且没有 OCR 结果时请求硬失败，不会假装已经理解图片。
