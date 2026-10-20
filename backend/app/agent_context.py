@@ -170,9 +170,12 @@ def project_context(messages: list[dict[str, Any]], *, checkpoint: str,
     # Fast-mode pins are extra: a matching tool result outside that window
     # stays verbatim and does not consume a cap slot. Only the latest result
     # for each pin key is eligible, then the ceiling keeps higher-priority
-    # keys first (count_photos, then other image commands, then file reads).
-    # Compaction runs on the copies the budget walk measures. The latest
-    # exchange is never compacted. Durable ``messages`` stay intact.
+    # keys first (count_photos, then other image commands, then file reads,
+    # then regex-only hits). The recent window is budgeted before any rescue
+    # so a pin cannot crowd out those exchanges. A rescue that does not fit
+    # is skipped; the next candidate is still tried. Compaction runs on the
+    # copies the budget walk measures. The latest exchange is never compacted.
+    # Durable ``messages`` stay intact.
     hit_groups = [pinned_hits(group, policy) for group in groups]
     if policy.max_exchanges and len(groups) > policy.max_exchanges:
         window_start = len(groups) - policy.max_exchanges
@@ -180,10 +183,6 @@ def project_context(messages: list[dict[str, Any]], *, checkpoint: str,
         window_start = 0
     protected_by_group, ceiling_dropped = _protect_pinned_results(groups, hit_groups, policy)
     rescued = [gi for gi in range(window_start) if protected_by_group.get(gi)]
-    if policy.max_exchanges and len(groups) > policy.max_exchanges:
-        exchange_cap_dropped = len(groups) - policy.max_exchanges - len(rescued)
-    else:
-        exchange_cap_dropped = 0
     summarized_count = 0
     removed_tokens = 0
     # Pairs keep the original group for reference dedup and a projected
@@ -198,12 +197,18 @@ def project_context(messages: list[dict[str, Any]], *, checkpoint: str,
         trial = [*pinned, *projected_messages, memory]
         return estimate_tokens(trial) + tool_tokens <= max_tokens
 
-    def _append_older(gi: int) -> bool:
+    def _append_older(gi: int, *, rescue: bool = False) -> bool:
         nonlocal summarized_count, removed_tokens
         group = groups[gi]
-        projected_group, count, removed = _project_exchange(
-            group, policy, pinned_indexes=protected_by_group.get(gi, set()),
-        )
+        pinned_indexes = protected_by_group.get(gi, set())
+        if rescue:
+            projected_group = _project_rescued_exchange(group, pinned_indexes)
+            count = 0
+            removed = max(0, estimate_tokens(group) - estimate_tokens(projected_group))
+        else:
+            projected_group, count, removed = _project_exchange(
+                group, policy, pinned_indexes=pinned_indexes,
+            )
         candidate = [*selected, (gi, group, projected_group)]
         if not _within_budget(candidate):
             return False
@@ -212,21 +217,40 @@ def project_context(messages: list[dict[str, Any]], *, checkpoint: str,
         removed_tokens += removed
         return True
 
-    # Newest rescued pins first. A pin that does not fit ends the rescue;
-    # older pins are not backfilled ahead of it.
-    for gi in reversed(rescued):
-        if not _append_older(gi):
-            break
+    # Recent window first, newest exchange first. Stop at the first miss so
+    # the window stays a contiguous tail. Rescued pins come after and cannot
+    # take that budget.
     cap_older = list(range(window_start, max(len(groups) - 1, 0)))
     for gi in reversed(cap_older):
         if not _append_older(gi):
             break
+
+    def _rescue_rank(gi: int) -> tuple[int, int]:
+        protected = protected_by_group.get(gi, set())
+        priorities = [hit.priority for hit in hit_groups[gi] if hit.index in protected]
+        priority = min(priorities) if priorities else _RESCUE_FALLBACK_PRIORITY
+        return (priority, -gi)
+
+    # Highest priority, then newer. Skip a candidate that does not fit and
+    # keep trying; a large newer file read must not block count_photos.
+    for gi in sorted(rescued, key=_rescue_rank):
+        _append_older(gi, rescue=True)
     selected.sort(key=lambda item: item[0])
     selected_pairs: list[tuple[list[dict[str, Any]], list[dict[str, Any]]]] = [
         (original, projected) for _gi, original, projected in selected
     ]
+    selected_ids = {gi for gi, _original, _projected in selected}
+    if policy.max_exchanges and len(groups) > policy.max_exchanges:
+        exchange_cap_dropped = sum(1 for gi in range(window_start) if gi not in selected_ids)
+    else:
+        exchange_cap_dropped = 0
     pinned_result_tokens, pinned_result_count = _measure_pinned_results(
         groups, protected_by_group, selected,
+    )
+    rescued_exchange_tokens = sum(
+        estimate_tokens(projected)
+        for gi, _original, projected in selected
+        if gi < window_start
     )
     if ceiling_dropped:
         logger.info(
@@ -276,6 +300,7 @@ def project_context(messages: list[dict[str, Any]], *, checkpoint: str,
             'pinned_result_estimated_tokens': pinned_result_tokens,
             'pinned_result_count': pinned_result_count,
             'pinned_ceiling_dropped_count': ceiling_dropped,
+            'pinned_rescued_exchange_tokens': rescued_exchange_tokens,
         })
     return projected
 
@@ -290,8 +315,9 @@ def _protect_pinned_results(
     Repeats of the same command or the same file read collapse to the latest
     message so pinned tokens stay flat as rounds grow. Among those winners,
     smaller priority numbers are kept first (count_photos, then other image
-    commands, then file reads); ties keep the newer result. The latest
-    exchange is already retained whole and does not spend the ceiling.
+    commands, then file reads, then regex-only hits); ties keep the newer
+    result. The latest exchange is already retained whole and does not spend
+    the ceiling.
     Anything not selected falls back to normal cap and compaction.
     """
 
@@ -345,6 +371,42 @@ def _measure_pinned_results(
             tokens += estimate_tokens(group[mi])
             count += 1
     return tokens, count
+
+
+_RESCUE_FALLBACK_PRIORITY = 99
+
+
+def _project_rescued_exchange(
+    group: list[dict[str, Any]], pinned_indexes: set[int],
+) -> list[dict[str, Any]]:
+    """Return the pinned tool results plus the assistant calls that produced them.
+
+    The rest of the exchange (reasoning, prose, sibling tool results) stays in
+    durable history and is not sent again. In-window exchanges are unchanged.
+    """
+
+    pinned_messages = [group[index] for index in range(len(group)) if index in pinned_indexes]
+    needed_ids = {
+        message.get("tool_call_id")
+        for message in pinned_messages
+        if isinstance(message.get("tool_call_id"), str) and message.get("tool_call_id")
+    }
+    projected: list[dict[str, Any]] = []
+    for message in group:
+        if message.get("role") != "assistant":
+            continue
+        calls = message.get("tool_calls") or []
+        if not isinstance(calls, list):
+            continue
+        kept = [
+            call for call in calls
+            if isinstance(call, dict) and call.get("id") in needed_ids
+        ]
+        if kept:
+            projected.append({"role": "assistant", "tool_calls": kept})
+        break
+    projected.extend(pinned_messages)
+    return projected
 
 
 def _project_exchange(

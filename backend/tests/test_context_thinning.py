@@ -416,6 +416,7 @@ def test_pinned_tool_result_survives_cap_and_is_not_compacted(script):
     assert diag["exchange_cap_dropped_count"] == 3
     assert diag["pinned_result_count"] == 1
     assert 0 < diag["pinned_result_estimated_tokens"] <= DEFAULT_FAST_PIN_TOKEN_CEILING
+    assert diag["pinned_rescued_exchange_tokens"] >= diag["pinned_result_estimated_tokens"]
     assert diag["pinned_ceiling_dropped_count"] == 0
     assert diag["pinned_estimated_tokens"] != diag["pinned_result_estimated_tokens"]
     for call_id in ("call-4", "call-5", "call-6", "call-7"):
@@ -449,9 +450,10 @@ def test_in_window_pinned_result_is_not_compacted():
     assert diag["exchange_cap_dropped_count"] == 4
     assert diag["pinned_result_count"] == 1
     assert diag["pinned_result_estimated_tokens"] <= DEFAULT_FAST_PIN_TOKEN_CEILING
+    assert diag["pinned_rescued_exchange_tokens"] == 0
 
 
-def test_non_pinned_sibling_in_a_rescued_exchange_is_still_compacted():
+def test_rescued_exchange_keeps_the_pinned_result_and_drops_the_sibling():
     photo_stdout = _long_stdout("PINNED_PHOTO")
     sibling_stdout = _long_stdout("SIBLING_LOG")
     messages = [{"role": "system", "content": "rules"}, {"role": "user", "content": "build the deck"}]
@@ -460,6 +462,8 @@ def test_non_pinned_sibling_in_a_rescued_exchange_is_still_compacted():
     }))
     messages.append({
         "role": "assistant",
+        "reasoning_content": "keep this off the rescued stub",
+        "content": "also drop the prose",
         "tool_calls": [
             {
                 "id": "call-pin",
@@ -491,12 +495,23 @@ def test_non_pinned_sibling_in_a_rescued_exchange_is_still_compacted():
         messages.extend(_tool_exchange(index, ["python3", "scripts/render.py"], {
             "ok": True, "stdout": _long_stdout(f"TURN{index}"), "stderr": "",
         }))
-    projected = _project(messages, {}, 500_000, _pin_policy())
+    diag = {}
+    projected = _project(messages, {}, 500_000, _pin_policy(), diag)
     assert _tool_body(projected, "call-pin")["payload"]["stdout"] == photo_stdout
-    sibling = _tool_body(projected, "call-sib")
-    assert sibling["context_compacted"] is True
-    assert "omitted from model context" in sibling["payload"]["stdout"]
-    assert sibling_stdout not in sibling["payload"]["stdout"]
+    assert all(message.get("tool_call_id") != "call-sib" for message in projected)
+    assert sibling_stdout not in json.dumps(projected)
+    stubs = [
+        message for message in projected
+        if message.get("role") == "assistant" and any(
+            isinstance(call, dict) and call.get("id") == "call-pin"
+            for call in (message.get("tool_calls") or [])
+        )
+    ]
+    assert len(stubs) == 1
+    assert [call["id"] for call in stubs[0]["tool_calls"]] == ["call-pin"]
+    assert "reasoning_content" not in stubs[0]
+    assert "content" not in stubs[0]
+    assert diag["pinned_rescued_exchange_tokens"] >= diag["pinned_result_estimated_tokens"] > 0
 
 
 def _photo_stdout(tag: str) -> str:
@@ -694,6 +709,85 @@ def test_pin_ceiling_prefers_count_photos_over_newer_file_reads(caplog):
     assert "dropped 1 older pinned result" in caplog.text
 
 
+def test_later_ls_of_web_images_does_not_displace_count_photos():
+    photo = _photo_stdout("PH")
+    photo_exchange = _tool_exchange(0, ["python3", "scripts/validators/count_photos.py"], {
+        "ok": True, "stdout": photo, "stderr": "",
+    })
+    photo_tokens = estimate_tokens(photo_exchange[1])
+    # These signatures used to share the count_photos / fetch_web_images keys.
+    listing = (
+        "_web_images.json\n[[image_009.png]]\n✅ 可用照片: 9 张\n[✓] image_009\n"
+        + _long_stdout("LS")
+    )
+    messages = [{"role": "system", "content": "rules"}, {"role": "user", "content": "build the deck"}]
+    messages.extend(photo_exchange)
+    messages.extend(_tool_exchange(1, ["ls", "_web_images.json"], {
+        "ok": True, "stdout": listing, "stderr": "",
+    }))
+    messages.extend(_tool_exchange(2, ["python3", "scripts/write_svg.py"], {
+        "ok": True,
+        "stdout": "wrote page\n[[image_010.svg]]\n" + _long_stdout("SVG"),
+        "stderr": "",
+    }))
+    messages.extend(_tool_exchange(3, ["python3", "scripts/render.py"], {
+        "ok": True, "stdout": _long_stdout("AFTER"), "stderr": "",
+    }))
+    diag = {}
+    projected = _project(
+        messages, {}, 500_000,
+        _pin_policy(max_exchanges=None, pin_token_ceiling=photo_tokens),
+        diag,
+    )
+    assert _tool_body(projected, "call-0")["payload"]["stdout"] == photo
+    assert "context_compacted" not in _tool_body(projected, "call-0")
+    listed = _tool_body(projected, "call-1")
+    assert listed["context_compacted"] is True
+    assert "x" * 1200 not in listed["payload"]["stdout"]
+    written = _tool_body(projected, "call-2")
+    assert written["context_compacted"] is True
+    assert diag["pinned_result_count"] == 1
+    assert diag["pinned_result_estimated_tokens"] == photo_tokens
+    assert diag["pinned_ceiling_dropped_count"] >= 1
+
+
+def test_tight_budget_rescues_count_photos_ahead_of_a_newer_file_read():
+    photo = _photo_stdout("PH")
+    spec = "SPEC-" + ("S" * 8000) + "-ENDSPEC"
+    messages = [{"role": "system", "content": "rules"}, {"role": "user", "content": "build the deck"}]
+    messages.extend(_tool_exchange(0, ["python3", "scripts/validators/count_photos.py"], {
+        "ok": True, "stdout": photo, "stderr": "",
+    }))
+    messages.extend(_read_exchange(1, "/workspace/ppt/assets/design_spec.md", spec))
+    for index in range(2, 6):
+        messages.extend(_tool_exchange(index, ["python3", "scripts/render.py"], {
+            "ok": True, "stdout": f"TURN{index}", "stderr": "",
+        }))
+    photo_only = {}
+    _project(
+        messages, {}, 500_000,
+        _pin_policy(pin_reads=(), pin_token_ceiling=100_000),
+        photo_only,
+    )
+    budget = photo_only["request_estimated_tokens"]
+    diag = {}
+    projected = _project(
+        messages, {}, budget,
+        _pin_policy(pin_token_ceiling=100_000),
+        diag,
+    )
+    assert _tool_body(projected, "call-0")["payload"]["stdout"] == photo
+    assert all(message.get("tool_call_id") != "call-1" for message in projected)
+    assert "ENDSPEC" not in json.dumps(projected)
+    assert any(message.get("tool_call_id") == "call-2" for message in projected)
+    assert any(message.get("tool_call_id") == "call-5" for message in projected)
+    assert diag["preserved_exchange_count"] == 5
+    assert diag["exchange_cap_dropped_count"] == 1
+    assert diag["pinned_result_count"] == 1
+    assert diag["pinned_ceiling_dropped_count"] == 0
+    assert diag["pinned_rescued_exchange_tokens"] >= diag["pinned_result_estimated_tokens"] > 0
+
+
 def test_audit_mode_does_not_apply_fast_pins():
     photo_stdout = _long_stdout("PHOTO_LIST")
     exchanges = []
@@ -718,7 +812,9 @@ def test_audit_mode_does_not_apply_fast_pins():
     assert plain_diag["pinned_result_estimated_tokens"] == 0
     assert plain_diag["pinned_result_count"] == 0
     assert plain_diag["pinned_ceiling_dropped_count"] == 0
+    assert plain_diag["pinned_rescued_exchange_tokens"] == 0
     assert pinned_diag["pinned_result_estimated_tokens"] == 0
+    assert pinned_diag["pinned_rescued_exchange_tokens"] == 0
     assert "PHOTO_LIST-" in json.dumps(plain)
     assert "omitted from model context" not in json.dumps(plain)
 
@@ -732,6 +828,7 @@ def test_audit_mode_does_not_apply_fast_pins():
     assert capped_diag["preserved_exchange_count"] == 4
     assert capped_diag["pinned_result_estimated_tokens"] == 0
     assert capped_diag["pinned_ceiling_dropped_count"] == 0
+    assert capped_diag["pinned_rescued_exchange_tokens"] == 0
     assert all(message.get("tool_call_id") != "call-1" for message in capped)
 
     ignored = resolve_thin_context_policy(SimpleNamespace(

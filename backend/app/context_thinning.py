@@ -53,14 +53,9 @@ DEFAULT_FAST_PIN_TOKEN_CEILING = 8192
 _COMMAND_STRING_KEYS = ("command", "cmd", "script", "tool", "action", "name")
 _READ_TOOL_NAMES = frozenset({"read_file", "read_files"})
 _READ_PRIORITY = 2
-# Content fallbacks share a command key so they dedupe with that script's output.
-_PATTERN_PIN_META: dict[str, tuple[str, int]] = {
-    r"✅ 可用照片: \d+ 张": ("count_photos.py", 0),
-    r"\[✓\] image_\d+": ("count_photos.py", 0),
-    r"联网补图 \d+ 张": ("fetch_web_images.py", 1),
-    r"\[\[image_\d+\.\w+\]\]": ("fetch_web_images.py", 1),
-    r"_web_images\.json": ("fetch_web_images.py", 1),
-}
+# Regex-only hits never share a command or file-read key. Lowest ceiling
+# priority, so a later ``ls`` or SVG write cannot displace count_photos.
+_PATTERN_PRIORITY = 3
 
 
 @dataclass(frozen=True)
@@ -484,8 +479,9 @@ def _match_pattern(message: dict[str, Any], policy: ThinContextPolicy) -> tuple[
     patterns = _compiled_pin_patterns(policy.pin_patterns)
     for pattern, compiled in zip(policy.pin_patterns, patterns):
         if compiled.search(content):
-            key, priority = _PATTERN_PIN_META.get(pattern, (f"pattern:{pattern}", 1))
-            return key, priority
+            # Own key. A command-name hit is classified earlier and keeps its
+            # script key even when this result also matches a fallback regex.
+            return f"pattern:{pattern}", _PATTERN_PRIORITY
     return None
 
 
