@@ -379,33 +379,40 @@ _RESCUE_FALLBACK_PRIORITY = 99
 def _project_rescued_exchange(
     group: list[dict[str, Any]], pinned_indexes: set[int],
 ) -> list[dict[str, Any]]:
-    """Return the pinned tool results plus the assistant calls that produced them.
+    """Pinned tool results, each preceded by the assistant call that produced it.
 
-    The rest of the exchange (reasoning, prose, sibling tool results) stays in
-    durable history and is not sent again. In-window exchanges are unchanged.
+    Every assistant message in the exchange is scanned. A stub is emitted for
+    each one that owns a pinned call, with ``content`` null, immediately
+    before that call's tool results. Reasoning, prose, and sibling results
+    stay in durable history.
     """
 
-    pinned_messages = [group[index] for index in range(len(group)) if index in pinned_indexes]
     needed_ids = {
-        message.get("tool_call_id")
-        for message in pinned_messages
-        if isinstance(message.get("tool_call_id"), str) and message.get("tool_call_id")
+        group[index].get("tool_call_id")
+        for index in pinned_indexes
+        if index < len(group)
+        and isinstance(group[index].get("tool_call_id"), str)
+        and group[index].get("tool_call_id")
     }
     projected: list[dict[str, Any]] = []
-    for message in group:
-        if message.get("role") != "assistant":
+    for index, message in enumerate(group):
+        if message.get("role") == "assistant":
+            calls = message.get("tool_calls") or []
+            if not isinstance(calls, list):
+                continue
+            kept = [
+                call for call in calls
+                if isinstance(call, dict) and call.get("id") in needed_ids
+            ]
+            if kept:
+                projected.append({
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": kept,
+                })
             continue
-        calls = message.get("tool_calls") or []
-        if not isinstance(calls, list):
-            continue
-        kept = [
-            call for call in calls
-            if isinstance(call, dict) and call.get("id") in needed_ids
-        ]
-        if kept:
-            projected.append({"role": "assistant", "tool_calls": kept})
-        break
-    projected.extend(pinned_messages)
+        if index in pinned_indexes:
+            projected.append(message)
     return projected
 
 

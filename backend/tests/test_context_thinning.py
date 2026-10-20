@@ -8,7 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.agent_context import estimate_tokens, project_context
+from app.agent_context import _project_rescued_exchange, estimate_tokens, project_context
 from app.config import Settings
 from app.context_thinning import (
     DEFAULT_FAST_PIN_PATTERNS,
@@ -381,6 +381,35 @@ def _tool_body(projected, call_id):
     return json.loads(matches[0]["content"])
 
 
+def _assert_tool_calls_paired(messages):
+    """Every tool result follows an unmatched tool_call with the same id."""
+
+    open_ids: list[str] = []
+    for index, message in enumerate(messages):
+        role = message.get("role")
+        calls = message.get("tool_calls") or []
+        if role == "assistant" and isinstance(calls, list) and calls:
+            assert not open_ids, f"unanswered tool_calls before message {index}: {open_ids}"
+            ids = []
+            for call in calls:
+                assert isinstance(call, dict)
+                call_id = call.get("id")
+                assert isinstance(call_id, str) and call_id
+                assert call_id not in ids
+                ids.append(call_id)
+            open_ids = ids
+            continue
+        if role == "tool":
+            tool_call_id = message.get("tool_call_id")
+            assert tool_call_id in open_ids, (
+                f"tool message {index} id {tool_call_id!r} has no preceding tool_call"
+            )
+            open_ids.remove(tool_call_id)
+            continue
+        assert not open_ids, f"unanswered tool_calls before message {index}: {open_ids}"
+    assert not open_ids
+
+
 @pytest.mark.parametrize("script", [
     "scripts/validators/count_photos.py",
     "scripts/fetch_web_images.py",
@@ -510,8 +539,120 @@ def test_rescued_exchange_keeps_the_pinned_result_and_drops_the_sibling():
     assert len(stubs) == 1
     assert [call["id"] for call in stubs[0]["tool_calls"]] == ["call-pin"]
     assert "reasoning_content" not in stubs[0]
-    assert "content" not in stubs[0]
+    assert stubs[0]["content"] is None
     assert diag["pinned_rescued_exchange_tokens"] >= diag["pinned_result_estimated_tokens"] > 0
+    _assert_tool_calls_paired(projected)
+
+
+def test_rescued_pin_from_the_second_assistant_stays_paired():
+    photo_stdout = _long_stdout("SECOND_ASSISTANT_PHOTO")
+    group = [
+        {
+            "role": "assistant",
+            "content": "first round",
+            "tool_calls": [{
+                "id": "call-other",
+                "function": {
+                    "name": "command",
+                    "arguments": json.dumps({"argv": ["python3", "scripts/render.py"]}),
+                },
+            }],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "call-other",
+            "content": json.dumps({"tool_result": "command", "payload": {"stdout": "other", "stderr": ""}}),
+        },
+        {
+            "role": "assistant",
+            "content": "second round",
+            "reasoning_content": "do not send this",
+            "tool_calls": [
+                {
+                    "id": "call-pin",
+                    "function": {
+                        "name": "command",
+                        "arguments": json.dumps({"argv": ["python3", "scripts/count_photos.py"]}),
+                    },
+                },
+                {
+                    "id": "call-sib",
+                    "function": {
+                        "name": "command",
+                        "arguments": json.dumps({"argv": ["python3", "scripts/render.py"]}),
+                    },
+                },
+            ],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "call-pin",
+            "content": json.dumps({
+                "tool_result": "command",
+                "payload": {"stdout": photo_stdout, "stderr": ""},
+            }),
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "call-sib",
+            "content": json.dumps({"tool_result": "command", "payload": {"stdout": "sibling", "stderr": ""}}),
+        },
+    ]
+    projected = _project_rescued_exchange(group, {3})
+    _assert_tool_calls_paired(projected)
+    assert _tool_body(projected, "call-pin")["payload"]["stdout"] == photo_stdout
+    assert all(message.get("tool_call_id") != "call-other" for message in projected)
+    assert all(message.get("tool_call_id") != "call-sib" for message in projected)
+    stubs = [message for message in projected if message.get("role") == "assistant"]
+    assert len(stubs) == 1
+    assert stubs[0]["content"] is None
+    assert "reasoning_content" not in stubs[0]
+    assert [call["id"] for call in stubs[0]["tool_calls"]] == ["call-pin"]
+    pin_at = next(index for index, message in enumerate(projected) if message.get("tool_call_id") == "call-pin")
+    assert pin_at > 0
+    preceding = projected[pin_at - 1]
+    assert preceding["role"] == "assistant"
+    assert preceding["content"] is None
+    assert any(call.get("id") == "call-pin" for call in preceding["tool_calls"])
+
+
+def test_projected_tool_calls_stay_paired():
+    messages, _bodies = _long_run()
+    projections = [
+        _project(messages, {}, 500_000, _audit()),
+        _project(messages, {}, 500_000, _fast()),
+        _project(messages, {}, 500_000, _pin_policy()),
+    ]
+    photo = _long_stdout("PHOTO_LIST")
+    deck = [{"role": "system", "content": "rules"}, {"role": "user", "content": "build the deck"}]
+    for index in range(8):
+        if index == 1:
+            deck.extend(_tool_exchange(index, ["python3", "scripts/count_photos.py"], {
+                "ok": True, "stdout": photo, "stderr": "",
+            }))
+        else:
+            deck.extend(_tool_exchange(index, ["python3", "scripts/render.py"], {
+                "ok": True, "stdout": _long_stdout(f"TURN{index}"), "stderr": "",
+            }))
+    projections.append(_project(deck, {}, 500_000, _pin_policy()))
+    projections.append(_project_rescued_exchange(
+        [
+            {
+                "role": "assistant",
+                "tool_calls": [{"id": "call-a", "function": {"name": "command", "arguments": "{}"}}],
+            },
+            {"role": "tool", "tool_call_id": "call-a", "content": "{}"},
+            {
+                "role": "assistant",
+                "content": "later",
+                "tool_calls": [{"id": "call-b", "function": {"name": "command", "arguments": "{}"}}],
+            },
+            {"role": "tool", "tool_call_id": "call-b", "content": "{}"},
+        ],
+        {3},
+    ))
+    for projected in projections:
+        _assert_tool_calls_paired(projected)
 
 
 def _photo_stdout(tag: str) -> str:
