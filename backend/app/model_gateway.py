@@ -109,6 +109,9 @@ def _model_http_error(exc: httpx.HTTPStatusError, connection: ModelConnection) -
         if request_id and re.fullmatch(r"[A-Za-z0-9_.:-]{1,128}", request_id):
             details["request_id"] = request_id
             break
+    retry_after = response.headers.get("retry-after")
+    if isinstance(retry_after, str) and re.fullmatch(r"\d{1,6}", retry_after.strip()):
+        details["retry_after_seconds"] = int(retry_after.strip())
     message = f"Private model returned HTTP {response.status_code}"
     provider = details.get("provider_error", {})
     reason = provider.get("message") or provider.get("code")
@@ -616,7 +619,7 @@ SANDBOX_AGENT_TOOLS: list[dict[str, Any]] = [
 ]
 
 
-from .agent_tool_specs import extend_tools
+from .agent_tool_specs import extend_tools, sandbox_tools_for_request
 
 extend_tools(SANDBOX_AGENT_TOOLS)
 
@@ -1353,22 +1356,41 @@ Never invent an id and never return prose or Markdown."""
             not_configured_message="Configure the private model before using automatic Skill routing",
         )
 
-    async def agent_step(self, *, messages: list[dict[str, Any]]) -> ModelResult:
-        """Return one validated native tool call, with legacy JSON as a compatibility fallback."""
+    async def agent_step(
+        self,
+        *,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None = None,
+    ) -> ModelResult:
+        """Return one validated native tool call, with legacy JSON as a compatibility fallback.
+
+        `tools` restricts the call to that catalog. Restricted callers do not fall
+        back to unconstrained JSON, which would accept actions outside the catalog.
+        """
         if self._native_tools_available:
             try:
-                return await self._request_tool_action(messages=messages)
+                return await self._request_tool_action(messages=messages, tools=tools)
             except ModelGatewayError as exc:
-                if exc.code not in {"MODEL_TOOL_CALL_UNSUPPORTED", "MODEL_TOOL_CALL_INVALID"}:
+                if tools is not None or exc.code not in {"MODEL_TOOL_CALL_UNSUPPORTED", "MODEL_TOOL_CALL_INVALID"}:
                     raise
                 if exc.code == "MODEL_TOOL_CALL_UNSUPPORTED":
                     self._native_tools_available = False
+        if tools is not None:
+            raise ModelGatewayError(
+                "MODEL_TOOL_CALL_UNSUPPORTED",
+                "This model call requires native tool calls",
+            )
         return await self._request_json(
             messages=compatibility_messages(messages),
             not_configured_message="Configure the private model before running a sandbox workflow",
         )
 
-    async def _request_tool_action(self, *, messages: list[dict[str, Any]]) -> ModelResult:
+    async def _request_tool_action(
+        self,
+        *,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None = None,
+    ) -> ModelResult:
         if not self.configured or not self.connection.model_name:
             raise ModelGatewayError(
                 "MODEL_NOT_CONFIGURED",
@@ -1382,11 +1404,12 @@ Never invent an id and never return prose or Markdown."""
         total_usage: dict[str, Any] = {}
         invalid_output: Exception | None = None
 
+        tool_list = sandbox_tools_for_request(SANDBOX_AGENT_TOOLS) if tools is None else tools
         for attempt in range(2):
             body: dict[str, Any] = {
                 "model": self.connection.model_name,
                 "messages": request_messages,
-                "tools": SANDBOX_AGENT_TOOLS,
+                "tools": tool_list,
                 # DeepSeek thinking mode supports native tools but rejects
                 # tool_choice="required". The coordinator prompt still requires
                 # one or more tools per turn, and malformed/prose responses get one
@@ -1411,7 +1434,7 @@ Never invent an id and never return prose or Markdown."""
                 usage = payload.get("usage")
                 if isinstance(usage, dict):
                     _merge_usage(total_usage, usage)
-                tool_calls, assistant_message = _parse_agent_tool_response(payload)
+                tool_calls, assistant_message = _parse_agent_tool_response(payload, tools=tool_list)
             except (KeyError, IndexError, TypeError, ValueError, json.JSONDecodeError) as exc:
                 invalid_output = exc
                 if attempt == 0:
@@ -1538,6 +1561,7 @@ def _parse_json_object(content: str) -> dict:
 
 def _parse_agent_tool_response(
     payload: dict[str, Any],
+    tools: list[dict[str, Any]] | None = None,
 ) -> tuple[list[AgentToolCall], dict[str, Any]]:
     """Parse OpenAI-compatible function calls and retain their assistant context.
 
@@ -1563,7 +1587,8 @@ def _parse_agent_tool_response(
     if len(tool_calls) > 8:
         raise ValueError("model returned too many tool calls in one turn")
 
-    allowed_names = {item["function"]["name"] for item in SANDBOX_AGENT_TOOLS}
+    catalog = SANDBOX_AGENT_TOOLS if tools is None else tools
+    allowed_names = {item["function"]["name"] for item in catalog}
     parsed_calls: list[AgentToolCall] = []
     for tool_call in tool_calls:
         if not isinstance(tool_call, dict):

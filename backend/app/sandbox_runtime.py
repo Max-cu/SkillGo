@@ -402,6 +402,87 @@ class DockerSandbox:
             elapsed_seconds=elapsed,
         )
 
+    async def validation_command(
+        self, argv: list[str], *, cwd: str = "/workspace", timeout_seconds: int | None = None,
+    ) -> SandboxCommandResult:
+        """Run a checker in a disposable container with a read-only workspace.
+
+        Never fall back to exec in the writable job container. Output fixes go
+        through write_subtask_text; checkers may use only their private /tmp.
+        """
+        from uuid import uuid4
+
+        if self.volume is None:
+            raise SandboxRuntimeError("SANDBOX_NOT_RUNNING", "Sandbox workspace is not ready")
+        if not argv or len(argv) > 64 or any(not isinstance(x, str) or len(x) > 4096 for x in argv):
+            raise SandboxRuntimeError("SANDBOX_COMMAND_INVALID", "Validation argv is invalid")
+        workdir = _workspace_path(cwd)
+        timeout = min(max(int(timeout_seconds or 180), 1), settings.sandbox_command_timeout_seconds)
+        kwargs = {
+            "image": self.image,
+            "command": ["sleep", "infinity"],
+            "name": f"skillgo-validate-{self.execution_id}-{uuid4().hex[:12]}",
+            "detach": True,
+            "user": "10001:10001",
+            "network_mode": "none",
+            "read_only": True,
+            "volumes": {self.volume.name: {"bind": "/workspace", "mode": "ro"}},
+            "tmpfs": {"/tmp": "rw,nosuid,nodev,noexec,size=128m,uid=10001,gid=10001,mode=0700"},
+            "mem_limit": settings.sandbox_memory,
+            "nano_cpus": settings.sandbox_nano_cpus,
+            "pids_limit": settings.sandbox_pids_limit,
+            "cap_drop": ["ALL"],
+            "security_opt": ["no-new-privileges:true"],
+            "environment": {
+                "HOME": "/tmp", "PYTHONDONTWRITEBYTECODE": "1",
+                "PYTHONPATH": "/workspace/deps/python",
+                "NODE_PATH": "/workspace/deps/node/lib/node_modules:/usr/local/lib/node_modules:/workspace/node_modules",
+            },
+            "labels": {"skillgo.sandbox": "true", "skillgo.validator": "true",
+                       **ownership_labels(job_id=self.job_id, execution_id=self.execution_id)},
+        }
+        if settings.sandbox_runtime:
+            kwargs["runtime"] = settings.sandbox_runtime
+        helper = None
+        creation = None
+        started = time.monotonic()
+        try:
+            # Shield creation so cancellation cannot lose the container handle.
+            creation = asyncio.create_task(asyncio.to_thread(self.client.containers.create, **kwargs))
+            helper = await asyncio.shield(creation)
+            await asyncio.to_thread(helper.start)
+            result = await asyncio.wait_for(
+                asyncio.to_thread(helper.exec_run, wrap_argv_with_timeout(argv, timeout),
+                                  workdir=workdir, user="10001:10001", demux=True),
+                timeout=timeout + COMMAND_TRANSPORT_GRACE_SECONDS,
+            )
+            stdout, stderr = result.output if isinstance(result.output, tuple) else (result.output, b"")
+            if len(stdout or b"") + len(stderr or b"") > 8 * 1024 * 1024:
+                raise SandboxRuntimeError("SANDBOX_OUTPUT_TOO_LARGE", "Validation output exceeds 8 MiB")
+            elapsed = time.monotonic() - started
+            return SandboxCommandResult(
+                int(result.exit_code), _decode(stdout), _decode(stderr),
+                timed_out=exit_means_timeout(int(result.exit_code), elapsed, timeout),
+                elapsed_seconds=elapsed,
+            )
+        except TimeoutError as exc:
+            raise SandboxRuntimeError("SANDBOX_VALIDATION_TIMEOUT", "Validation transport exceeded its deadline") from exc
+        except (DockerException, RequestException) as exc:
+            raise SandboxRuntimeError("SUBTASK_ISOLATION_UNAVAILABLE", "Could not run read-only validation") from exc
+        finally:
+            if helper is None and creation is not None:
+                try:
+                    helper = await asyncio.shield(creation)
+                except Exception:
+                    pass
+            if helper is not None:
+                try:
+                    await asyncio.to_thread(helper.remove, force=True)
+                except NotFound:
+                    pass
+                except (DockerException, RequestException):
+                    logger.exception("Validation container cleanup failed job_id=%s", self.job_id)
+
     async def list_files(self, path: str = "/workspace") -> list[dict]:
         target = _workspace_path(path)
         source = """
@@ -602,7 +683,11 @@ print(json.dumps(payload, ensure_ascii=False))
             raise SandboxRuntimeError("SANDBOX_READ_FAILED", "Invalid state-file response")
         return payload
 
-    async def write_text(self, path: str, content: str) -> None:
+    async def write_subtask_text(self, path: str, content: str) -> None:
+        """Reject symlink/hardlink aliases before an allowlisted child write."""
+        await self.write_text(path, content, reject_aliases=True)
+
+    async def write_text(self, path: str, content: str, *, reject_aliases: bool = False) -> None:
         data = content.encode("utf-8")
         if len(data) > MAX_WRITE_BYTES:
             raise SandboxRuntimeError(
@@ -619,11 +704,42 @@ print(json.dumps(payload, ensure_ascii=False))
         # used to make oversized command-result persistence fail fatally.
         source = """
 import base64
+import os
+import stat
 import sys
 from pathlib import Path
 
 root = Path("/workspace").resolve()
-path = Path(sys.argv[1]).resolve()
+raw = Path(sys.argv[1])
+mode = sys.argv[3]
+if len(sys.argv) > 4 and sys.argv[4] == "strict":
+    # Walk directory descriptors without following links. Do not truncate an
+    # existing target until its type and hardlink count have been checked.
+    parts = raw.relative_to(root).parts
+    parent = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        for part in parts[:-1]:
+            try:
+                os.mkdir(part, mode=0o700, dir_fd=parent)
+            except FileExistsError:
+                pass
+            child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent)
+            os.close(parent)
+            parent = child
+        fd = os.open(parts[-1], os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600, dir_fd=parent)
+        with os.fdopen(fd, mode) as handle:
+            info = os.fstat(handle.fileno())
+            if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+                raise PermissionError("subtask outputs must be regular files without aliases")
+            if mode == "wb":
+                handle.truncate(0)
+            else:
+                handle.seek(0, os.SEEK_END)
+            handle.write(base64.b64decode(sys.argv[2]))
+    finally:
+        os.close(parent)
+    raise SystemExit(0)
+path = raw.resolve()
 if root not in path.parents:
     raise PermissionError("path must stay inside /workspace")
 if path.exists() and path.is_dir():
@@ -640,7 +756,7 @@ with open(path, mode) as handle:
             encoded = base64.b64encode(chunk).decode("ascii")
             mode = "wb" if index == 0 else "ab"
             result = await self.command(
-                ["python3", "-c", source, target, encoded, mode],
+                ["python3", "-c", source, target, encoded, mode, "strict" if reject_aliases else "legacy"],
                 timeout_seconds=30,
                 # Content is split into <=256 KiB chunks above and Base64 is
                 # data, not code. Agent-authored command calls never receive

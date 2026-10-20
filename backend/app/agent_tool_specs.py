@@ -1,5 +1,87 @@
 from copy import deepcopy
 
+from .config import settings
+
+
+def spawn_subtasks_tool() -> dict:
+    """Main-agent tool. Advertised only while spawning subtasks is enabled."""
+
+    task = {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["task_id", "instruction", "output_paths"],
+        "properties": {
+            "task_id": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$",
+                "description": "Stable id for this subtask. The framework does not derive a filename from it.",
+            },
+            "instruction": {
+                "type": "string",
+                "maxLength": 80000,
+                "description": "What this subtask should do. The child loop does not see the parent conversation.",
+            },
+            "read_paths": {
+                "type": "array",
+                "maxItems": 16,
+                "items": {"type": "string", "maxLength": 1024},
+                "description": "Files this subtask may read, in addition to shared_paths.",
+            },
+            "output_paths": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 8,
+                "items": {"type": "string", "maxLength": 1024},
+                "description": "Files this subtask may write. Allowlists must not overlap.",
+            },
+            "validation_argv": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 64,
+                "items": {"type": "string", "minLength": 1, "maxLength": 4096},
+                "description": "Optional exact checker, run with a read-only workspace and private /tmp. Fix outputs via write_file, not this command.",
+            },
+        },
+    }
+    return {"type": "function", "function": {
+        "name": "spawn_subtasks",
+        "description": (
+            "Split the current work into independent subtasks and run them at the same time inside this job. "
+            "You decide the split. Each subtask is a fresh model loop that sees only its instruction, "
+            "the shared read-only paths, its own read paths, and its output allowlist. "
+            "It does not see this conversation and cannot spawn further subtasks. "
+            "A failed subtask does not cancel the others, and each one keeps its own model retries. "
+            "When this tool returns, run your own cross-subtask checks before continuing. "
+            "Retry by calling again with only the failed tasks. Call this tool alone in the turn."
+        ),
+        "parameters": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["tasks", "reason"],
+            "properties": {
+                "tasks": {"type": "array", "minItems": 1, "maxItems": 40, "items": task},
+                "shared_paths": {
+                    "type": "array",
+                    "maxItems": 32,
+                    "items": {"type": "string", "maxLength": 1024},
+                    "description": "Read-only files given to every subtask, such as a shared spec. They must already exist and must not be output paths.",
+                },
+                "cwd": {"type": "string", "maxLength": 1024},
+                "reason": {"type": "string"},
+            },
+        },
+    }}
+
+
+def sandbox_tools_for_request(tools: list[dict]) -> list[dict]:
+    """Tool list actually sent to the model. Spawn stays hidden while the flag is off."""
+
+    if not settings.parallel_subtasks_enabled:
+        return tools
+    if any(item.get("function", {}).get("name") == "spawn_subtasks" for item in tools):
+        return tools
+    return [*tools, spawn_subtasks_tool()]
+
 
 def extend_tools(tools: list[dict]) -> None:
     by_name = {item['function']['name']: item['function'] for item in tools}
