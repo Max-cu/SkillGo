@@ -48,11 +48,11 @@ TOOL_NAMES = frozenset(
         "run_fixed_skill",
         "inspect_image",
         "inspect_document",
-        "run_parallel_subtasks",
+        "spawn_subtasks",
     }
 )
 
-WORKSPACE_MUTATING_TOOLS = frozenset({"write_file", "command", "run_python", "run_parallel_subtasks"})
+WORKSPACE_MUTATING_TOOLS = frozenset({"write_file", "command", "run_python", "spawn_subtasks"})
 VERIFIER_TOOLS = frozenset({"command", "run_python"})
 
 
@@ -70,11 +70,11 @@ def validate_agent_action(action: dict[str, Any]) -> str | None:
         return f"Unknown sandbox tool: {action_name}"
     if "reason" in action and not isinstance(action.get("reason"), str):
         return "reason must be text"
-    if action_name == "run_parallel_subtasks":
+    if action_name == "spawn_subtasks":
         if not settings.parallel_subtasks_enabled:
-            return "Parallel subtasks are disabled"
-        from .parallel_subtasks import validate_parallel_subtasks_action
-        return validate_parallel_subtasks_action(action)
+            return "Spawn subtasks is disabled"
+        from .parallel_subtasks import validate_spawn_subtasks_action
+        return validate_spawn_subtasks_action(action)
     if action_name == 'run_skill_workflow':
         if (not isinstance(action.get('skill_index'), int) or isinstance(action.get('skill_index'), bool)
                 or action['skill_index'] < 1):

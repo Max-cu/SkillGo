@@ -189,7 +189,7 @@ class Settings:
     platform_document_tools_enabled: bool = _bool(
         "SKILLGO_PLATFORM_DOCUMENT_TOOLS_ENABLED", False
     )
-    # Fan out skill-declared subtasks inside one job. Off unless explicitly enabled.
+    # Let the main model spawn subtasks inside one job. Off unless explicitly enabled.
     parallel_subtasks_enabled: bool = _bool("SKILLGO_PARALLEL_SUBTASKS_ENABLED", False)
     # Subtask workers running at once inside a single job. One job lives in one worker process.
     parallel_subtasks_job_concurrency: int = int(os.getenv("SKILLGO_PARALLEL_SUBTASKS_JOB_CONCURRENCY", "5"))

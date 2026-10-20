@@ -1,16 +1,15 @@
-"""Fan out skill-declared subtasks inside the current job.
+"""Spawn model-authored subtasks inside the current job.
 
-The platform does not interpret what a subtask produces. The calling skill
-declares each subtask's input bundle, the files it may read, the files it may
-write, and the exact validation command. After every subtask finishes, the
-skill's aggregate checks run once.
+The main model decides the split at runtime and calls spawn_subtasks. Each
+child is an in-process model loop with its own instruction, read paths, and
+write allowlist. Children do not see the main conversation, cannot spawn
+further subtasks, and do not claim another job-worker slot. A failed child
+does not cancel the others. Each child has its own model-retry budget.
 
-Each subtask is an in-process model loop. It uses the job's sandbox and model
-gateway and does not claim another job-worker slot. Subtask loops do not see
-the main agent's transcript. A failed subtask does not cancel the others, and
-each subtask has its own model-retry budget. Sandbox reads and writes are
-serialized on the shared container; model requests run concurrently, bounded
-per job and across every worker process in this deployment.
+Sandbox reads and writes are serialized on the shared container; model
+requests run concurrently, bounded per job and across every worker process
+in this deployment. When the batch returns, the main model is told to run
+its own cross-subtask checks before continuing.
 
 Worker processes do not share memory. The in-flight model count is a lease
 table in this deployment's database. Another deployment has its own database.
@@ -51,8 +50,7 @@ logger = logging.getLogger(__name__)
 
 TASK_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 MAX_TASKS = 40
-MAX_GUIDANCE_CHARS = 80_000
-MAX_INPUT_CHARS = 80_000
+MAX_INSTRUCTION_CHARS = 80_000
 MAX_OUTPUT_PATHS = 8
 MAX_TASK_READABLE_PATHS = 16
 MAX_SHARED_READABLE_PATHS = 32
@@ -68,11 +66,18 @@ RETRYABLE_CODES = frozenset({
 })
 
 SUBTASK_WORKER_SYSTEM_PROMPT = """You complete exactly one subtask.
-Use only the input bundle in this message and the files you are allowed to read. Do not invent extra requirements.
+Follow the instruction in this message. Read only the listed files. Shared paths are read-only context and must not be written.
 Write only the declared output paths. Any other write is rejected.
-When every declared output exists, run the validation command with the exact argv given to you. If it fails, fix this subtask only and run that same command again.
-Call finish_task only after the latest bytes of every declared output have a successful validation result.
-You do not have the parent task transcript. Do not assume files or decisions that are not in this message or in the files you are allowed to read."""
+If a validation command is given, run it with that exact argv after every output exists. If it fails, fix this subtask only and run that same command again. Call finish_task only after it succeeds on the current bytes.
+If no validation command is given, call finish_task after every declared output has been written.
+You cannot start further subtasks.
+You do not have the parent conversation. Do not assume files or decisions that are not in this message or in the files you are allowed to read."""
+
+MAIN_MODEL_NEXT_STEP = (
+    "Control has returned to the main model. "
+    "Run your own cross-subtask checks before continuing. "
+    "Retry only the tasks in tasks_failed and leave tasks_ok in place."
+)
 
 SUBTASK_WORKER_TOOLS: list[dict[str, Any]] = [
     {"type": "function", "function": {
@@ -124,10 +129,10 @@ class _OversizedFile(Exception):
 @dataclass
 class Subtask:
     task_id: str
+    instruction: str
     output_paths: list[str]
-    readable_paths: list[str]
-    inputs: Any
-    validation_argv: list[str]
+    read_paths: list[str]
+    validation_argv: list[str] | None
 
 
 @dataclass
@@ -136,6 +141,7 @@ class SubtaskOutcome:
     ok: bool
     error_code: str | None = None
     reason: str | None = None
+    summary: str = ""
     wrote: bool = False
     metrics: dict[str, Any] = field(default_factory=dict)
 
@@ -195,16 +201,6 @@ def normalize_cwd(value: str) -> str:
     return normalize_workspace_path(value)
 
 
-def _json_text(value: Any, *, limit: int) -> str:
-    if isinstance(value, str):
-        text = value
-    else:
-        text = json.dumps(value, ensure_ascii=False, allow_nan=False)
-    if len(text) > limit:
-        raise ValueError(f"exceeds {limit} characters")
-    return text
-
-
 def _command_error(argv: Any, cwd: str | None, timeout: Any = None) -> str | None:
     from .sandbox_tool_registry import validate_agent_action
 
@@ -236,29 +232,16 @@ def _path_list(value: Any, *, label: str, minimum: int, maximum: int) -> tuple[l
     return paths, None
 
 
-def validate_parallel_subtasks_action(action: dict[str, Any]) -> str | None:
-    """Reject a malformed batch before any subtask worker starts."""
+def validate_spawn_subtasks_action(action: dict[str, Any]) -> str | None:
+    """Reject a malformed spawn before any child loop starts."""
 
-    allowed = {
-        "action", "reason", "tasks", "guidance", "shared_inputs",
-        "readable_paths", "validation_argv", "aggregate_checks", "cwd",
-    }
+    allowed = {"action", "reason", "tasks", "shared_paths", "cwd"}
     extra = sorted(set(action) - allowed)
     if extra:
-        return f"run_parallel_subtasks has unsupported fields: {', '.join(extra[:8])}"
+        return f"spawn_subtasks has unsupported fields: {', '.join(extra[:8])}"
     reason = action.get("reason")
     if not isinstance(reason, str) or not 1 <= len(reason.strip()) <= 500:
         return "reason must contain 1-500 characters"
-    guidance = action.get("guidance")
-    if guidance is not None and not isinstance(guidance, str):
-        return "guidance must be text"
-    if isinstance(guidance, str) and len(guidance) > MAX_GUIDANCE_CHARS:
-        return f"guidance exceeds {MAX_GUIDANCE_CHARS} characters; put it in a readable file"
-    if "shared_inputs" in action:
-        try:
-            _json_text(action.get("shared_inputs"), limit=MAX_INPUT_CHARS)
-        except (TypeError, ValueError) as exc:
-            return f"shared_inputs {exc}"
     cwd = action.get("cwd")
     if cwd is not None:
         if not isinstance(cwd, str):
@@ -269,35 +252,13 @@ def validate_parallel_subtasks_action(action: dict[str, Any]) -> str | None:
             return f"cwd {exc}"
     command_cwd = cwd if isinstance(cwd, str) else None
     shared_paths, path_error = _path_list(
-        action.get("readable_paths"),
-        label="readable_paths",
+        action.get("shared_paths"),
+        label="shared_paths",
         minimum=0,
         maximum=MAX_SHARED_READABLE_PATHS,
     )
     if path_error:
         return path_error
-    batch_argv = action.get("validation_argv", None)
-    if batch_argv is not None and (error := _command_error(batch_argv, command_cwd)):
-        return f"validation_argv {error}"
-    checks = action.get("aggregate_checks", [])
-    if checks is None:
-        checks = []
-    if not isinstance(checks, list) or len(checks) > 8:
-        return "aggregate_checks must contain at most 8 commands"
-    for index, check in enumerate(checks, 1):
-        if not isinstance(check, dict) or set(check) - {"argv", "cwd", "timeout_seconds"}:
-            return f"aggregate_checks item {index} has invalid fields"
-        check_cwd = check.get("cwd", cwd)
-        if check_cwd is not None and not isinstance(check_cwd, str):
-            return f"aggregate_checks item {index} cwd must be text"
-        if isinstance(check_cwd, str):
-            try:
-                normalize_cwd(check_cwd)
-            except ValueError as exc:
-                return f"aggregate_checks item {index} cwd {exc}"
-        timeout = check.get("timeout_seconds")
-        if (error := _command_error(check.get("argv"), check_cwd if isinstance(check_cwd, str) else None, timeout)):
-            return f"aggregate_checks item {index}: {error}"
     tasks = action.get("tasks")
     if not isinstance(tasks, list) or not 1 <= len(tasks) <= MAX_TASKS:
         return f"tasks must contain 1-{MAX_TASKS} items"
@@ -307,7 +268,7 @@ def validate_parallel_subtasks_action(action: dict[str, Any]) -> str | None:
     for index, task in enumerate(tasks, 1):
         if not isinstance(task, dict):
             return f"tasks item {index} must be an object"
-        if set(task) - {"task_id", "inputs", "output_paths", "readable_paths", "validation_argv"}:
+        if set(task) - {"task_id", "instruction", "read_paths", "output_paths", "validation_argv"}:
             return f"tasks item {index} has invalid fields"
         task_id = task.get("task_id")
         if not isinstance(task_id, str) or not TASK_ID_RE.fullmatch(task_id):
@@ -315,6 +276,11 @@ def validate_parallel_subtasks_action(action: dict[str, Any]) -> str | None:
         if task_id in seen_ids:
             return f"duplicate task_id {task_id}"
         seen_ids.add(task_id)
+        instruction = task.get("instruction")
+        if not isinstance(instruction, str) or not instruction.strip():
+            return f"tasks item {index} instruction must be text"
+        if len(instruction) > MAX_INSTRUCTION_CHARS:
+            return f"tasks item {index} instruction exceeds {MAX_INSTRUCTION_CHARS} characters"
         outputs, output_error = _path_list(
             task.get("output_paths"),
             label=f"tasks item {index} output_paths",
@@ -325,31 +291,23 @@ def validate_parallel_subtasks_action(action: dict[str, Any]) -> str | None:
             return output_error
         for output in outputs:
             if output in seen_outputs:
-                return f"duplicate output_path {output}"
+                return f"output allowlists overlap at {output}"
             seen_outputs.add(output)
         reads, read_error = _path_list(
-            task.get("readable_paths"),
-            label=f"tasks item {index} readable_paths",
+            task.get("read_paths"),
+            label=f"tasks item {index} read_paths",
             minimum=0,
             maximum=MAX_TASK_READABLE_PATHS,
         )
         if read_error:
             return read_error
         seen_reads.update(reads)
-        if "inputs" in task:
-            try:
-                _json_text(task.get("inputs"), limit=MAX_INPUT_CHARS)
-            except (TypeError, ValueError) as exc:
-                return f"tasks item {index} inputs {exc}"
-        task_argv = task.get("validation_argv", batch_argv)
-        if task_argv is None:
-            return f"tasks item {index} requires validation_argv on the task or the batch"
-        if (error := _command_error(task_argv, command_cwd)):
+        if "validation_argv" in task and (error := _command_error(task.get("validation_argv"), command_cwd)):
             return f"tasks item {index} validation_argv {error}"
     overlap = seen_reads & seen_outputs
     if overlap:
         sample = sorted(overlap)[0]
-        return f"readable_paths cannot include output path {sample}"
+        return f"shared or read paths cannot include output path {sample}"
     return None
 
 
@@ -379,7 +337,7 @@ def _batch_error(code: str, message: str, *, tasks: list[Subtask] | None = None)
         "message": message,
         "tasks_ok": [],
         "tasks_failed": failed,
-        "aggregate": {"ok": False, "checks": [], "skipped": True},
+        "results": [],
         "metrics": {
             "attempted": False,
             "model_wait_ms": 0,
@@ -389,7 +347,7 @@ def _batch_error(code: str, message: str, *, tasks: list[Subtask] | None = None)
             "tasks": [],
         },
         "execution_started": False,
-        "hint": "Correct the arguments and call run_parallel_subtasks again.",
+        "hint": "Correct the arguments and call spawn_subtasks again.",
     }
 
 
@@ -463,10 +421,11 @@ async def _path_exists(sandbox, path: str) -> bool:
 
 
 def _build_tasks(action: dict[str, Any]) -> list[Subtask]:
-    batch_argv = action.get("validation_argv")
     tasks: list[Subtask] = []
     for raw in action["tasks"]:
-        argv = [str(item) for item in raw.get("validation_argv", batch_argv)]
+        argv = raw.get("validation_argv")
+        if argv is not None:
+            argv = [str(item) for item in argv]
         outputs, _ = _path_list(
             raw.get("output_paths"),
             label="output_paths",
@@ -474,28 +433,28 @@ def _build_tasks(action: dict[str, Any]) -> list[Subtask]:
             maximum=MAX_OUTPUT_PATHS,
         )
         reads, _ = _path_list(
-            raw.get("readable_paths"),
-            label="readable_paths",
+            raw.get("read_paths"),
+            label="read_paths",
             minimum=0,
             maximum=MAX_TASK_READABLE_PATHS,
         )
         tasks.append(Subtask(
             task_id=raw["task_id"],
+            instruction=raw["instruction"],
             output_paths=outputs,
-            readable_paths=reads,
-            inputs=raw.get("inputs"),
+            read_paths=reads,
             validation_argv=argv,
         ))
     return tasks
 
 
 def _subtask_context(task: Subtask, shared: dict[str, Any]) -> dict[str, Any]:
-    readable = list(dict.fromkeys([*shared["readable_paths"], *task.readable_paths, *task.output_paths]))
+    readable = list(dict.fromkeys([*shared["shared_paths"], *task.read_paths, *task.output_paths]))
     return {
         "task_id": task.task_id,
-        "inputs": task.inputs,
-        "shared_inputs": shared.get("shared_inputs"),
-        "guidance": shared.get("guidance") or "",
+        "instruction": task.instruction,
+        "shared_paths": list(shared["shared_paths"]),
+        "read_paths": list(task.read_paths),
         "output_paths": list(task.output_paths),
         "readable_paths": readable,
         "validation_argv": task.validation_argv,
@@ -571,7 +530,7 @@ async def _execute_worker_tool(
             return {
                 "ok": False,
                 "error_code": "SANDBOX_READ_BINARY",
-                "message": "Binary files are not returned as text. Reference the path from the input bundle.",
+                "message": "Binary files are not returned as text. Reference the path in your instruction.",
                 "path": path,
             }
         offset = action.get("offset") or 0
@@ -618,9 +577,15 @@ async def _execute_worker_tool(
         state.written.add(path)
         state.validated = {}
         return {"ok": True, "path": path, "bytes": len(content.encode("utf-8"))}
+    if name == "spawn_subtasks":
+        return {
+            "ok": False,
+            "error_code": "NESTED_SPAWN_FORBIDDEN",
+            "message": "Subtasks cannot spawn further subtasks.",
+        }
     if name == "command":
         argv = action.get("argv")
-        if argv != task.validation_argv:
+        if not task.validation_argv or argv != task.validation_argv:
             return {
                 "ok": False,
                 "error_code": "COMMAND_NOT_ALLOWED",
@@ -681,11 +646,19 @@ async def _execute_worker_tool(
                 "error_code": "OUTPUT_MISSING",
                 "message": f"write every declared output before finish_task; missing {missing or task.output_paths[0]}",
             }
-        if not state.validated or current != state.validated:
+        if task.validation_argv:
+            if not state.validated or current != state.validated:
+                return {
+                    "ok": False,
+                    "error_code": "VALIDATION_REQUIRED",
+                    "message": "Run the validation command against the current outputs before finish_task.",
+                }
+        elif set(task.output_paths) - state.written:
+            missing_write = next(path for path in task.output_paths if path not in state.written)
             return {
                 "ok": False,
-                "error_code": "VALIDATION_REQUIRED",
-                "message": "Run the validation command against the current outputs before finish_task.",
+                "error_code": "OUTPUT_MISSING",
+                "message": f"write {missing_write} before finish_task",
             }
         state.finished = True
         state.summary = str(summary)[:500]
@@ -801,7 +774,7 @@ async def _run_worker(
     binary_suffixes: frozenset[str],
 ) -> SubtaskOutcome:
     state = _WorkerState(task)
-    for path in task.readable_paths:
+    for path in task.read_paths:
         async with sandbox_lock:
             exists = await _path_exists(sandbox, path)
         if not exists:
@@ -811,7 +784,7 @@ async def _run_worker(
                 task.task_id,
                 False,
                 "INPUT_NOT_FOUND",
-                f"readable path was not found at {path}",
+                f"read path was not found at {path}",
                 metrics=state.metrics,
             )
     context = _subtask_context(task, shared)
@@ -890,7 +863,13 @@ async def _run_worker(
                 if state.finished:
                     state.metrics["status"] = "ok"
                     state.metrics["duration_ms"] = _elapsed_ms(started)
-                    return SubtaskOutcome(task.task_id, True, wrote=True, metrics=state.metrics)
+                    return SubtaskOutcome(
+                        task.task_id,
+                        True,
+                        summary=state.summary,
+                        wrote=True,
+                        metrics=state.metrics,
+                    )
         state.metrics["status"] = "failed"
         state.metrics["duration_ms"] = _elapsed_ms(started)
         return SubtaskOutcome(
@@ -932,43 +911,7 @@ def _log_subtask(job_id: str, outcome: SubtaskOutcome) -> None:
     )
 
 
-async def _run_aggregate_checks(
-    sandbox,
-    checks: list[dict[str, Any]],
-    *,
-    sandbox_lock: asyncio.Lock,
-    cwd: str,
-) -> list[dict[str, Any]]:
-    results = []
-    for check in checks:
-        argv = [str(item) for item in check["argv"]]
-        check_cwd = check.get("cwd") or cwd
-        timeout = check.get("timeout_seconds") or VALIDATION_TIMEOUT_SECONDS
-        timeout = min(int(timeout), settings.sandbox_command_timeout_seconds)
-        async with sandbox_lock:
-            try:
-                result = await sandbox.command(argv, cwd=check_cwd, timeout_seconds=timeout)
-                results.append({
-                    "argv": argv,
-                    "cwd": check_cwd,
-                    "ok": result.exit_code == 0 and not result.timed_out,
-                    "exit_code": result.exit_code,
-                    "timed_out": bool(result.timed_out),
-                    "stdout": (result.stdout or "")[:2000],
-                    "stderr": (result.stderr or "")[:2000],
-                })
-            except SandboxRuntimeError as exc:
-                results.append({
-                    "argv": argv,
-                    "cwd": check_cwd,
-                    "ok": False,
-                    "error_code": exc.code,
-                    "message": str(exc)[:1000],
-                })
-    return results
-
-
-async def run_parallel_subtasks(
+async def spawn_subtasks(
     sandbox,
     action: dict[str, Any],
     *,
@@ -978,12 +921,12 @@ async def run_parallel_subtasks(
     cwd: str | None = None,
     engine=None,
 ) -> dict[str, Any]:
-    """Run one fresh model loop per declared subtask, then the aggregate checks."""
+    """Run one fresh model loop per subtask, then return control to the caller."""
 
     cancelled = job_cancelled or (lambda: False)
     if not settings.parallel_subtasks_enabled:
-        return _batch_error("PARALLEL_SUBTASKS_DISABLED", "Parallel subtasks are disabled")
-    if error := validate_parallel_subtasks_action(action):
+        return _batch_error("SPAWN_SUBTASKS_DISABLED", "Spawn subtasks is disabled")
+    if error := validate_spawn_subtasks_action(action):
         return _batch_error("SANDBOX_ACTION_INVALID", error)
     if cancelled():
         raise SubtaskRunCancelled()
@@ -992,8 +935,8 @@ async def run_parallel_subtasks(
     except ValueError as exc:
         return _batch_error("SANDBOX_ACTION_INVALID", f"cwd {exc}")
     shared_paths, path_error = _path_list(
-        action.get("readable_paths"),
-        label="readable_paths",
+        action.get("shared_paths"),
+        label="shared_paths",
         minimum=0,
         maximum=MAX_SHARED_READABLE_PATHS,
     )
@@ -1001,12 +944,10 @@ async def run_parallel_subtasks(
         return _batch_error("SANDBOX_ACTION_INVALID", path_error)
     for path in shared_paths:
         if not await _path_exists(sandbox, path):
-            return _batch_error("INPUT_NOT_FOUND", f"readable path was not found at {path}")
+            return _batch_error("INPUT_NOT_FOUND", f"shared path was not found at {path}")
     tasks = _build_tasks(action)
     shared = {
-        "guidance": action.get("guidance") or "",
-        "shared_inputs": action.get("shared_inputs"),
-        "readable_paths": shared_paths,
+        "shared_paths": shared_paths,
         "cwd": work_cwd,
     }
     from .sandbox_tool_registry import BINARY_DOCUMENT_SUFFIXES
@@ -1016,7 +957,7 @@ async def run_parallel_subtasks(
     job_slots = asyncio.Semaphore(max(1, settings.parallel_subtasks_job_concurrency))
     timeout = settings.parallel_subtasks_timeout_seconds
     logger.info(
-        "parallel subtask batch start job_id=%s tasks=%d job_concurrency=%d global_model_concurrency=%d",
+        "spawn subtasks start job_id=%s tasks=%d job_concurrency=%d global_model_concurrency=%d",
         job_id,
         len(tasks),
         settings.parallel_subtasks_job_concurrency,
@@ -1084,42 +1025,35 @@ async def run_parallel_subtasks(
         if not item.ok
     ]
     wrote_any = any(item.wrote for item in ordered)
-    declared_checks = [item for item in (action.get("aggregate_checks") or []) if isinstance(item, dict)]
-    check_started = time.perf_counter()
-    check_results: list[dict[str, Any]] = []
-    if wrote_any and declared_checks:
-        check_results = await _run_aggregate_checks(
-            sandbox,
-            declared_checks,
-            sandbox_lock=sandbox_lock,
-            cwd=work_cwd,
-        )
-    tool_exec_ms = sum(int(item.metrics.get("tool_exec_ms") or 0) for item in ordered) + _elapsed_ms(check_started)
-    checks_ok = all(item.get("ok") for item in check_results)
-    aggregate = {
-        "ok": checks_ok,
-        "checks": check_results,
-        "skipped": not wrote_any or not declared_checks,
-    }
+    by_task = {task.task_id: task for task in tasks}
+    results = [
+        {
+            "task_id": item.task_id,
+            "ok": item.ok,
+            "summary": item.summary,
+            "output_paths": list(by_task[item.task_id].output_paths) if item.task_id in by_task else [],
+            "error_code": item.error_code,
+            "reason": item.reason,
+        }
+        for item in ordered
+    ]
     metrics = {
         "attempted": True,
         "model_wait_ms": sum(int(item.metrics.get("model_wait_ms") or 0) for item in ordered),
-        "tool_exec_ms": tool_exec_ms,
+        "tool_exec_ms": sum(int(item.metrics.get("tool_exec_ms") or 0) for item in ordered),
         "capacity_wait_ms": sum(int(item.metrics.get("capacity_wait_ms") or 0) for item in ordered),
         "rounds": sum(int(item.metrics.get("rounds") or 0) for item in ordered),
         "tasks": [item.metrics for item in ordered],
     }
-    ok = not tasks_failed and aggregate["ok"]
+    ok = not tasks_failed
     if tasks_failed and tasks_ok:
         error_code = "SUBTASKS_PARTIAL"
     elif tasks_failed:
         error_code = "SUBTASKS_FAILED"
-    elif not aggregate["ok"]:
-        error_code = "AGGREGATE_CHECK_FAILED"
     else:
         error_code = None
     logger.info(
-        "parallel subtask batch job_id=%s tasks=%d ok=%d failed=%d model_wait_ms=%d tool_exec_ms=%d rounds=%d",
+        "spawn subtasks job_id=%s tasks=%d ok=%d failed=%d model_wait_ms=%d tool_exec_ms=%d rounds=%d",
         job_id,
         len(tasks),
         len(tasks_ok),
@@ -1132,20 +1066,17 @@ async def run_parallel_subtasks(
         "ok": ok,
         "tasks_ok": tasks_ok,
         "tasks_failed": tasks_failed,
-        "aggregate": aggregate,
+        "results": results,
         "metrics": metrics,
-        "execution_started": wrote_any or bool(check_results),
-        "hint": (
-            "Retry only tasks listed in tasks_failed. Leave tasks_ok in place."
-            if tasks_failed
-            else "Aggregate checks failed. Inspect aggregate.checks, fix the outputs, and call again."
-        ),
+        "execution_started": wrote_any,
+        "next_step": MAIN_MODEL_NEXT_STEP,
+        "hint": MAIN_MODEL_NEXT_STEP,
     }
     if error_code:
         payload["error_code"] = error_code
         payload["message"] = (
-            f"{len(tasks_ok)} subtasks succeeded, {len(tasks_failed)} failed"
-            if tasks_failed
-            else "aggregate checks failed"
+            f"{len(tasks_ok)} subtasks succeeded, {len(tasks_failed)} failed. {MAIN_MODEL_NEXT_STEP}"
         )
+    else:
+        payload["message"] = MAIN_MODEL_NEXT_STEP
     return payload
