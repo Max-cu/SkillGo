@@ -205,6 +205,10 @@ async def snapshot_sandbox_artifacts(
     snapshot: dict[str, str] = {}
     for path in normalized:
         data = sandbox.download_file(path)
+        if not data:
+            raise SandboxRuntimeError(
+                "ARTIFACT_CONTENT_INVALID", f"Artifact is empty: {path}"
+            )
         if validate_content:
             validate_artifact_content(PurePosixPath(path).name, data)
         snapshot[path] = hashlib.sha256(data).hexdigest()
