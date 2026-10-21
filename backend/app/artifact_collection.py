@@ -12,6 +12,8 @@ from .sandbox_runtime import SandboxRuntimeError
 
 def delivery_only_job(job) -> bool:
     """Deployment policy, never an Agent- or browser-controlled exemption."""
+    if settings.artifact_delivery_only:
+        return True
     selected = {item['skill_id'] for item in getattr(job, 'selected_skills', [])} or {getattr(job, 'skill_id', '')}
     return selected.issubset(set(settings.delivery_only_skill_ids))
 

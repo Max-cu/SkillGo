@@ -69,10 +69,16 @@ def test_missing_artifact_is_correctable_and_existing_output_unchanged():
 
 
 def test_delivery_mode_is_scoped_to_all_selected_skills(monkeypatch):
-    monkeypatch.setattr(collection,'settings',replace(collection.settings,delivery_only_skill_ids=('ppt',)))
+    monkeypatch.setattr(collection,'settings',replace(collection.settings,artifact_delivery_only=False,delivery_only_skill_ids=('ppt',)))
     assert collection.delivery_only_job(SimpleNamespace(skill_id='ppt',selected_skills=[]))
     assert not collection.delivery_only_job(SimpleNamespace(skill_id='other',selected_skills=[]))
     assert not collection.delivery_only_job(SimpleNamespace(skill_id='ppt',selected_skills=[{'skill_id':'ppt'},{'skill_id':'other'}]))
+
+
+def test_global_delivery_mode_covers_skills_outside_allowlist(monkeypatch):
+    monkeypatch.setattr(collection,'settings',replace(collection.settings,artifact_delivery_only=True,delivery_only_skill_ids=()))
+    assert collection.delivery_only_job(SimpleNamespace(skill_id='other',selected_skills=[]))
+    assert collection.delivery_only_job(SimpleNamespace(skill_id='ppt',selected_skills=[{'skill_id':'ppt'},{'skill_id':'other'}]))
 
 
 def test_delivery_finish_does_not_require_verification_but_keeps_business_steps():
@@ -95,8 +101,16 @@ def test_delivery_snapshot_checks_bytes_without_inspecting_ppt_content():
         asyncio.run(snapshot_sandbox_artifacts(sandbox,[path]))
 
 
+@pytest.mark.parametrize('validate_content', [True, False])
+def test_snapshot_rejects_empty_artifact_in_both_modes(validate_content):
+    path='/workspace/output/empty.pptx'
+    with pytest.raises(SandboxRuntimeError, match='Artifact is empty'):
+        asyncio.run(snapshot_sandbox_artifacts(Sandbox({path:b''}),[path],validate_content=validate_content))
+
+
 @pytest.mark.parametrize("tracking", [True, False])
-def test_agent_finish_collects_exports_without_verifier_and_recovers_bad_path(client,user_headers,owner_headers,monkeypatch,tracking):
+@pytest.mark.parametrize("global_delivery", [True, False])
+def test_agent_finish_collects_exports_without_verifier_and_recovers_bad_path(client,user_headers,owner_headers,monkeypatch,tracking,global_delivery):
     from app import config
     from app.database import SessionLocal
     from app.models import WorkflowJob
@@ -111,7 +125,9 @@ def test_agent_finish_collects_exports_without_verifier_and_recovers_bad_path(cl
     response=client.post(f"/api/v1/workflow-endpoints/{endpoint['slug']}/jobs",
                          headers={'X-SkillGo-Key':endpoint['api_key']},data={'instruction':'Create PPT'})
     assert response.status_code==202,response.text
-    monkeypatch.setattr(collection,'settings',replace(collection.settings,delivery_only_skill_ids=(version['skill_id'],)))
+    monkeypatch.setattr(collection,'settings',replace(collection.settings,
+        artifact_delivery_only=global_delivery,
+        delivery_only_skill_ids=() if global_delivery else (version['skill_id'],)))
     root='/workspace/skills/01-ppt/ppt'
     exported=root+'/exports/报告.pptx'
     sandbox=Sandbox({exported:b'PPT file bytes'})
