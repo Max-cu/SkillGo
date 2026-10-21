@@ -37,47 +37,6 @@ MAX_WRITE_BYTES = 9 * 1024 * 1024
 # internal allow_large_arguments argv items.
 WRITE_CHUNK_BYTES = 256 * 1024
 
-def ownership_labels(*, job_id: str, execution_id: str) -> dict[str, str]:
-    """Labels shared by workspace volumes, sandbox containers, and stagers."""
-
-    return {
-        "skillgo.job_id": job_id,
-        "skillgo.execution_id": execution_id,
-        "skillgo.deploy_id": settings.deploy_id,
-    }
-
-
-def _labels_of(resource) -> dict:
-    # Volumes expose Labels under attrs; containers use .labels.
-    # Prefer a real dict so MagicMock auto-attrs do not look like labels.
-    labels = getattr(resource, "labels", None)
-    if isinstance(labels, dict):
-        return dict(labels)
-    attrs = getattr(resource, "attrs", None)
-    if isinstance(attrs, dict):
-        raw = attrs.get("Labels")
-        if isinstance(raw, dict):
-            return dict(raw)
-    return {}
-
-
-def _owned_by_this_deploy(labels: dict) -> bool:
-    deploy = str(labels.get("skillgo.deploy_id") or "")
-    if deploy == settings.deploy_id:
-        return True
-    if not deploy and settings.cleanup_untagged_sandboxes:
-        return True
-    return False
-
-
-def _should_cleanup_resource(labels: dict, *, protected_job_ids: set[str]) -> bool:
-    job_id = str(labels.get("skillgo.job_id") or "")
-    if job_id and job_id in protected_job_ids:
-        return False
-    return _owned_by_this_deploy(labels)
-
-
-
 
 def wrap_argv_with_timeout(argv: list[str], timeout: int) -> list[str]:
     """Bound argv with in-container coreutils timeout(1).
@@ -179,7 +138,8 @@ class DockerSandbox:
                 name=f"skillgo-workspace-{self.execution_id}",
                 labels={
                     "skillgo.workspace": "true",
-                    **ownership_labels(job_id=self.job_id, execution_id=self.execution_id),
+                    "skillgo.job_id": self.job_id,
+                    "skillgo.execution_id": self.execution_id,
                 },
             )
         except DockerException as exc:
@@ -222,7 +182,8 @@ class DockerSandbox:
             },
             "labels": {
                 "skillgo.sandbox": "true",
-                **ownership_labels(job_id=self.job_id, execution_id=self.execution_id),
+                "skillgo.job_id": self.job_id,
+                "skillgo.execution_id": self.execution_id,
             },
         }
         if settings.sandbox_runtime:
@@ -238,10 +199,6 @@ class DockerSandbox:
             raise SandboxRuntimeError("SANDBOX_START_FAILED", f"Could not start sandbox: {exc}") from exc
 
     def close(self) -> None:
-        if settings.tool_output_spill_enabled and self.container is not None:
-            from .tool_output_spill import discard_tool_output_sync
-
-            discard_tool_output_sync(self)
         if self.container is not None:
             try:
                 self.container.remove(force=True)
@@ -304,7 +261,8 @@ class DockerSandbox:
                 security_opt=["no-new-privileges:true"],
                 labels={
                     "skillgo.stager": "true",
-                    **ownership_labels(job_id=self.job_id, execution_id=self.execution_id),
+                    "skillgo.job_id": self.job_id,
+                    "skillgo.execution_id": self.execution_id,
                 },
             )
             helper.start()
@@ -401,87 +359,6 @@ class DockerSandbox:
             timed_out=timed_out,
             elapsed_seconds=elapsed,
         )
-
-    async def validation_command(
-        self, argv: list[str], *, cwd: str = "/workspace", timeout_seconds: int | None = None,
-    ) -> SandboxCommandResult:
-        """Run a checker in a disposable container with a read-only workspace.
-
-        Never fall back to exec in the writable job container. Output fixes go
-        through write_subtask_text; checkers may use only their private /tmp.
-        """
-        from uuid import uuid4
-
-        if self.volume is None:
-            raise SandboxRuntimeError("SANDBOX_NOT_RUNNING", "Sandbox workspace is not ready")
-        if not argv or len(argv) > 64 or any(not isinstance(x, str) or len(x) > 4096 for x in argv):
-            raise SandboxRuntimeError("SANDBOX_COMMAND_INVALID", "Validation argv is invalid")
-        workdir = _workspace_path(cwd)
-        timeout = min(max(int(timeout_seconds or 180), 1), settings.sandbox_command_timeout_seconds)
-        kwargs = {
-            "image": self.image,
-            "command": ["sleep", "infinity"],
-            "name": f"skillgo-validate-{self.execution_id}-{uuid4().hex[:12]}",
-            "detach": True,
-            "user": "10001:10001",
-            "network_mode": "none",
-            "read_only": True,
-            "volumes": {self.volume.name: {"bind": "/workspace", "mode": "ro"}},
-            "tmpfs": {"/tmp": "rw,nosuid,nodev,noexec,size=128m,uid=10001,gid=10001,mode=0700"},
-            "mem_limit": settings.sandbox_memory,
-            "nano_cpus": settings.sandbox_nano_cpus,
-            "pids_limit": settings.sandbox_pids_limit,
-            "cap_drop": ["ALL"],
-            "security_opt": ["no-new-privileges:true"],
-            "environment": {
-                "HOME": "/tmp", "PYTHONDONTWRITEBYTECODE": "1",
-                "PYTHONPATH": "/workspace/deps/python",
-                "NODE_PATH": "/workspace/deps/node/lib/node_modules:/usr/local/lib/node_modules:/workspace/node_modules",
-            },
-            "labels": {"skillgo.sandbox": "true", "skillgo.validator": "true",
-                       **ownership_labels(job_id=self.job_id, execution_id=self.execution_id)},
-        }
-        if settings.sandbox_runtime:
-            kwargs["runtime"] = settings.sandbox_runtime
-        helper = None
-        creation = None
-        started = time.monotonic()
-        try:
-            # Shield creation so cancellation cannot lose the container handle.
-            creation = asyncio.create_task(asyncio.to_thread(self.client.containers.create, **kwargs))
-            helper = await asyncio.shield(creation)
-            await asyncio.to_thread(helper.start)
-            result = await asyncio.wait_for(
-                asyncio.to_thread(helper.exec_run, wrap_argv_with_timeout(argv, timeout),
-                                  workdir=workdir, user="10001:10001", demux=True),
-                timeout=timeout + COMMAND_TRANSPORT_GRACE_SECONDS,
-            )
-            stdout, stderr = result.output if isinstance(result.output, tuple) else (result.output, b"")
-            if len(stdout or b"") + len(stderr or b"") > 8 * 1024 * 1024:
-                raise SandboxRuntimeError("SANDBOX_OUTPUT_TOO_LARGE", "Validation output exceeds 8 MiB")
-            elapsed = time.monotonic() - started
-            return SandboxCommandResult(
-                int(result.exit_code), _decode(stdout), _decode(stderr),
-                timed_out=exit_means_timeout(int(result.exit_code), elapsed, timeout),
-                elapsed_seconds=elapsed,
-            )
-        except TimeoutError as exc:
-            raise SandboxRuntimeError("SANDBOX_VALIDATION_TIMEOUT", "Validation transport exceeded its deadline") from exc
-        except (DockerException, RequestException) as exc:
-            raise SandboxRuntimeError("SUBTASK_ISOLATION_UNAVAILABLE", "Could not run read-only validation") from exc
-        finally:
-            if helper is None and creation is not None:
-                try:
-                    helper = await asyncio.shield(creation)
-                except Exception:
-                    pass
-            if helper is not None:
-                try:
-                    await asyncio.to_thread(helper.remove, force=True)
-                except NotFound:
-                    pass
-                except (DockerException, RequestException):
-                    logger.exception("Validation container cleanup failed job_id=%s", self.job_id)
 
     async def list_files(self, path: str = "/workspace") -> list[dict]:
         target = _workspace_path(path)
@@ -621,73 +498,7 @@ print(json.dumps({"ok": True, "path": sys.argv[1], "content": content,
             raise SandboxRuntimeError('SANDBOX_READ_FAILED', 'Invalid text-window response') from exc
         return window
 
-    async def read_state_file(self, path: str, *, max_bytes: int = 131072) -> dict:
-        """Read a small workspace file plus mtime.
-
-        A missing file is ``{"exists": False}``, not an exception. Oversized
-        files return ``error=too_large`` without their body.
-        """
-
-        from .state_inject import normalize_state_path
-
-        target = normalize_state_path(path)
-        if target is None:
-            raise SandboxRuntimeError("SANDBOX_PATH_DENIED", "State files must stay inside /workspace/_state")
-        limit = min(max(int(max_bytes), 1), 262144)
-        source = """
-import json, sys
-from pathlib import Path
-
-root = Path("/workspace").resolve()
-raw = Path(sys.argv[1])
-limit = int(sys.argv[2])
-if raw.is_symlink() or raw.parent.is_symlink():
-    print(json.dumps({"exists": False, "error": "symlink"}))
-    raise SystemExit(0)
-path = raw.resolve()
-if path != root / "_state" / raw.name:
-    print(json.dumps({"exists": False, "error": "outside_state"}))
-    raise SystemExit(0)
-if not path.exists():
-    print(json.dumps({"exists": False}))
-    raise SystemExit(0)
-if not path.is_file():
-    print(json.dumps({"exists": False, "error": "not_file"}))
-    raise SystemExit(0)
-st = path.stat()
-payload = {"exists": True, "mtime": st.st_mtime}
-if st.st_size > limit:
-    payload["error"] = "too_large"
-    payload["size"] = st.st_size
-else:
-    with path.open("rb") as handle:
-        data = handle.read(limit + 1)
-    if len(data) > limit:
-        payload["error"] = "too_large"
-    else:
-        payload["content"] = data.decode("utf-8", errors="replace")
-print(json.dumps(payload, ensure_ascii=False))
-"""
-        result = await self.command(
-            ["python3", "-c", source, target, str(limit)], timeout_seconds=30
-        )
-        if result.exit_code != 0:
-            raise SandboxRuntimeError(
-                "SANDBOX_READ_FAILED", result.stderr or "Could not read state file"
-            )
-        try:
-            payload = json.loads(result.stdout)
-        except json.JSONDecodeError as exc:
-            raise SandboxRuntimeError("SANDBOX_READ_FAILED", "Invalid state-file response") from exc
-        if not isinstance(payload, dict):
-            raise SandboxRuntimeError("SANDBOX_READ_FAILED", "Invalid state-file response")
-        return payload
-
-    async def write_subtask_text(self, path: str, content: str) -> None:
-        """Reject symlink/hardlink aliases before an allowlisted child write."""
-        await self.write_text(path, content, reject_aliases=True)
-
-    async def write_text(self, path: str, content: str, *, reject_aliases: bool = False) -> None:
+    async def write_text(self, path: str, content: str) -> None:
         data = content.encode("utf-8")
         if len(data) > MAX_WRITE_BYTES:
             raise SandboxRuntimeError(
@@ -704,42 +515,11 @@ print(json.dumps(payload, ensure_ascii=False))
         # used to make oversized command-result persistence fail fatally.
         source = """
 import base64
-import os
-import stat
 import sys
 from pathlib import Path
 
 root = Path("/workspace").resolve()
-raw = Path(sys.argv[1])
-mode = sys.argv[3]
-if len(sys.argv) > 4 and sys.argv[4] == "strict":
-    # Walk directory descriptors without following links. Do not truncate an
-    # existing target until its type and hardlink count have been checked.
-    parts = raw.relative_to(root).parts
-    parent = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
-    try:
-        for part in parts[:-1]:
-            try:
-                os.mkdir(part, mode=0o700, dir_fd=parent)
-            except FileExistsError:
-                pass
-            child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent)
-            os.close(parent)
-            parent = child
-        fd = os.open(parts[-1], os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600, dir_fd=parent)
-        with os.fdopen(fd, mode) as handle:
-            info = os.fstat(handle.fileno())
-            if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
-                raise PermissionError("subtask outputs must be regular files without aliases")
-            if mode == "wb":
-                handle.truncate(0)
-            else:
-                handle.seek(0, os.SEEK_END)
-            handle.write(base64.b64decode(sys.argv[2]))
-    finally:
-        os.close(parent)
-    raise SystemExit(0)
-path = raw.resolve()
+path = Path(sys.argv[1]).resolve()
 if root not in path.parents:
     raise PermissionError("path must stay inside /workspace")
 if path.exists() and path.is_dir():
@@ -756,7 +536,7 @@ with open(path, mode) as handle:
             encoded = base64.b64encode(chunk).decode("ascii")
             mode = "wb" if index == 0 else "ab"
             result = await self.command(
-                ["python3", "-c", source, target, encoded, mode, "strict" if reject_aliases else "legacy"],
+                ["python3", "-c", source, target, encoded, mode],
                 timeout_seconds=30,
                 # Content is split into <=256 KiB chunks above and Base64 is
                 # data, not code. Agent-authored command calls never receive
@@ -829,24 +609,17 @@ def cleanup_stale_sandboxes(
     *,
     protected_job_ids: set[str] | None = None,
 ) -> None:
-    """Remove orphaned sandboxes for *this* deploy only.
-
-    Resources belonging to another ``skillgo.deploy_id`` are never touched.
-    Untagged (pre-label) resources are left alone unless
-    ``SKILLGO_CLEANUP_UNTAGGED_SANDBOXES`` is enabled.
-    """
-
     protected = protected_job_ids or set()
     for label in ("skillgo.sandbox=true", "skillgo.stager=true"):
         for container in client.containers.list(all=True, filters={"label": label}):
-            if not _should_cleanup_resource(_labels_of(container), protected_job_ids=protected):
+            if str((container.labels or {}).get("skillgo.job_id") or "") in protected:
                 continue
             try:
                 container.remove(force=True)
             except DockerException:
                 continue
     for volume in client.volumes.list(filters={"label": "skillgo.workspace=true"}):
-        if not _should_cleanup_resource(_labels_of(volume), protected_job_ids=protected):
+        if str((volume.attrs.get("Labels") or {}).get("skillgo.job_id") or "") in protected:
             continue
         try:
             volume.remove(force=True)
@@ -862,8 +635,6 @@ def cleanup_job_sandboxes(client: docker.DockerClient, job_id: str) -> None:
             all=True,
             filters={"label": [label, f"skillgo.job_id={job_id}"]},
         ):
-            if not _owned_by_this_deploy(_labels_of(container)):
-                continue
             try:
                 container.remove(force=True)
             except DockerException:
@@ -871,8 +642,6 @@ def cleanup_job_sandboxes(client: docker.DockerClient, job_id: str) -> None:
     for volume in client.volumes.list(
         filters={"label": ["skillgo.workspace=true", f"skillgo.job_id={job_id}"]}
     ):
-        if not _owned_by_this_deploy(_labels_of(volume)):
-            continue
         try:
             volume.remove(force=True)
         except DockerException:
@@ -891,9 +660,7 @@ def cleanup_execution_sandbox(
         for container in client.containers.list(
             all=True, filters={"label": [label, f"skillgo.job_id={job_id}"]}
         ):
-            labels = _labels_of(container)
-            if not _owned_by_this_deploy(labels):
-                continue
+            labels = container.labels or {}
             recorded_execution = str(labels.get("skillgo.execution_id") or job_id)
             if recorded_execution != execution_id:
                 continue
@@ -904,9 +671,7 @@ def cleanup_execution_sandbox(
     for volume in client.volumes.list(
         filters={"label": ["skillgo.workspace=true", f"skillgo.job_id={job_id}"]}
     ):
-        labels = _labels_of(volume)
-        if not _owned_by_this_deploy(labels):
-            continue
+        labels = volume.attrs.get("Labels") or {}
         recorded_execution = str(labels.get("skillgo.execution_id") or job_id)
         if recorded_execution != execution_id:
             continue

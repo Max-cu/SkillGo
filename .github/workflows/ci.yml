@@ -24,10 +24,6 @@ jobs:
           cache-dependency-path: backend/requirements-dev.lock
       - run: python -m pip install --disable-pip-version-check -r backend/requirements-dev.lock
       - run: python -m pytest -q
-      - name: Verify subtask isolation with real Docker containers
-        env:
-          SKILLGO_TEST_DOCKER_ISOLATION: "1"
-        run: python -m pytest -q backend/tests/test_subtask_isolation_runtime.py -k docker
 
   frontend:
     runs-on: ubuntu-latest
@@ -59,9 +55,3 @@ jobs:
           --env-file deploy/ecs.env.example
           --profile sandbox
           config --quiet
-      - name: Validate opt-in agent experiment overlay
-        run: >-
-          docker compose
-          -f compose.yaml -f deploy/compose.agent-experiments.yaml
-          --env-file .env.example --env-file deploy/ecs.env.example
-          --profile sandbox config --quiet

@@ -50,8 +50,6 @@ from .sandbox_agent_loop import (
     _run_agent_loop,
     _safe_tool_event,
     _trim_messages,
-    job_end_timing,
-    release_job_timing,
 )
 from .sandbox_runtime import (
     DockerSandbox,
@@ -73,13 +71,6 @@ from .workspace_service import file_sha256
 
 logger = logging.getLogger(__name__)
 TERMINAL = {JobStatus.SUCCEEDED, JobStatus.FAILED, JobStatus.CANCELLED, JobStatus.BLOCKED}
-
-
-def _timing_event_data(job: WorkflowJob) -> dict:
-    timing = job_end_timing(job)
-    if not timing:
-        return {}
-    return {"timing": timing}
 
 
 class JobLeaseLost(RuntimeError):
@@ -509,7 +500,6 @@ async def execute_sandbox_job(
                         "extract_root": extract_root,
                         "archive_path": f"/workspace/{archive_path}",
                         "skill_md": version.skill_md,
-                        "manifest": version.manifest or {},
                         "fixed_execution": fixed_execution_spec(version.manifest or {}),
                         "runtime_requirements": runtime_requirements,
                     }
@@ -812,7 +802,6 @@ async def execute_sandbox_job(
                     "reasoning_turns": reasoning_turns,
                     "tool_operations": tool_operations,
                     "artifact_count": len(persisted),
-                    **_timing_event_data(job),
                 },
             )
             add_audit(
@@ -866,10 +855,7 @@ async def execute_sandbox_job(
             for step in job.steps:
                 if step.status in {JobStepStatus.PENDING, JobStepStatus.RUNNING}:
                     set_step(db, job, step.step_key, JobStepStatus.SKIPPED, "任务已由用户取消")
-            add_job_event(
-                db, job, "status", "任务已取消", "独立沙箱已停止并回收",
-                status="cancelled", data=_timing_event_data(job) or None,
-            )
+            add_job_event(db, job, "status", "任务已取消", "独立沙箱已停止并回收", status="cancelled")
             fail_run(
                 db,
                 run,
@@ -912,7 +898,7 @@ async def execute_sandbox_job(
                 "任务受阻" if blocked else "任务执行失败",
                 job.error_message,
                 status="blocked" if blocked else "failed",
-                data={"error_code": job.error_code, **_timing_event_data(job)},
+                data={"error_code": job.error_code},
             )
             add_audit(
                 db,
@@ -949,10 +935,7 @@ async def execute_sandbox_job(
             job.error_code = "SANDBOX_INTERNAL_ERROR"
             job.error_message = "沙箱工作流执行失败，请查看 Worker 日志"
             job.finished_at = utcnow()
-            add_job_event(
-                db, job, "error", "任务执行失败", job.error_message, status="failed",
-                data={"error_code": job.error_code, **_timing_event_data(job)},
-            )
+            add_job_event(db, job, "error", "任务执行失败", job.error_message, status="failed", data={"error_code": job.error_code})
             fail_run(
                 db,
                 run,
@@ -961,8 +944,6 @@ async def execute_sandbox_job(
             )
             db.commit()
         finally:
-            # Closing result/error/cancel events have already copied timing.
-            release_job_timing(job_id)
             # A request arriving during the final turn must not remain pending.
             try:
                 from .models import JobEvent

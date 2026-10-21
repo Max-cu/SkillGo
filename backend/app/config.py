@@ -16,20 +16,6 @@ def _bool(name: str, default: bool) -> bool:
     return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
-def _optional_int(name: str) -> int | None:
-    raw = os.getenv(name)
-    if raw is None or not raw.strip():
-        return None
-    return int(raw)
-
-
-def _optional_bool(name: str) -> bool | None:
-    raw = os.getenv(name)
-    if raw is None or not raw.strip():
-        return None
-    return raw.strip().lower() in {"1", "true", "yes", "on"}
-
-
 @dataclass(frozen=True)
 class Settings:
     environment_preparation_enabled: bool = _bool("SKILLGO_ENVIRONMENT_PREPARATION_ENABLED", False)
@@ -129,8 +115,8 @@ class Settings:
         os.getenv("SKILLGO_SANDBOX_WORKER_MAX_ATTEMPTS", "3")
     )
     sandbox_job_timeout_seconds: int = int(
-        # 0 disables the wall-clock budget (no task-level time limit;
-        # runaway protection relies on the turn cap and idle checks).
+        # 0 disables the wall-clock budget (QwenPaw semantics: no task-level
+        # time limit; runaway protection relies on the turn cap and idle checks).
         os.getenv("SKILLGO_SANDBOX_JOB_TIMEOUT_SECONDS", "0")
     )
     sandbox_command_timeout_seconds: int = int(
@@ -141,53 +127,17 @@ class Settings:
     )
     sandbox_tool_inline_bytes: int = int(
         # Recent command/run_python/verifier results up to this size stay
-        # fully inline (two-tier pruning; the recent tier is about 50KB);
-        # larger results are persisted to tool-results/ and replaced by
+        # fully inline (two-tier pruning, aligned with QwenPaw's 50KB recent
+        # tier); larger results are persisted to tool-results/ and replaced by
         # a head+tail excerpt. Older exchanges are dropped wholesale by
-        # project_context unless orchestration_mode=fast compacts them first.
-        # Default 52 KiB. This knob is independent of workspace snapshots.
+        # project_context. Default 52 KiB.
         os.getenv("SKILLGO_SANDBOX_TOOL_INLINE_BYTES", str(52 * 1024))
-    )
-    # Opt-in spill of oversized tool results into the job workspace.
-    # Default off: tool results stay on the inline / tool-results path above.
-    # When on, a result larger than tool_output_spill_bytes is written to
-    # /workspace/_tool_output/<round>_<call>.txt and the model sees a
-    # head+tail excerpt, the path, and the byte size.
-    tool_output_spill_enabled: bool = _bool("SKILLGO_TOOL_OUTPUT_SPILL", False)
-    tool_output_spill_bytes: int = int(
-        os.getenv("SKILLGO_TOOL_OUTPUT_SPILL_BYTES", str(32 * 1024))
-    )
-    # Model-context thinning. audit = current projection. fast caps retained
-    # exchanges and compacts older tool bodies / deep reference pointers.
-    # It does not change SKILLGO_DURABLE_CHECKPOINTS_ENABLED or snapshot cadence.
-    orchestration_mode: str = (
-        os.getenv("SKILLGO_ORCHESTRATION_MODE", "audit").strip().lower() or "audit"
-    )
-    context_max_exchanges: int | None = _optional_int("SKILLGO_CONTEXT_MAX_EXCHANGES")
-    compact_older_tools: bool | None = _optional_bool("SKILLGO_COMPACT_OLDER_TOOLS")
-    thin_reference_shelf: bool | None = _optional_bool("SKILLGO_THIN_REFERENCE_SHELF")
-    # Fixed summary of dropped or compacted history. Default off: the model
-    # projection stays identical to the build without this summary. When on,
-    # the summary is attached only to the trailing state message.
-    structured_compaction_summary: bool = _bool("SKILLGO_STRUCTURED_COMPACTION_SUMMARY", False)
-    # Re-read skill-declared /workspace/_state/*.json files into each fast-mode
-    # model round. Default off. Audit mode does not inject, even when this flag is on.
-    state_inject_enabled: bool = _bool("SKILLGO_STATE_INJECT", False)
-    # Opt-in agent-loop recovery. When off, repeated-action stalls and context
-    # failures keep their existing behavior. When on, identical tool calls get
-    # a short note and a later hard stop, and one context overflow retries
-    # after the existing thinning pass.
-    agent_loop_recovery_enabled: bool = _bool("SKILLGO_AGENT_LOOP_RECOVERY_ENABLED", False)
-    agent_repeat_tool_note: int = int(os.getenv("SKILLGO_AGENT_REPEAT_TOOL_NOTE", "3"))
-    agent_repeat_tool_stop: int = int(
-        os.getenv("SKILLGO_AGENT_REPEAT_TOOL_STOP", "")
-        or str(int(os.getenv("SKILLGO_AGENT_REPEAT_TOOL_NOTE", "3")) + 2)
     )
     # A reasoning turn may now contain several native tool calls. Keep the
     # model-turn budget separate from the sandbox-operation budget so a useful
     # batch is not reported as several rounds of "thinking".
-    # 0 disables the caps (complex Skills may legitimately need more
-    # than a hundred reasoning turns).
+    # 0 disables the caps (QwenPaw semantics: complex Skills may legitimately
+    # need more than a hundred reasoning turns).
     sandbox_max_agent_turns: int = int(
         os.getenv(
             "SKILLGO_SANDBOX_MAX_AGENT_TURNS",
@@ -203,36 +153,12 @@ class Settings:
     sandbox_max_artifact_bytes: int = int(
         os.getenv("SKILLGO_SANDBOX_MAX_ARTIFACT_BYTES", str(500 * 1024 * 1024))
     )
-    # Isolates sandbox GC when multiple SkillGo deploys share one Docker host.
-    # Each deploy MUST set a distinct value (e.g. compose project name).
-    deploy_id: str = (os.getenv("SKILLGO_DEPLOY_ID") or "default").strip() or "default"
-    # When true, stale cleanup may also remove pre-label (untagged) sandboxes.
-    # Default false so a second deploy cannot sweep another install's legacy containers.
-    cleanup_untagged_sandboxes: bool = _bool("SKILLGO_CLEANUP_UNTAGGED_SANDBOXES", False)
     delivery_only_skill_ids: tuple[str, ...] = tuple(
         value.strip() for value in os.getenv("SKILLGO_DELIVERY_ONLY_SKILL_IDS", "").split(',') if value.strip()
     )
     platform_document_tools_enabled: bool = _bool(
         "SKILLGO_PLATFORM_DOCUMENT_TOOLS_ENABLED", False
     )
-    # Let the main model spawn subtasks inside one job. Off unless explicitly enabled.
-    parallel_subtasks_enabled: bool = _bool("SKILLGO_PARALLEL_SUBTASKS_ENABLED", False)
-    # Subtask workers running at once inside a single job. One job lives in one worker process.
-    parallel_subtasks_job_concurrency: int = int(os.getenv("SKILLGO_PARALLEL_SUBTASKS_JOB_CONCURRENCY", "5"))
-    # In-flight model requests from those subtask workers. The count is stored in
-    # this deployment's database so every worker process shares it. Another
-    # deployment has its own database and cannot see this count. Deployments
-    # that share one model server must keep the sum of this setting at or
-    # below 20 until a long-input load test says otherwise.
-    parallel_subtasks_global_model_concurrency: int = int(
-        os.getenv("SKILLGO_PARALLEL_SUBTASKS_GLOBAL_MODEL_CONCURRENCY", "10")
-    )
-    parallel_subtasks_max_rounds: int = int(os.getenv("SKILLGO_PARALLEL_SUBTASKS_MAX_ROUNDS", "8"))
-    parallel_subtasks_timeout_seconds: int = int(os.getenv("SKILLGO_PARALLEL_SUBTASKS_TIMEOUT_SECONDS", "720"))
-    # Extra model attempts after a rate-limit, timeout, or 5xx response, per subtask.
-    # The global slot is released while backing off.
-    parallel_subtasks_model_retries: int = int(os.getenv("SKILLGO_PARALLEL_SUBTASKS_MODEL_RETRIES", "3"))
-    parallel_subtasks_lease_ttl_seconds: int = int(os.getenv("SKILLGO_PARALLEL_SUBTASKS_LEASE_TTL_SECONDS", "120"))
     agent_run_success_detail_days: int = int(
         os.getenv("SKILLGO_AGENT_RUN_SUCCESS_DETAIL_DAYS", "7")
     )
@@ -255,11 +181,6 @@ class Settings:
 
 settings = Settings()
 
-if any(ch.isspace() for ch in settings.deploy_id) or "/" in settings.deploy_id:
-    raise RuntimeError(
-        "SKILLGO_DEPLOY_ID must be a non-empty token without spaces or slashes"
-    )
-
 if settings.sandbox_worker_heartbeat_seconds >= settings.sandbox_worker_lease_seconds:
     raise RuntimeError(
         "SKILLGO_SANDBOX_WORKER_HEARTBEAT_SECONDS must be lower than "
@@ -271,37 +192,3 @@ if settings.storage_retention_days < 1:
 
 if settings.environment == "production" and settings.jwt_secret.startswith("development-"):
     raise RuntimeError("SKILLGO_JWT_SECRET must be changed in production")
-
-if settings.orchestration_mode not in {"audit", "fast"}:
-    raise RuntimeError("SKILLGO_ORCHESTRATION_MODE must be 'audit' or 'fast'")
-
-if settings.context_max_exchanges is not None and settings.context_max_exchanges < 0:
-    raise RuntimeError("SKILLGO_CONTEXT_MAX_EXCHANGES must be >= 0")
-
-if settings.parallel_subtasks_job_concurrency < 1:
-    raise RuntimeError("SKILLGO_PARALLEL_SUBTASKS_JOB_CONCURRENCY must be at least 1")
-
-if settings.parallel_subtasks_global_model_concurrency < 1:
-    raise RuntimeError("SKILLGO_PARALLEL_SUBTASKS_GLOBAL_MODEL_CONCURRENCY must be at least 1")
-
-if settings.parallel_subtasks_max_rounds < 1:
-    raise RuntimeError("SKILLGO_PARALLEL_SUBTASKS_MAX_ROUNDS must be at least 1")
-
-if settings.parallel_subtasks_timeout_seconds < 1:
-    raise RuntimeError("SKILLGO_PARALLEL_SUBTASKS_TIMEOUT_SECONDS must be at least 1")
-
-if settings.parallel_subtasks_model_retries < 0:
-    raise RuntimeError("SKILLGO_PARALLEL_SUBTASKS_MODEL_RETRIES must be at least 0")
-
-if settings.parallel_subtasks_lease_ttl_seconds < 15:
-    raise RuntimeError("SKILLGO_PARALLEL_SUBTASKS_LEASE_TTL_SECONDS must be at least 15")
-
-if settings.agent_repeat_tool_note < 1:
-    raise RuntimeError("SKILLGO_AGENT_REPEAT_TOOL_NOTE must be >= 1")
-
-if settings.agent_repeat_tool_stop <= settings.agent_repeat_tool_note:
-    raise RuntimeError(
-        "SKILLGO_AGENT_REPEAT_TOOL_STOP must be greater than SKILLGO_AGENT_REPEAT_TOOL_NOTE"
-    )
-if settings.tool_output_spill_bytes < 1:
-    raise RuntimeError("SKILLGO_TOOL_OUTPUT_SPILL_BYTES must be at least 1")

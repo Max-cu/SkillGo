@@ -21,7 +21,7 @@ PRE_PLAN_INSPECTION_HINT = (
     "update_plan with a valid execution plan before any further work. "
     "write_file and run_fixed_skill remain blocked until the plan exists."
 )
-WORKSPACE_MUTATING_TOOLS = frozenset({"write_file", "command", "run_python", "spawn_subtasks"})
+WORKSPACE_MUTATING_TOOLS = frozenset({"write_file", "command", "run_python"})
 
 # Immutable instruction material (Skill package reference/script files and
 # user inputs) is read once and pinned in the execution-state memory message,
@@ -83,11 +83,6 @@ def action_fingerprint(action: dict[str, Any]) -> str:
         normalized["code_sha256"] = hashlib.sha256(
             normalized.pop("code").encode("utf-8")
         ).hexdigest()
-    if normalized.get("action") == "spawn_subtasks":
-        for key in ("tasks",):
-            if key in normalized:
-                raw = json.dumps(normalized.pop(key), ensure_ascii=False, sort_keys=True, default=str)
-                normalized[f"{key}_sha256"] = hashlib.sha256(raw.encode("utf-8")).hexdigest()
     return json.dumps(normalized, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 

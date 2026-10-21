@@ -865,25 +865,3 @@ class SkillEnvironmentBinding(Base):
     environment_digest: Mapped[str] = mapped_column(ForeignKey("prepared_environments.digest"), index=True)
     analysis: Mapped[dict] = mapped_column(JSON, default=dict)
     environment: Mapped[PreparedEnvironment] = relationship()
-
-
-class ModelRequestGate(Base):
-    """One row per shared model-request pool. Updating it serializes slot claims."""
-
-    __tablename__ = "model_request_gates"
-    pool: Mapped[str] = mapped_column(String(64), primary_key=True)
-
-
-class ModelRequestLease(Base):
-    """In-flight model request held by any worker process in this deployment."""
-
-    __tablename__ = "model_request_leases"
-    __table_args__ = (
-        Index("ix_model_request_leases_pool_expires", "pool", "expires_at"),
-    )
-    token: Mapped[str] = mapped_column(String(36), primary_key=True)
-    pool: Mapped[str] = mapped_column(String(64), nullable=False)
-    job_id: Mapped[str] = mapped_column(String(64), nullable=False)
-    holder: Mapped[str] = mapped_column(String(160), nullable=False)
-    expires_at: Mapped[int] = mapped_column(Integer, nullable=False)
-    created_at: Mapped[int] = mapped_column(Integer, nullable=False)

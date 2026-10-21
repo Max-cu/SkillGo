@@ -1,10 +1,10 @@
-# 工作交接：模型超时体系与 v0.3.1 发布（2026-09-09）
+# 工作交接：模型超时体系 QwenPaw 对齐与 v0.3.1 发布（2026-09-09）
 
-> 面向 Codex 的进度对接文档。本轮工作由 Trae 完成，主线是：诊断长报告任务被超时误杀 → 梳理长任务超时语义 → 三轮改造 → 生产验证 → 发布 v0.3.1。
+> 面向 Codex 的进度对接文档。本轮工作由 Trae 完成，主线是：诊断长报告任务被超时误杀 → 调研 QwenPaw 编排设计 → 三轮改造对齐语义 → 生产验证 → 发布 v0.3.1。
 
 ## 一、问题背景
 
-同一 Skill（IDA 3005 校对，模型 deepSeek-v4-pro）在其他编排环境能跑通，在 SkillGo 反复失败。多次失败形态：
+同一 Skill（IDA 3005 校对，模型 deepSeek-v4-pro）在 WorkBuddy/QwenPaw 能跑通，在 SkillGo 反复失败。多次失败形态：
 
 | 任务 | 失败轮次 | 错误 |
 |---|---|---|
@@ -14,12 +14,12 @@
 
 根因定性：模型直接在单轮内生成整份校审报告（巨量长输出，持续有数据流动），旧版"含重试总预算 600s"把合法长生成误判为超时。**平台设计问题，不是 Skill 问题。**
 
-## 二、超时语义调研结论（设计依据）
+## 二、QwenPaw 调研结论（对齐依据）
 
-- 模型调用层：不设推理总超时，完全依赖流式 per-chunk read timeout 600s 语义——**只要数据持续流动就永不超时**。
-- 任务层：执行模式无 wall-clock 总时限；防失控靠最大迭代 100 与连续重复检测（4 次重复干预）；取消仅手动。
+- 模型调用层：`model_factory.py` 无任何推理超时，完全依赖 openai SDK 流式 per-chunk read timeout 600s 语义——**只要数据持续流动就永不超时**。
+- 任务层：内置三种执行模式（default/goal/mission）均无 wall-clock 总时限；防失控靠 ReAct 最大迭代 100 + DoomLoopGate 连续重复检测（4 次重复干预）；取消仅手动。
 - 唯一内置时限：心跳定时任务 3600s。
-- 工具/沙箱：命令默认 30s，按工具注册时默认 shell 60s / browser 300s，硬上限 24h。
+- 工具/沙箱：命令默认 30s，per-tool 注册默认 shell 60s / browser 300s，硬上限 24h。
 
 ## 三、三轮改造（提交链）
 
@@ -30,7 +30,7 @@ b2d0d34  失败轮次事件 + worker 日志持久化 transport 诊断（model_tr
 e69e5f7  chore: release SkillGo v0.3.1（tag v0.3.1，GitHub Release success）
 ```
 
-### 最终超时语义
+### 最终超时语义（全对齐 QwenPaw）
 
 | 层 | 配置 | 值 | 说明 |
 |---|---|---|---|
@@ -39,7 +39,7 @@ e69e5f7  chore: release SkillGo v0.3.1（tag v0.3.1，GitHub Release success）
 | 流停滞 | `SKILLGO_MODEL_STREAM_STALL_TIMEOUT_SECONDS` | 600s | 中途无新数据触发 |
 | 单轮总预算 | 模型连接 `timeout_seconds`（DB） | **0 = 不限** | deepSeek-v4-pro 已设 0；qwen3.5 / MinerU 保持 120 |
 | 任务 wall-clock | `SKILLGO_SANDBOX_JOB_TIMEOUT_SECONDS` | **0 = 禁用** | 服务器 ecs.env 已设 0 |
-| 推理轮数 | `SKILLGO_SANDBOX_MAX_AGENT_TURNS` | 300（0=禁用） | 相对 100 轮基线放宽 3 倍 |
+| 推理轮数 | `SKILLGO_SANDBOX_MAX_AGENT_TURNS` | 300（0=禁用） | QwenPaw 为 100，放宽 3 倍 |
 | 工具操作 | `SKILLGO_SANDBOX_MAX_AGENT_TOOL_CALLS` | 480（0=禁用） | 同比例放宽 |
 
 防失控体系（去时间化）：轮数 300 封顶 + 重复循环干预（连续 2 轮单例工具即介入）+ 每轮 600s 空闲检测 + 工具命令 120s。核心原则：**只要 Agent 在动就不掐，真卡死 600 秒内被空闲检测发现。**
