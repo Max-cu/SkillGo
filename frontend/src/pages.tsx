@@ -533,6 +533,7 @@ export function ManageSkillPage() {
   const [deleteBusy, setDeleteBusy] = useState(false);
   const [deleteError, setDeleteError] = useState("");
   const [networkBusyId, setNetworkBusyId] = useState("");
+  const [skillFlowBusyId, setSkillFlowBusyId] = useState("");
   const environmentPending = skill?.versions?.some((v) => ["queued", "building", "probing"].includes(v.environment_preparation?.status || ""));
   useEffect(() => {
     if (!environmentPending) return;
@@ -585,7 +586,7 @@ export function ManageSkillPage() {
     }
   }
   async function toggleNetworkAccess(version: SkillVersion) {
-    if (networkBusyId) return;
+    if (networkBusyId || skillFlowBusyId) return;
     setNetworkBusyId(version.id); setMessage("");
     try {
       const updated = await api<SkillVersion>(`/admin/skill-versions/${version.id}/network-access`, {
@@ -597,6 +598,21 @@ export function ManageSkillPage() {
     } catch (reason) {
       setMessage(reason instanceof Error ? reason.message : "联网权限修改失败");
     } finally { setNetworkBusyId(""); }
+  }
+  async function toggleSkillFlow(version: SkillVersion) {
+    if (skillFlowBusyId || networkBusyId) return;
+    setSkillFlowBusyId(version.id); setMessage("");
+    try {
+      const updated = await api<SkillVersion>(`/admin/skill-versions/${version.id}/skill-flow`, {
+        method: "PATCH", body: JSON.stringify({ enabled: !version.follow_skill_flow }),
+      });
+      setData({ ...currentSkill, versions: currentSkill.versions?.map((item) => item.id === updated.id ? updated : item) });
+      setMessage(updated.follow_skill_flow
+        ? `v${updated.version} 已开启沿用 Skill 既定流程；仅对之后创建的单 Skill 任务生效`
+        : `v${updated.version} 已恢复默认编排；仅对之后创建的任务生效`);
+    } catch (reason) {
+      setMessage(reason instanceof Error ? reason.message : "流程设置修改失败");
+    } finally { setSkillFlowBusyId(""); }
   }
   async function confirmVisibility() {
     if (!visibilityTarget) return;
@@ -644,12 +660,24 @@ export function ManageSkillPage() {
                     title={`${networkLabel}，点击${version.network_enabled ? "关闭" : "开启"}`}
                     aria-label={`${networkLabel}，点击${version.network_enabled ? "关闭" : "开启"}`}
                     aria-busy={networkBusyId === version.id}
-                    disabled={networkBusyId === version.id}
+                    disabled={Boolean(networkBusyId || skillFlowBusyId)}
                     onClick={() => void toggleNetworkAccess(version)}
                   >{version.network_enabled ? <Wifi /> : <WifiOff />}</button>
                 : <span className={`version-network-indicator ${version.network_enabled ? "enabled" : "disabled"}`} title={networkLabel} aria-label={networkLabel}>{version.network_enabled ? <Wifi /> : <WifiOff />}</span>)}
             </div>
             <div className="version-actions">
+              {version.execution_mode === "sandbox_required" && (canManageNetwork
+                ? <button className="button secondary compact" type="button" role="switch"
+                    aria-label={`v${version.version} 沿用 Skill 既定流程`}
+                    aria-checked={version.follow_skill_flow}
+                    aria-busy={skillFlowBusyId === version.id}
+                    disabled={Boolean(skillFlowBusyId || networkBusyId)}
+                    title="开启后，单独运行此版本时不再强制重复列计划。准备、分支判断和校验照常执行；多个 Skill 仍需编排。仅影响新任务。"
+                    onClick={() => void toggleSkillFlow(version)}>
+                    沿用 Skill 既定流程：{version.follow_skill_flow ? "开" : "关"}
+                  </button>
+                : <span className="version-kind">{version.follow_skill_flow ? "沿用 Skill 既定流程" : "默认编排"}</span>)}
+
               <StatusBadge status={version.status} />
               {(version.status === "ready" || version.status === "rejected") && <button className="button secondary compact" disabled={Boolean(version.environment_preparation && !["legacy", "ready"].includes(version.environment_preparation.status))} onClick={() => submitVersion(version)}>提交审核</button>}
               {version.execution_mode === "instruction_only" && <Link className="button secondary compact" to={`/app/skills/${currentSkill.id}/run?version=${version.id}`}><MessageSquareText size={15} />对话调试</Link>}

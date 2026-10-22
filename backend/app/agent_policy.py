@@ -472,7 +472,7 @@ class AgentExecutionState:
         """
 
         return (
-            self.plan is None
+            self.plan_required and self.plan is None
             and self.pre_plan_inspection_calls < PRE_PLAN_INSPECTION_LIMIT
         )
 
@@ -499,6 +499,8 @@ class AgentExecutionState:
           already complete and the task should finish).
         """
 
+        if not self.plan and not self.plan_required:
+            return {"ok": True, "auto_activated": False, "tracking_mode": "skill_flow"}
         if not self.plan:
             return {
                 "ok": False,

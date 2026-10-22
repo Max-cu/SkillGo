@@ -4,7 +4,7 @@ import enum
 import uuid
 from datetime import UTC, datetime
 
-from sqlalchemy import JSON, Boolean, DateTime, Enum, ForeignKey, Index, Integer, String, Text, UniqueConstraint
+from sqlalchemy import JSON, Boolean, DateTime, Enum, ForeignKey, Index, Integer, String, Text, UniqueConstraint, false
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .database import Base
@@ -154,6 +154,7 @@ class SkillVersion(TimestampMixin, Base):
     input_schema: Mapped[dict] = mapped_column(JSON, default=dict)
     output_schema: Mapped[dict] = mapped_column(JSON, default=dict)
     requested_permissions: Mapped[dict] = mapped_column(JSON, default=dict)
+    follow_skill_flow: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
     network_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     review_note: Mapped[str | None] = mapped_column(Text, nullable=True)
     published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -504,6 +505,7 @@ class WorkflowJob(TimestampMixin, Base):
     execution_mode: Mapped[str] = mapped_column(String(40))
     trigger: Mapped[str] = mapped_column(String(30), default="file_upload")
     instruction: Mapped[str] = mapped_column(Text, default="")
+    follow_skill_flow: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
     network_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     network_enabled_by: Mapped[list] = mapped_column(JSON, default=list)
     attachment_analysis_mode: Mapped[str] = mapped_column(String(32), default="vision")

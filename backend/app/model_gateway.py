@@ -263,13 +263,13 @@ SANDBOX_AGENT_TOOLS: list[dict[str, Any]] = [
         "function": {
             "name": "update_plan",
             "description": (
-                "Create or replace the trusted execution plan for a complex task. Keep it concise, "
-                "mark at most one step in_progress, and attach short concrete evidence to "
-                "completed/skipped steps when available (evidence is optional mid-run). "
-                "Declare dependencies and input/output files; output_refs may name a produced "
-                "directory, which is tracked as an aggregate. Referenced paths need not exist at "
-                "update time but must exist before finish. Update after each stage. Final verification "
-                "is automatically completed after run_verifier passes when all other steps are complete; it cannot be skipped."
+                "Create or replace a concise execution outline when required by task policy or "
+                "when coordination actually needs it. Do not restate an approved Skill workflow "
+                "when task policy makes planning optional. Declare relevant dependencies and "
+                "exact input/output paths; output_refs may name a produced directory. "
+                "Replan when requirements or the actual workflow change, not to tick off stages "
+                "or update statuses. The task's acceptance policy determines final verification; "
+                "a plan never replaces Skill instructions or real execution evidence."
             ),
             "parameters": {
                 "type": "object",
