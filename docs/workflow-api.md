@@ -195,11 +195,12 @@ Agent 在 `finish.artifacts` 中声明确切的普通文件路径，框架会将
 无需修改 Skill 以适应平台的 `/workspace/output` 路径。框架不会遍历并自动交付整个 Skill 包；
 路径越界、文件缺失、目录、符号链接及空文件/超限文件会返回可修正的工具错误。
 
-默认保留框架完整验证。部署可用 `SKILLGO_ARTIFACT_DELIVERY_ONLY=true` 为全部 Skill 启用文件接收模式，
-也可通过 `SKILLGO_DELIVERY_ONLY_SKILL_IDS` 配置逗号分隔的 Skill ID，
-对仅包含这些 Skill 的任务使用文件接收模式。该模式不运行额外的模型验证程序，不要求验证报告，
+自 v1.0.0 起默认使用文件接收模式，不需要调用方或部署者额外开启。部署者可显式设置
+`SKILLGO_ARTIFACT_DELIVERY_ONLY=false` 选择额外平台完整验证；如果此前配置了
+`SKILLGO_DELIVERY_ONLY_SKILL_IDS` 白名单，其中的 Skill 仍沿用文件接收策略。
+文件接收模式不运行额外的模型验证程序，不要求验证报告，
 仅确认声明文件可安全读取、复制和保存，不判定 PPT 的内容、版式或文件格式质量。
-文件自身的 Skill 验证流程保持原样；混合其他 Skill 的任务仍使用完整验证。
+文件自身的 Skill 验证流程保持原样。按白名单选择接收模式时，混合其他 Skill 的任务仍使用完整验证。
 接收模式中的 `verified` 仅代表文件已成功保存和接收，不代表通过了业务或版式审查。
 
 API 创建任务时会复制 Endpoint 所绑定版本的联网授权和 `follow_skill_flow` 设置。

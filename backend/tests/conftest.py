@@ -37,6 +37,9 @@ TEST_CREATOR_EMAIL = make_email("creator")
 TEST_CREATOR_PASSWORD = make_password("creator")
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 os.environ["SKILLGO_ENVIRONMENT"] = "test"
+# Existing verifier tests deliberately exercise the opt-in full policy.
+# Default deployment policy is checked in a fresh process separately.
+os.environ["SKILLGO_ARTIFACT_DELIVERY_ONLY"] = "false"
 os.environ["SKILLGO_DATABASE_URL"] = f"sqlite:///{(test_root / 'test.db').as_posix()}"
 os.environ["SKILLGO_STORAGE_ROOT"] = str(test_root / "storage")
 os.environ["SKILLGO_JWT_SECRET"] = f"{uuid4().hex}{uuid4().hex}"
