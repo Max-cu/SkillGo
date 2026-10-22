@@ -28,7 +28,6 @@ from ..models import (
     Role,
     Run,
     RunStatus,
-    SkillType,
     SkillVersion,
     User,
     VersionStatus,

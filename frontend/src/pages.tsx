@@ -1723,7 +1723,6 @@ export function ModelSettingsPage() {
   const [busyAction, setBusyAction] = useState<"save" | "test" | "">("");
   const [message, setMessage] = useState("");
   const [messageTone, setMessageTone] = useState<"success" | "error" | "">("");
-  const [testResult, setTestResult] = useState<ModelConnectionTestResult | null>(null);
   const [editorOpen, setEditorOpen] = useState(false);
 
 
@@ -1745,7 +1744,6 @@ export function ModelSettingsPage() {
     setIsDefaultOcr(item?.is_default_ocr ?? false);
     setEnabled(item?.enabled ?? true);
     setMessage(""); setMessageTone("");
-    setTestResult(null);
     setEditorOpen(true);
   }
 
@@ -1754,7 +1752,6 @@ export function ModelSettingsPage() {
     setEditorOpen(false);
     setEditingModel(null);
     setMessage(""); setMessageTone("");
-    setTestResult(null);
   }
 
   useEffect(() => {
@@ -1818,11 +1815,10 @@ export function ModelSettingsPage() {
   }
 
   async function testConnection(item?: ModelConnectionItem) {
-    setBusyAction("test"); setMessage(""); setTestResult(null);
+    setBusyAction("test"); setMessage("");
     try {
       const candidate = item ? { base_url: item.base_url, api_format: item.api_format, api_key: null, clear_api_key: false, models: [item.model_name], default_model: item.model_name, timeout_seconds: item.timeout_seconds, temperature: item.temperature, json_mode: item.json_mode, native_tools: item.native_tools, tls_verify: item.tls_verify, capabilities: item.capabilities, agent_options: item.agent_options, model_id: item.id } : payload();
       const result = await api<ModelConnectionTestResult>("/super-admin/model/test", { method: "POST", body: JSON.stringify(candidate) });
-      setTestResult(result);
       setMessageTone("success");
       setMessage(`连接正常，${result.model_name} 响应耗时 ${result.latency_ms} ms`);
     } catch (reason) { setMessageTone("error"); setMessage(reason instanceof Error ? reason.message : "模型连接测试失败"); }
@@ -1831,7 +1827,7 @@ export function ModelSettingsPage() {
 
   async function saveConfig(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    setBusyAction("save"); setMessage(""); setMessageTone(""); setTestResult(null);
+    setBusyAction("save"); setMessage(""); setMessageTone("");
     try {
       const path = editingModel ? `/super-admin/models/${editingModel.id}` : "/super-admin/models";
       const updated = await api<ModelConnectionItem>(path, { method: editingModel ? "PUT" : "POST", body: JSON.stringify(payload()) });
