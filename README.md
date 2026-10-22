@@ -84,13 +84,19 @@ https://github.com/user-attachments/assets/eb3e6cdf-cda6-434b-a0a9-4cc0d37262f4
 
 ### 界面预览
 
-**起始页**
+<details>
+<summary>起始页</summary>
 
 ![SkillGo 起始页与社区精选 Skill](docs/assets/skillgo-home.png)
 
-**任务工作台**
+</details>
+
+<details>
+<summary>任务工作台</summary>
 
 ![SkillGo 任务工作台与执行过程](docs/assets/skillgo-workbench.png)
+
+</details>
 
 <details>
 <summary>Skill 管理与存储界面</summary>
