@@ -84,7 +84,13 @@ https://github.com/user-attachments/assets/eb3e6cdf-cda6-434b-a0a9-4cc0d37262f4
 
 ### 界面预览
 
+**起始页**
 
+![SkillGo 起始页与社区精选 Skill](docs/assets/skillgo-home.png)
+
+**任务工作台**
+
+![SkillGo 任务工作台与执行过程](docs/assets/skillgo-workbench.png)
 
 <details>
 <summary>Skill 管理与存储界面</summary>
@@ -242,7 +248,8 @@ SkillGo 由 **Web / FastAPI 控制面、PostgreSQL 与文件存储、可信 Work
 
 本文描述当前 `main`。生产部署请选择经过验证的提交或 [Release](https://github.com/Max-cu/SkillGo/releases)，并参考对应版本文档；历史设计记录不代表当前功能开关或部署状态。
 
-## v1.0.0：让 Skill 顺畅执行到交付
+<details>
+<summary>v1.0.0：让 Skill 顺畅执行到交付（点击展开）</summary>
 
 - **沿用既定流程**：管理员可按 Skill 版本开启，单 Skill 任务不再强制重列执行计划；完整 Skill、前置条件和自带校验仍交给模型遵循。
 - **减少执行往返**：支持批量读取、批量命令和工作流连续执行，可恢复错误返回模型处理；正常完成后安全收集真实产物。
@@ -251,6 +258,8 @@ SkillGo 由 **Web / FastAPI 控制面、PostgreSQL 与文件存储、可信 Work
 - **网页与 API 一致**：新任务继承所绑定版本的联网和既定流程设置，不要求外部调用方重复配置。
 
 [查看 v1.0.0 发布说明](RELEASE_NOTES.md) · [完整变更记录](CHANGELOG.md)
+
+</details>
 
 ## 参与项目
 
