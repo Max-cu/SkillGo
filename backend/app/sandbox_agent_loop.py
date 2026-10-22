@@ -28,6 +28,7 @@ from .context_observation import safe_observe_context, provider_usage
 from .skill_phase_contracts import stage_contracts, available_reference_paths, expand_reference_actions
 from .workflow_tools import run_verifier, snapshot_step_files, effective_instruction
 from .artifact_collection import receive_declared_artifacts, delivery_only_job
+from .workflow_delivery import configured_export_command, export_baseline, capture_export, receive_workflow_delivery
 from .visual_inspection import VisualInspectionCache
 from .deterministic_runtime import execute_fixed_skill
 from .artifact_validation import (
@@ -1029,7 +1030,11 @@ async def _run_agent_loop(
                                     execution_state.workflow_runs[key] = {'recipe_sha256':digest,'next_index':start,
                                                                           'command_count':len(recipe['commands'])}
                                     batch = {'id':parent_id,'tool':kind,'count':len(children),'results':[],
-                                             'workflow_key':key,'command_indexes':command_indexes,'workflow_id':parent['workflow_id']}
+                                             'workflow_key':key,'command_indexes':command_indexes,'workflow_id':parent['workflow_id'],
+                                             'delivery_command':(configured_export_command(job.skill_version_id,
+                                                 settings.workflow_auto_delivery_version_ids, recipe)
+                                                 if execution_state.skill_count == 1 and execution_state.delivery_only else None),
+                                             'skill_index':index}
                                     calls = [(parent_id,child) for child in children]
                     elif kind != 'run_skill_workflow' and (kind != 'run_commands' or execution_state.plan is not None):
                         field = 'files' if kind == 'read_files' else 'commands'
@@ -1646,6 +1651,8 @@ async def _run_agent_loop(
                     messages, result, action_name, payload, tool_call_id=tool_call_id
                 )
             elif action_name == "command":
+                if batch and batch.get('delivery_command') == action.get('argv'):
+                    batch['export_baseline'] = await export_baseline(sandbox, cwd=skill_contexts[batch['skill_index']-1]['root'])
                 argv = action["argv"]
                 command_timeout = int(
                     action.get("timeout_seconds")
@@ -1967,6 +1974,10 @@ async def _run_agent_loop(
 
             if batch:
                 batch['results'].append({'index': call_index, 'tool': action_name, 'payload': payload})
+                if (batch.get('delivery_command') and action_name == 'command'
+                        and action.get('argv') == batch['delivery_command']):
+                    batch['delivery_signal'] = await capture_export(sandbox, payload, batch.get('export_baseline'),
+                        cwd=skill_contexts[batch['skill_index']-1]['root'])
                 if batch.get('workflow_key') and action_name == 'command' and isinstance(payload,dict) and payload.get('ok') is not False and payload.get('exit_code',0) == 0:
                     cursor = batch['command_indexes'][call_index-1]+1
                     execution_state.workflow_runs[batch['workflow_key']]['next_index'] = cursor
@@ -2006,6 +2017,43 @@ async def _run_agent_loop(
             # Per-child payloads have already followed ordinary offload rules;
             # do not truncate them a second time at the aggregate boundary.
             _append_tool_result(messages, result, batch['tool'], aggregate, tool_call_id=batch['id'])
+            # The signal is from this execution's designated exporter. Wait for
+            # every remaining verifier/cleanup command before accepting it.
+            declared = batch.get('delivery_signal')
+            if (not failed and declared and batch.get('workflow_key')
+                    and execution_state.skill_count == 1 and execution_state.delivery_only):
+                if job_cancelled():
+                    raise AgentJobCancelled("Workflow job was cancelled")
+                root = skill_contexts[batch['skill_index']-1]['root']
+                collection = await receive_workflow_delivery(sandbox, declared, cwd=root)
+                if collection.get('ok') is not False:
+                    artifacts = collection['artifacts']
+                    sources = collection['sources']
+                    current_snapshot = collection['artifact_sha256']
+                    execution_state.register_artifact_collection(current_snapshot, collection['artifact_sources'])
+                    blocker = execution_state.finish_blocker(current_artifacts=current_snapshot)
+                    if blocker:
+                        collection = {'ok': False, 'error_code': 'AGENT_PLAN_INCOMPLETE', 'message': blocker}
+                    else:
+                        if job_cancelled():
+                            raise AgentJobCancelled("Workflow job was cancelled")
+                        execution_state.complete_skill(1, 'Declared final workflow delivered current artifact bytes')
+                        summary = '已完成制作，交付文件：' + '、'.join(PurePosixPath(path).name for path in sources)
+                        add_job_event(db, job, 'tool', '最终流程已完成，自动交付',
+                                      f'已确认 {len(artifacts)} 个本次导出文件，无需模型再次结束任务',
+                                      status='succeeded', data={'tool':'workflow_auto_delivery',
+                                      'workflow_id':batch['workflow_id'], 'artifact_sha256':current_snapshot,
+                                      'turn':turn_number, 'automatic':True})
+                        agent_session.finish_step(turn_number)
+                        agent_session.finish_turn(turn_number, reason='workflow_auto_delivery')
+                        db.commit()
+                        return summary, artifacts, turn_number, tool_operation_count
+                # Correctable declaration problems return to the ordinary agent;
+                # never fabricate task success or blindly re-export.
+                add_job_event(db, job, 'status', '自动交付未完成，继续处理',
+                              collection.get('message', '无法收集最终文件'), status='running',
+                              data={'error_code':collection.get('error_code'), 'workflow_id':batch['workflow_id']})
+                messages.append({'role':'user','content':json.dumps({'workflow_delivery':collection},ensure_ascii=False)})
 
         # Keep the native assistant/tools protocol intact: guidance follows all
         # pending replies, including the one parent reply for a stopped batch.
