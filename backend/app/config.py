@@ -153,6 +153,7 @@ class Settings:
     sandbox_max_artifact_bytes: int = int(
         os.getenv("SKILLGO_SANDBOX_MAX_ARTIFACT_BYTES", str(500 * 1024 * 1024))
     )
+    context_observability_enabled: bool = _bool("SKILLGO_CONTEXT_OBSERVABILITY", False)
     artifact_delivery_only: bool = _bool("SKILLGO_ARTIFACT_DELIVERY_ONLY", False)
     delivery_only_skill_ids: tuple[str, ...] = tuple(
         value.strip() for value in os.getenv("SKILLGO_DELIVERY_ONLY_SKILL_IDS", "").split(',') if value.strip()
