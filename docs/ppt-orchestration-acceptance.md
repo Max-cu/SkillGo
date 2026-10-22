@@ -24,7 +24,7 @@ Skills and models retain `write_file`.
 
 ## Skill changes
 
-The maintained overlay in `skill-packages/tcc-ppt` preserves company assets and
+The maintained overlay in `skill-packages/presentation` preserves company assets and
 all existing validators. Model authoring is concentrated in content selection
 and a structured page plan. Deterministic layout, wrapping and SVG generation
 run locally, with precise overflow errors and unchanged-page preservation.

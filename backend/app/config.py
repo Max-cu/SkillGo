@@ -116,8 +116,8 @@ class Settings:
         os.getenv("SKILLGO_SANDBOX_WORKER_MAX_ATTEMPTS", "3")
     )
     sandbox_job_timeout_seconds: int = int(
-        # 0 disables the wall-clock budget (QwenPaw semantics: no task-level
-        # time limit; runaway protection relies on the turn cap and idle checks).
+        # 0 disables the task wall-clock budget; runaway protection still
+        # relies on the turn cap and idle checks.
         os.getenv("SKILLGO_SANDBOX_JOB_TIMEOUT_SECONDS", "0")
     )
     sandbox_command_timeout_seconds: int = int(
@@ -128,7 +128,7 @@ class Settings:
     )
     sandbox_tool_inline_bytes: int = int(
         # Recent command/run_python/verifier results up to this size stay
-        # fully inline (two-tier pruning, aligned with QwenPaw's 50KB recent
+        # fully inline (two-tier pruning, with a larger recent
         # tier); larger results are persisted to tool-results/ and replaced by
         # a head+tail excerpt. Older exchanges are dropped wholesale by
         # project_context. Default 52 KiB.
@@ -137,8 +137,8 @@ class Settings:
     # A reasoning turn may now contain several native tool calls. Keep the
     # model-turn budget separate from the sandbox-operation budget so a useful
     # batch is not reported as several rounds of "thinking".
-    # 0 disables the caps (QwenPaw semantics: complex Skills may legitimately
-    # need more than a hundred reasoning turns).
+    # 0 disables the caps; complex Skills may legitimately need more than
+    # a hundred reasoning turns.
     sandbox_max_agent_turns: int = int(
         os.getenv(
             "SKILLGO_SANDBOX_MAX_AGENT_TURNS",

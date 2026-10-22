@@ -10,7 +10,8 @@
 - [Agent 内核](agent-kernel.md)：计划、工具、上下文、验证和产物门禁。
 - [工作流 API](workflow-api.md)：异步 Endpoint、幂等、状态查询和产物下载。
 - [沿用 Skill 既定流程](skill-flow-policy.md)：版本开关、单 Skill 免强制规划和 API 继承规则。
-- [最终工作流自动交付](workflow-auto-delivery.md)：版本白名单、导出证据、文件一致性与回退条件。
+- [通用最终操作交付](final-operation-delivery.md)：任意 Skill 和文件格式的最终操作声明、完成证据与回退条件。
+- [工作流交付兼容适配](workflow-auto-delivery.md)：已审核导出流程的版本白名单与原有兼容路径。
 - [上下文观测](context-observability.md)：可选统计、记录范围和估算值边界。
 - [持久化快照](durable-task-checkpoints.md)：可选中断恢复及其限制。
 - [技术设计](technical-design.md)：数据模型、控制面、执行面和安全约束的详细设计。

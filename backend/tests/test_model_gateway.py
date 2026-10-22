@@ -39,7 +39,7 @@ def test_parse_model_json_rejects_array():
 
 def test_parse_native_tool_call_preserves_thinking_context():
     payload = {
-        "model": "deepseek-v4-flash",
+        "model": "private-model",
         "choices": [
             {
                 "message": {

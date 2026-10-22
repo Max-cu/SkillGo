@@ -153,8 +153,8 @@ def test_export_verify_finish_completes_without_dummy_write_or_duplicate(client,
 def test_optimized_skill_exposes_only_fixed_build_finalize_export_workflow():
     from pathlib import Path
     from app.skill_phase_contracts import stage_contracts
-    guide = (Path(__file__).resolve().parents[2] / 'skill-packages/tcc-ppt/overlay/SKILL.md').read_text(encoding='utf8')
-    contracts = stage_contracts({'root':'/workspace/skills/tcc','skill_md':guide})
+    guide = (Path(__file__).resolve().parents[2] / 'skill-packages/presentation/overlay/SKILL.md').read_text(encoding='utf8')
+    contracts = stage_contracts({'root':'/workspace/skills/presentation','skill_md':guide})
     workflow = contracts['workflows']['steps-3-5']
     assert workflow['stages'] == [3,4,5]
     assert [command[1] for command in workflow['commands']] == [

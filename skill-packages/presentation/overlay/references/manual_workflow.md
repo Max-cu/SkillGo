@@ -1,5 +1,5 @@
 ---
-name: tcc-ppt-skill
+name: presentation-skill
 description: >-
   当用户需要生成 .pptx 演示文稿时使用本 skill —— **两种入口都接**：
   ① 提供**素材**（文档 / 图片包，任意格式混搭）；② **只给一句主题**
@@ -15,7 +15,7 @@ description: >-
   不适用于 Ardot 画布幻灯片设计——本 skill 仅负责 .pptx 文件导出。
 agent_created: true
 ---
-# 中国天辰 PPT Skill
+# 企业 PPT Skill
 
 通过标准化模板与数据配置，一键生成专业 .pptx 演示文稿。门面页（封面/目录/章节/致谢）由 `assets/pipeline_config.json` 统一管理；内容页统一走 009 创作页，在合规约束下自由创作布局，正文 SVG 片段存放于 `assets/svg_body/`。脚本固定不变，改内容永不改脚本。
 
@@ -142,16 +142,16 @@ pip install curl_cffi
 
 ## ⚠️ 首次加载 —— 定位 Skill 根目录
 
-本 skill 可能安装在 SkillGo 平台（如 `/workspace/skills/01-tcc-ppt/tcc-ppt-skill/`）、
-用户级（`~/.workbuddy/skills/`）或项目级（`.workbuddy/skills/`），
-目录名也可能是任意字符串（不一定是 `tcc-ppt-skill`）。
+本 skill 可能安装在 SkillGo 平台（如 `/workspace/skills/01-presentation-ppt/presentation-skill/`）、
+用户级（`~/.skills/`）或项目级（`.skills/`），
+目录名也可能是任意字符串（不一定是 `presentation-skill`）。
 
 **首次使用本 skill 时，必须先确认 skill 根目录的实际路径**：
 
 1. **最优先**：本 SKILL.md 已被加载，取其所在目录即为 skill 根目录。例如：
-   - SkillGo 平台：`/workspace/skills/01-tcc-ppt/tcc-ppt-skill/SKILL.md` → &lt;SKILL_ROOT&gt; = `/workspace/skills/01-tcc-ppt/tcc-ppt-skill`
-   - 本机：`~/.workbuddy/skills/tcc-ppt-skill/SKILL.md` → &lt;SKILL_ROOT&gt; = `~/.workbuddy/skills/tcc-ppt-skill`
-2. **备用方案**（如果 SKILL.md 的文件路径未知）：用 `glob` 在 `~/.workbuddy/skills/`、`.workbuddy/skills/` 和 `/workspace/skills/` 中搜索 `scripts/build_svgs.py`，提取其父目录的父目录。
+   - SkillGo 平台：`/workspace/skills/01-presentation-ppt/presentation-skill/SKILL.md` → &lt;SKILL_ROOT&gt; = `/workspace/skills/01-presentation-ppt/presentation-skill`
+   - 本机：`~/.skills/presentation-skill/SKILL.md` → &lt;SKILL_ROOT&gt; = `~/.skills/presentation-skill`
+2. **备用方案**（如果 SKILL.md 的文件路径未知）：用 `glob` 在 `~/.skills/`、`.skills/` 和 `/workspace/skills/` 中搜索 `scripts/build_svgs.py`，提取其父目录的父目录。
 3. 将找到的路径记为一个变量（如 `SKILL_ROOT`），后续所有 `cd`、`python scripts/...` 和
    文件读写都基于此路径。
 4. 如果以上都找不到，**报错终止**并输出：「无法定位 skill 根目录 —— 请确认 skill 已正确安装」。

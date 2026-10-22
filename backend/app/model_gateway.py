@@ -1341,7 +1341,7 @@ Never invent an id and never return prose or Markdown."""
                 "model": self.connection.model_name,
                 "messages": request_messages,
                 "tools": SANDBOX_AGENT_TOOLS,
-                # DeepSeek thinking mode supports native tools but rejects
+                # Some reasoning-enabled providers support native tools but reject
                 # tool_choice="required". The coordinator prompt still requires
                 # one or more tools per turn, and malformed/prose responses get one
                 # bounded correction attempt before compatibility fallback.
@@ -1495,7 +1495,7 @@ def _parse_agent_tool_response(
 ) -> tuple[list[AgentToolCall], dict[str, Any]]:
     """Parse OpenAI-compatible function calls and retain their assistant context.
 
-    DeepSeek thinking mode requires reasoning_content from tool-call messages to be
+    Reasoning-enabled providers may require reasoning_content from tool-call messages to be
     sent back unchanged on every following request, so the worker stores the native
     assistant message instead of reconstructing it from the action alone.
     """

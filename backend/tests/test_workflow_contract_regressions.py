@@ -16,7 +16,7 @@ from app.sandbox_runtime import DockerSandbox, SandboxCommandResult, SandboxRunt
 from app.workflow_tools import _validated_workspace_path
 
 
-ROOT = '/workspace/skills/01-tcc/tcc-ppt-skill-v4'
+ROOT = '/workspace/skills/01-presentation/presentation-skill'
 REF = ROOT + '/references/step_0_extract.md'
 
 
@@ -24,8 +24,8 @@ REF = ROOT + '/references/step_0_extract.md'
 def test_plan_path_contract_survives_acceptance_policy(monkeypatch, delivery_only):
     monkeypatch.setattr('app.sandbox_agent_loop.delivery_only_job', lambda job: delivery_only)
     job = SimpleNamespace(instruction='Generate LNG report', input_files=[])
-    context = {'name': 'TCC', 'version': '0.1.42', 'root': ROOT,
-               'skill_md': '# TCC\nUse assets/sources/文本.md.', 'runtime_requirements': {}}
+    context = {'name': 'Presentation', 'version': '0.1.42', 'root': ROOT,
+               'skill_md': '# Presentation\nUse assets/sources/文本.md.', 'runtime_requirements': {}}
     system = _agent_messages(job, [context], [])[0]['content']
     assert 'exact absolute workspace paths below /workspace' in system
     assert 'Resolve Skill-relative examples against that selected Skill Root' in system
