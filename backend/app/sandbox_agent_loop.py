@@ -286,11 +286,25 @@ def _agent_messages(
         "No selected Skill version has administrator-approved network access, so this task has no outbound network. "
         "Do not invent live lookup results."
     )
+    follow_skill_flow = len(skill_contexts) == 1 and bool(getattr(job, 'follow_skill_flow', False))
     plan_rule = (
         "In the first reasoning turn call update_plan (it may be batched with independent "
         "read_skill/list_files calls). Create 2-8 cohesive steps, identify one final verification "
         "step with validation_step_id. The plan is an outline, not a progress checklist. Do not call update_plan to tick steps or change their statuses; call it again only if the actual workflow or requirements change."
     )
+    inspection_rule = (
+        "Inspect first, then plan: read/list the available files, and for binary inputs (PDF/DOCX/images) use command/run_python to inspect their structure. A few pre-plan inspection calls are allowed, but call update_plan once (all steps pending) before producing any file or running a Skill entrypoint, and before further work. Do not finish before a real tool result proves the work is complete."
+    )
+    if follow_skill_flow:
+        plan_rule = (
+            "Administrator-selected Skill flow mode: follow the complete approved SKILL.md directly, "
+            "including input routing, preparation, conditional branches, references and checks. "
+            "Do not call update_plan merely to restate its workflow or the user's topic, page count or style. "
+            "Make task-specific choices during ordinary execution. Planning is optional: use update_plan "
+            "only when coordination or recovery actually needs a plan, never for status bookkeeping. "
+            "If used, validation_step_id may identify an existing final Skill stage; do not append a redundant verification stage."
+        )
+        inspection_rule = "Inspect the available inputs as the Skill requires, then execute its workflow. No separate plan is required before tools. Do not finish before real tool results prove the work is complete."
     system = f"""You are SkillGo's trusted workflow coordinator for one or more administrator-approved Agent Skills.
 You do not execute code yourself. You request actions inside a fresh, isolated gVisor sandbox and receive real tool results.
 
@@ -325,7 +339,7 @@ Mandatory rules:
    {{"action":"finish","summary":"truthful final summary","artifacts":["/workspace/output/report.docx"]}}
 9a. SKILL.md files may use tool names from another Agent platform. Treat those names as capability intent, not as a requirement that an identically named API must exist. Use only the actions listed above and adapt an equivalent workflow when possible: directory listing/browsing to list_files; text reads/writes to read_file/write_file; command execution to command/run_python; Word/DOCX generation to run_python with python-docx; Excel/XLSX generation to run_python with openpyxl; PDF generation to run_python with reportlab; and PowerPoint/PPTX generation to run_python with python-pptx. Do not block merely because a vendor-specific tool name differs when these primitives can truthfully complete the work.
 10. Keep every action compact. Never place an entire report or long document directly inside one JSON response; use sandbox scripts/files and small incremental writes instead.
-11. Inspect first, then plan: read/list the available files, and for binary inputs (PDF/DOCX/images) use command/run_python to inspect their structure. A few pre-plan inspection calls are allowed, but call update_plan once (all steps pending) before producing any file or running a Skill entrypoint, and before further work. Do not finish before a real tool result proves the work is complete.
+11. {inspection_rule}
 12. read_file is only for UTF-8 text files. For DOCX, XLSX, PDF, images, archives, or other binary files, use command or run_python with the approved Skill scripts/libraries. Never call read_file on a binary input.
 13. If the model endpoint falls back to JSON compatibility mode, return exactly one of the action objects shown in rule 9 and no other text.
 14. command executes argv directly without a shell. Never include pipes, redirects, &&, semicolons, or tokens such as 2>/dev/null. Use Python APIs or separate tool calls instead.
@@ -383,6 +397,10 @@ Execution protocol updates (these refine the earlier rules):
         )
         system = system.replace('Once the required artifacts exist and validation passes, call finish immediately.',
                                 'Once the Skill has finished and its deliverables exist, call finish immediately.')
+    if follow_skill_flow:
+        system = "\n".join(line for line in system.splitlines() if not line.startswith(
+            ('   {"action":"update_plan"', '- Create a concise plan with depends_on')
+        ))
     # Path/dependency contracts apply to both acceptance policies. Keep this
     # independent of the verification guidance filtered by delivery-only mode.
     system += (
@@ -757,7 +775,7 @@ async def _run_agent_loop(
     db.commit()
     execution_state = AgentExecutionState(
         skill_count=len(skill_contexts),
-        plan_required=True,
+        plan_required=not (len(skill_contexts) == 1 and bool(getattr(job, "follow_skill_flow", False))),
         # Explicit user references remain ordered; automatic tasks use the plan dependencies.
         ordered_skills=len(skill_contexts) > 1 and job.routing_mode != "automatic",
         loaded_skills={1} if len(skill_contexts) == 1 else set(),
@@ -801,6 +819,7 @@ async def _run_agent_loop(
         messages = resume['messages']
         execution_state = state_from_json(resume['execution_state'])
         execution_state.delivery_only = delivery_only_job(job)
+        execution_state.plan_required = not (len(skill_contexts) == 1 and bool(getattr(job, "follow_skill_flow", False)))
         next_turn = resume['next_turn']
         repeated_action, repeat_count = resume['repeated_action'], resume['repeat_count']
         recoverable_errors, tool_operation_count = resume['recoverable_errors'], resume['tool_operation_count']
@@ -821,6 +840,11 @@ async def _run_agent_loop(
             logger.warning("workspace listing unavailable for fresh run job_id=%s: %s", job.id, exc)
             file_tree = []
         messages = _agent_messages(job, skill_contexts, file_tree)
+        if not execution_state.plan_required:
+            add_job_event(db, job, 'status', '沿用 Skill 既定流程',
+                          '已由管理员开启；按完整 Skill 执行，必要时仍可主动规划',
+                          status='succeeded', data={'planning_mode': 'skill_flow'})
+            db.commit()
     durable = bool(settings.durable_checkpoints_enabled or resume) and isinstance(sandbox, DockerSandbox)
     fence = checkpoint_fence or (lambda: None)
 
@@ -996,7 +1020,7 @@ async def _run_agent_loop(
                     kind = parent['action']
                     # A command batch never consumes the pre-plan inspection
                     # allowance; return the ordinary plan precondition instead.
-                    if kind == 'run_skill_workflow' and execution_state.plan is not None:
+                    if kind == 'run_skill_workflow' and (execution_state.plan is not None or not execution_state.plan_required):
                         index = parent['skill_index']
                         recipe = contracts[index-1]['workflows'].get(parent['workflow_id']) if index <= len(contracts) else None
                         if (recipe is None or index not in execution_state.loaded_skills or
@@ -1036,7 +1060,7 @@ async def _run_agent_loop(
                                                  if execution_state.skill_count == 1 and execution_state.delivery_only else None),
                                              'skill_index':index}
                                     calls = [(parent_id,child) for child in children]
-                    elif kind != 'run_skill_workflow' and (kind != 'run_commands' or execution_state.plan is not None):
+                    elif kind != 'run_skill_workflow' and (kind != 'run_commands' or execution_state.plan is not None or not execution_state.plan_required):
                         field = 'files' if kind == 'read_files' else 'commands'
                         single = 'read_file' if kind == 'read_files' else 'command'
                         batch = {'id': parent_id, 'tool': kind, 'count': len(parent[field]), 'results': []}

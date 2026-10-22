@@ -89,7 +89,7 @@ def test_collection_only_accepts_signalled_current_bytes(case):
         assert result['sources'] == [SOURCE]
 
 
-@pytest.mark.parametrize('mode', ['success', 'no_signal', 'cleanup_failure', 'changed', 'cancel', 'undeclared', 'full_verification', 'unrecognized_recipe'])
+@pytest.mark.parametrize('mode', ['success', 'no_signal', 'cleanup_failure', 'changed', 'cancel', 'undeclared', 'full_verification', 'unrecognized_recipe', 'no_plan'])
 def test_final_workflow_delivery_skips_model_finish_only_on_success(client, user_headers, monkeypatch, mode):
     from app.database import SessionLocal
     from app.models import WorkflowJob
@@ -106,6 +106,7 @@ def test_final_workflow_delivery_skips_model_finish_only_on_success(client, user
     assert state.update_plan({'goal': 'Create report', 'steps': [
         {'id': 'make', 'title': 'Create'}, {'id': 'check', 'title': 'Check'}],
         'validation_step_id': 'check', 'success_criteria': ['Report ready']})['ok']
+    if mode == 'no_plan': state.plan = None
     cancelled = False
 
     class Sandbox(DeliverySandbox):
@@ -146,19 +147,20 @@ def test_final_workflow_delivery_skips_model_finish_only_on_success(client, user
         async def agent_step(self, **kwargs):
             self.count += 1
             if self.count > 1:
-                assert mode not in {'success', 'cancel'}, 'Unexpected extra model call'
+                assert mode not in {'success', 'cancel', 'no_plan'}, 'Unexpected extra model call'
                 raise FallbackReached
             return ModelResult({'action': 'run_skill_workflow', 'skill_index': 1,
                                 'workflow_id': 'steps-3-5', 'reason': 'Final workflow'}, 'test', {})
 
     with SessionLocal() as db:
         job = db.get(WorkflowJob, jid)
+        job.follow_skill_flow = mode == 'no_plan'
         sandbox = Sandbox()
         sandbox.durable_resume['model_name'] = job.model_name
         gateway = Gateway()
         run = _run_agent_loop(db, job, sandbox, skill_contexts=[context(guide)],
                               gateway=gateway, job_cancelled=lambda: cancelled)
-        if mode == 'success':
+        if mode in {'success', 'no_plan'}:
             result = asyncio.run(run)
             assert gateway.count == 1
             assert len(result[1]) == 1 and sandbox.files[result[1][0]] == CONTENT

@@ -490,6 +490,7 @@ def _prepare_file_job(
         execution_mode=str(profile["execution_mode"]),
         trigger=trigger,
         instruction=instruction.strip(),
+        follow_skill_flow=len(selected_versions) == 1 and bool(version.follow_skill_flow),
         network_enabled=bool(network_versions),
         network_enabled_by=[
             {

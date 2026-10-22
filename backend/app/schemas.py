@@ -109,6 +109,7 @@ class VersionRead(BaseModel):
     input_schema: dict
     output_schema: dict
     requested_permissions: dict
+    follow_skill_flow: bool = False
     network_enabled: bool
     execution_mode: str
     runtime_status: str
@@ -207,6 +208,7 @@ class WorkflowJobRead(BaseModel):
     instruction: str
     pending_question: dict | None = None
     execution_plan: dict | None = None
+    follow_skill_flow: bool = False
     network_enabled: bool = False
     network_enabled_by: list[dict] = Field(default_factory=list)
     attachment_analysis_mode: str = "vision"
@@ -300,6 +302,10 @@ class AgentConversationDetail(AgentConversationRead):
 class ReviewDecision(BaseModel):
     note: str = Field(default="", max_length=4000)
     network_enabled: bool | None = None
+
+
+class SkillFlowUpdate(BaseModel):
+    enabled: bool
 
 
 class NetworkAccessUpdate(BaseModel):

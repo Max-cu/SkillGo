@@ -33,6 +33,7 @@ export interface SkillVersion {
   input_schema: Record<string, unknown>;
   output_schema: Record<string, unknown>;
   requested_permissions: Record<string, unknown>;
+  follow_skill_flow: boolean;
   network_enabled: boolean;
   execution_mode: "instruction_only" | "platform_tools" | "sandbox_required" | string;
   runtime_status: "available" | "awaiting_platform_tools" | "awaiting_sandbox" | string;
@@ -184,6 +185,7 @@ export interface WorkflowJob {
   instruction: string;
   pending_question?: { id: string; question: string } | null;
   execution_plan?: { tracking_mode?: "outline"; goal: string; steps: Array<{ id: string; title: string; status: string; evidence: string; depends_on: string[]; input_refs: string[]; output_refs: string[] }> } | null;
+  follow_skill_flow: boolean;
   network_enabled: boolean;
   network_enabled_by: Array<{
     skill_id: string;
