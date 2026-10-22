@@ -141,7 +141,7 @@ def test_sse_tool_call_deltas_merge_into_native_payload(monkeypatch):
     from app.model_gateway import _parse_agent_tool_response
 
     chunks = [
-        {'model': 'deepseek-test', 'choices': [{'index': 0, 'delta': {'role': 'assistant', 'reasoning_content': 'think'}}]},
+        {'model': 'private-test-model', 'choices': [{'index': 0, 'delta': {'role': 'assistant', 'reasoning_content': 'think'}}]},
         {'choices': [{'index': 0, 'delta': {'tool_calls': [
             {'index': 0, 'id': 'call_1', 'type': 'function', 'function': {'name': 'run_python', 'arguments': '{"co'}}]}}]},
         {'choices': [{'index': 0, 'delta': {'tool_calls': [

@@ -69,6 +69,27 @@ def validate_agent_action(action: dict[str, Any]) -> str | None:
         return f"Unknown sandbox tool: {action_name}"
     if "reason" in action and not isinstance(action.get("reason"), str):
         return "reason must be text"
+    if 'delivery' in action:
+        from .operation_delivery import DELIVERY_TOOLS
+        delivery = action['delivery']
+        if action_name not in DELIVERY_TOOLS:
+            return 'delivery is only supported on final file-producing operations'
+        if (not isinstance(delivery, dict) or set(delivery) != {'summary', 'artifacts'}
+                or not isinstance(delivery['summary'], str)
+                or not 1 <= len(delivery['summary'].strip()) <= 4000):
+            return 'delivery requires a nonempty summary (max 4000 characters) and exact artifacts'
+        paths = delivery['artifacts']
+        if (not isinstance(paths, list) or not 1 <= len(paths) <= 50
+                or any(not isinstance(p, str) or not p or len(p) > 1024 or '\x00' in p for p in paths)):
+            return 'delivery artifacts must declare 1-50 exact file paths'
+        for path in paths:
+            parsed = PurePosixPath(path)
+            if (not parsed.is_absolute() or not parsed.is_relative_to('/workspace')
+                    or parsed == PurePosixPath('/workspace') or '..' in parsed.parts
+                    or any(char in path for char in '*?[]')):
+                return 'delivery artifacts must be exact absolute workspace paths, without globs'
+        if len({str(PurePosixPath(path)) for path in paths}) != len(paths):
+            return 'delivery artifacts must not contain duplicate resolved paths'
     if action_name == 'run_skill_workflow':
         if (not isinstance(action.get('skill_index'), int) or isinstance(action.get('skill_index'), bool)
                 or action['skill_index'] < 1):
@@ -78,7 +99,7 @@ def validate_agent_action(action: dict[str, Any]) -> str | None:
         for flag in ('restart','retry_failed'):
             if flag in action and not isinstance(action[flag], bool):
                 return f'run_skill_workflow {flag} must be boolean'
-        if set(action)-{'action','skill_index','workflow_id','restart','retry_failed','reason'}:
+        if set(action)-{'action','skill_index','workflow_id','restart','retry_failed','reason','delivery'}:
             return 'run_skill_workflow has invalid fields; commands come only from the approved Skill'
         return None
     if action_name in {'read_files', 'run_commands'}:

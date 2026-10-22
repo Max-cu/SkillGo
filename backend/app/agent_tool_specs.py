@@ -99,3 +99,19 @@ def extend_tools(tools: list[dict]) -> None:
         required = ['path'] if name == 'inspect_document' else list(properties)
         tools.append({'type': 'function', 'function': {'name': name, 'description': description,
             'parameters': {'type': 'object', 'properties': properties, 'required': required, 'additionalProperties': False}}})
+    from .operation_delivery import DELIVERY_TOOLS
+    for tool in tools:
+        function = tool['function']
+        if function['name'] in DELIVERY_TOOLS:
+            function['parameters']['properties']['delivery'] = {
+                'type': 'object', 'additionalProperties': False,
+                'properties': {
+                    'summary': {'type': 'string', 'minLength': 1, 'maxLength': 4000},
+                    'artifacts': {'type': 'array', 'minItems': 1, 'maxItems': 50,
+                                  'items': {'type': 'string', 'maxLength': 1024}},
+                }, 'required': ['summary', 'artifacts'],
+                'description': 'Optional final-group delivery in file-receipt mode. '
+                    'Call this tool alone, including generation/export AND all remaining Skill '
+                    'checks/cleanup. Declare exact absolute artifact paths before execution. '
+                    'All commands must succeed and all files must be created/changed by this group. '
+                    'The platform then delivers without another finish call. Never use for intermediate work.'}

@@ -84,14 +84,7 @@ https://github.com/user-attachments/assets/eb3e6cdf-cda6-434b-a0a9-4cc0d37262f4
 
 ### 界面预览
 
-<details>
-<summary>任务工作台与执行过程</summary>
 
-<p align="center">
-  <img src="docs/assets/skillgo-workbench.png" width="100%" alt="SkillGo 任务工作台与执行过程" />
-</p>
-
-</details>
 
 <details>
 <summary>Skill 管理与存储界面</summary>
@@ -131,10 +124,12 @@ https://github.com/user-attachments/assets/eb3e6cdf-cda6-434b-a0a9-4cc0d37262f4
 | 沿用 Skill 既定流程 | 关闭 | 在 Skill 版本管理中开启；仅单 Skill 任务免除强制规划，模型仍可在必要时规划 |
 | 运行联网 | 关闭 | 按版本授权；与既定流程开关相互独立 |
 | 文件接收模式 | 关闭，使用完整验证 | `SKILLGO_ARTIFACT_DELIVERY_ONLY=true`，或配置 Skill ID 白名单 |
-| 最终工作流自动交付 | 关闭 | `SKILLGO_WORKFLOW_AUTO_DELIVERY_VERSION_IDS` 指定审核过的版本 UUID；目前仅支持匹配的 TCC 最终导出流程 |
+| 最终操作自动交付 | 随文件接收模式启用 | 最后一组操作提前声明产物；全部成功且文件由本组生成或更新后直接交付，适用于所有账号、Skill 和文件格式 |
 | 详细上下文观测 | 关闭 | `SKILLGO_CONTEXT_OBSERVABILITY=true`，排查时记录统计，不增加摘要模型调用 |
 
 这些是独立设置。既定流程开关不会自动开启联网、跳过 Skill 校验或开启自动交付；联网与既定流程设置在创建任务时复制，修改版本按钮不改变已有任务。文件接收成功只表示真实文件已安全保存，不等于业务内容或版式已通过审核。
+
+通用自动交付需要模型在最后一组工具调用中声明确切文件路径，并包含所有剩余的 Skill 校验和清理。若文件名需运行后才能得知、还需要模型看版，或文件没有在本组中生成/更新，仍使用普通结束路径。无需修改 Skill 包，详见 [通用最终操作交付](docs/final-operation-delivery.md)。
 
 ## 快速开始
 
@@ -241,7 +236,7 @@ SkillGo 由 **Web / FastAPI 控制面、PostgreSQL 与文件存储、可信 Work
 
 [执行环境与隔离](docs/execution-and-isolation.md) · [产品与技术架构](docs/PRODUCT_ARCHITECTURE.md) · [Agent 内核](docs/agent-kernel.md) · [文档索引](docs/README.md)
 
-[既定流程开关](docs/skill-flow-policy.md) · [自动交付条件](docs/workflow-auto-delivery.md) · [上下文观测](docs/context-observability.md)
+[既定流程开关](docs/skill-flow-policy.md) · [通用最终操作交付](docs/final-operation-delivery.md) · [工作流兼容适配](docs/workflow-auto-delivery.md) · [上下文观测](docs/context-observability.md)
 
 本文描述当前 `main`。生产部署请选择经过验证的提交或 [Release](https://github.com/Max-cu/SkillGo/releases)，并参考对应版本文档；历史设计记录不代表当前功能开关或部署状态。
 

@@ -1,8 +1,8 @@
 {
-  "schema": "tcc.deck-plan.v1",
+  "schema": "skillgo.deck-plan.v1",
   "title": "离线排版验证",
   "title_en": "Layout Validation",
-  "author": "TCC",
+  "author": "作者",
   "date": "2026年10月12日",
   "chapters": [
     {

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compile source-bound page content into TCC configuration and SVG fragments.
+"""Compile source-bound page content into 作者 configuration and SVG fragments.
 
 No model, network, invented content, silent clipping, or validator relaxation.
 The original validators remain the final authority. Only changed fragments
@@ -248,12 +248,12 @@ def atomic(path, data):
 
 def compile_plan(plan, root):
     if not isinstance(plan,dict):raise PlanError('plan','Provide a JSON object.')
-    if plan.get('schema')!='tcc.deck-plan.v1': raise PlanError('schema','Use tcc.deck-plan.v1.')
+    if plan.get('schema')!='skillgo.deck-plan.v1': raise PlanError('schema','Use skillgo.deck-plan.v1.')
     chapters=plan.get('chapters')
     if not isinstance(chapters,list) or len(chapters) not in {3,4}: raise PlanError('chapters','This compiler supports the original 3/4-chapter company templates; use the custom workflow for other structures.')
-    title=str(plan.get('title',''));author=str(plan.get('author','TCC'))
+    title=str(plan.get('title',''));author=str(plan.get('author','作者'))
     if not title or len(title)>18: raise PlanError('title','Cover title must have 1-18 characters.')
-    if not author or len(author)>5: raise PlanError('author','Use the source author (max 5 characters), or TCC if none is stated.')
+    if not author or len(author)>5: raise PlanError('author','Use the source author (max 5 characters), or 作者 if none is stated.')
     date=str(plan.get('date',''))
     if not re.fullmatch(r'\d{4}年\d{1,2}月\d{1,2}日',date): raise PlanError('date','Provide the actual task date as YYYY年MM月DD日.')
     palette=plan.get('palette','default')
@@ -348,7 +348,7 @@ def compile_plan(plan, root):
 
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('plan',help='UTF-8 tcc.deck-plan.v1 JSON, usually assets/deck_plan.json')
+    parser.add_argument('plan',help='UTF-8 skillgo.deck-plan.v1 JSON, usually assets/deck_plan.json')
     parser.add_argument('--root',type=Path,default=ROOT,help='Output project root for isolated validation')
     args=parser.parse_args();root=args.root.resolve()
     try:

@@ -1,8 +1,12 @@
-# Final workflow automatic delivery
+# Reviewed workflow delivery adapter
+
+For format-independent final-operation delivery on any Skill/account, see
+[final-operation-delivery.md](final-operation-delivery.md). This document describes
+the older, independently retained adapter for an exact reviewed export recipe.
 
 This change only affects the framework. Existing Skill packages, design rules and validators remain unchanged.
 
-Enable `SKILLGO_WORKFLOW_AUTO_DELIVERY_VERSION_IDS` on API and workers with the exact reviewed version UUID(s). Default empty disables it. The first adapter supports the exact existing TCC build/finalize/export recipe (steps 3–5, nine commands). It does not infer task completion from arbitrary successful commands, a workflow name, or a directory containing PPT files. Other workflows and versions continue to require `finish`.
+Enable `SKILLGO_WORKFLOW_AUTO_DELIVERY_VERSION_IDS` on API and workers with the exact reviewed version UUID(s). Default empty disables this adapter. It supports an exact presentation build/finalize/export recipe (steps 3–5, nine commands). It does not infer task completion from arbitrary successful commands, a workflow name, or a directory containing presentation files. Other workflows and versions can use generic final-operation delivery, or ordinary `finish`.
 
 For a single-Skill delivery-only job:
 

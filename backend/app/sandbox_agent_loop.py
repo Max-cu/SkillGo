@@ -29,6 +29,7 @@ from .skill_phase_contracts import stage_contracts, available_reference_paths, e
 from .workflow_tools import run_verifier, snapshot_step_files, effective_instruction
 from .artifact_collection import receive_declared_artifacts, delivery_only_job
 from .workflow_delivery import configured_export_command, export_baseline, capture_export, receive_workflow_delivery
+from .operation_delivery import delivery_fingerprints, receive_operation_delivery
 from .visual_inspection import VisualInspectionCache
 from .deterministic_runtime import execute_fixed_skill
 from .artifact_validation import (
@@ -396,6 +397,20 @@ Execution protocol updates (these refine the earlier rules):
         )
         system = system.replace('Once the required artifacts exist and validation passes, call finish immediately.',
                                 'Once the Skill has finished and its deliverables exist, call finish immediately.')
+        system += (
+            '\nFormat-independent final-group delivery: when all remaining work is known, prefer '
+            'one command, run_python, write_file/write_json, run_commands or run_skill_workflow '
+            'call with delivery={"summary":"truthful final summary","artifacts":["exact absolute workspace path"]}. '
+            'Call it alone in the turn. Include actual generation/export and ALL remaining Skill '
+            'checks and cleanup in that final group; never omit required visual review or other '
+            'steps that need a later model decision. Every declared file must be created or its '
+            'bytes changed by this group. On complete success the framework collects the files '
+            'and ends the task without another model turn. This works for any Skill/file format. '
+            'If names depend on unseen results, more review remains, or files were already finished '
+            'in a previous group, use ordinary execution and finish. If delivery is declined after '
+            'successful operations, inspect the result and finish normally; do not rerun exports '
+            'merely to trigger automatic delivery. An intermediate artifact is never completion.\n'
+        )
     if follow_skill_flow:
         system = "\n".join(line for line in system.splitlines() if not line.startswith(
             ('   {"action":"update_plan"', '- Create a concise plan with depends_on')
@@ -503,7 +518,7 @@ def _append_tool_result(
 
 # Tools whose recent results deserve the generous inline tier: their stdout
 # is operational evidence the agent keeps reasoning over (build logs, batch
-# progress, tracebacks). Mirrors QwenPaw's pruning_recent_msg_max_bytes.
+# progress, tracebacks). Keeps recent execution diagnostics available.
 RECENT_TIER_TOOLS = frozenset({"command", "run_python", "run_verifier"})
 # Legacy flat tier for all other oversized tool payloads.
 LEGACY_INLINE_BYTES = 4_000
@@ -847,7 +862,7 @@ async def _run_agent_loop(
     durable = bool(settings.durable_checkpoints_enabled or resume) and isinstance(sandbox, DockerSandbox)
     fence = checkpoint_fence or (lambda: None)
 
-    # 0 disables the reasoning-turn cap (QwenPaw semantics: runaway protection
+    # 0 disables the reasoning-turn cap ( runaway protection
     # relies on the doom-loop guard and per-layer idle checks instead).
     turns_limit = settings.sandbox_max_agent_turns
     turn_numbers = itertools.count(next_turn) if turns_limit <= 0 else range(next_turn, turns_limit + 1)
@@ -1008,6 +1023,19 @@ async def _run_agent_loop(
         if not calls:
             calls = [(getattr(result, "tool_call_id", None), result.output)]
         native_call_count = len(calls)
+        delivery_request = None
+        delivery_error = None
+        delivery_baseline = None
+        delivery_ok = True
+        if any('delivery' in action for _, action in calls):
+            if len(calls) != 1:
+                delivery_error = 'A final delivery operation must be the only tool call in this turn.'
+            elif not execution_state.delivery_only:
+                delivery_error = 'Final-group delivery requires file-receipt policy. Use normal verification and finish.'
+            else:
+                delivery_error = _validate_agent_action(calls[0][1])
+                if not delivery_error:
+                    delivery_request = calls[0][1]['delivery']
         batch = None
         batch_turn_error = None
         if any(action.get('action') in {'read_files', 'run_commands', 'run_skill_workflow'} for _, action in calls):
@@ -1140,6 +1168,9 @@ async def _run_agent_loop(
 
         if durable:
             mark_inflight(db, job, fence)
+        if delivery_request:
+            delivery_baseline = await delivery_fingerprints(
+                sandbox, delivery_request['artifacts'], cwd=skill_root)
         conversation_messages = messages
         turn_nudges: list[str] = []
         if batch:
@@ -1168,6 +1199,8 @@ async def _run_agent_loop(
             context, validation_error = await tool_pipeline.before(context)
             if batch_turn_error:
                 validation_error = batch_turn_error
+            if delivery_error:
+                validation_error = delivery_error
             precondition_error = None
             if dict(context.action) != action:
                 add_job_event(db, job, "status", "已规范化工具参数", "已保留所有检查项和原始含义", status="succeeded", data={"tool": context.name, "normalized_fields": [key for key in context.action if context.action[key] != action.get(key)]})
@@ -1995,6 +2028,9 @@ async def _run_agent_loop(
             )
             db.commit()
 
+            if delivery_request and (not isinstance(payload, dict) or payload.get('ok') is False
+                    or payload.get('exit_code', 0) != 0 or payload.get('timed_out')):
+                delivery_ok = False
             if batch:
                 batch['results'].append({'index': call_index, 'tool': action_name, 'payload': payload})
                 if (batch.get('delivery_command') and action_name == 'command'
@@ -2043,7 +2079,7 @@ async def _run_agent_loop(
             # The signal is from this execution's designated exporter. Wait for
             # every remaining verifier/cleanup command before accepting it.
             declared = batch.get('delivery_signal')
-            if (not failed and declared and batch.get('workflow_key')
+            if (not delivery_request and not failed and declared and batch.get('workflow_key')
                     and execution_state.skill_count == 1 and execution_state.delivery_only):
                 if job_cancelled():
                     raise AgentJobCancelled("Workflow job was cancelled")
@@ -2077,6 +2113,35 @@ async def _run_agent_loop(
                               collection.get('message', '无法收集最终文件'), status='running',
                               data={'error_code':collection.get('error_code'), 'workflow_id':batch['workflow_id']})
                 messages.append({'role':'user','content':json.dumps({'workflow_delivery':collection},ensure_ascii=False)})
+
+        if delivery_request and delivery_ok and not batch_turn_error:
+            if job_cancelled():
+                raise AgentJobCancelled('Workflow job was cancelled')
+            collection = await receive_operation_delivery(
+                sandbox, delivery_request, delivery_baseline, cwd=skill_root)
+            if collection.get('ok'):
+                artifacts = collection['artifacts']
+                current_snapshot = collection['artifact_sha256']
+                execution_state.register_artifact_collection(current_snapshot, collection['artifact_sources'])
+                blocker = execution_state.finish_blocker(current_artifacts=current_snapshot)
+                if blocker:
+                    collection = {'ok': False, 'error_code': 'AGENT_PLAN_INCOMPLETE', 'message': blocker}
+                else:
+                    if job_cancelled():
+                        raise AgentJobCancelled('Workflow job was cancelled')
+                    if execution_state.skill_count == 1 and 1 not in execution_state.completed_skill_indexes:
+                        execution_state.complete_skill(1, 'Final operation group delivered current artifact bytes')
+                    add_job_event(db, job, 'tool', '最终操作已完成，自动交付',
+                        f'已接收 {len(artifacts)} 个本组生成或更新的文件，无需模型再次结束任务',
+                        status='succeeded', data={'tool': 'operation_auto_delivery',
+                            'artifact_sha256': current_snapshot, 'turn': turn_number, 'automatic': True})
+                    agent_session.finish_step(turn_number)
+                    agent_session.finish_turn(turn_number, reason='operation_auto_delivery')
+                    db.commit()
+                    return delivery_request['summary'], artifacts, turn_number, tool_operation_count
+            add_job_event(db, job, 'status', '自动交付未完成，继续处理', collection['message'],
+                          data={'error_code': collection['error_code']})
+            messages.append({'role': 'user', 'content': json.dumps({'final_group_delivery': collection}, ensure_ascii=False)})
 
         # Keep the native assistant/tools protocol intact: guidance follows all
         # pending replies, including the one parent reply for a stopped batch.
