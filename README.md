@@ -30,7 +30,17 @@
   <a href="#开发与文档">开发与文档</a>
 </p>
 
-SkillGo 是一个可私有化部署的多用户 Skill 平台。上传现有的 `SKILL.md` 技能包，准备环境并审核发布，再通过自然语言和附件发起任务。Agent 在独立沙箱中执行，平台验证并交付生成的文件；同一项 Skill 能力也可以发布为 API，接入已有业务系统。
+SkillGo 是一个可私有化部署的多用户 Skill 执行平台，专注于**接收一次任务，按选定 Skill 完成工作，交付真实成果**。上传现有的 `SKILL.md` 技能包，准备环境并审核发布，再通过自然语言和附件发起任务。Agent 在独立沙箱中执行，处理可恢复错误，平台按配置的验收策略接收并保存生成文件；同一项 Skill 能力也可以发布为 API，接入已有业务系统。
+
+### v1.0.0：让 Skill 顺畅执行到交付
+
+- **沿用既定流程**：管理员可按 Skill 版本开启，单 Skill 任务不再强制重列执行计划；完整 Skill、前置条件和自带校验仍交给模型遵循。
+- **减少执行往返**：支持批量读取、批量命令和工作流连续执行，可恢复错误返回模型处理；正常完成后安全收集真实产物。
+- **按需选择验收**：保留完整验证，也可启用文件接收模式，复用 Skill 自带校验，省去额外的平台验证轮次。
+- **受控自动交付**：为已审核版本和匹配的最终导出流程配置后，可在导出、后续校验与清理成功且文件未变化时直接交付，省去最后一轮模型确认。
+- **网页与 API 一致**：新任务继承所绑定版本的联网和既定流程设置，不要求外部调用方重复配置。
+
+[查看 v1.0.0 发布说明](RELEASE_NOTES.md) · [完整变更记录](CHANGELOG.md)
 
 ## 产品演示
 
@@ -69,7 +79,7 @@ https://github.com/user-attachments/assets/eb3e6cdf-cda6-434b-a0a9-4cc0d37262f4
 
 <p>
   <img src="docs/assets/feature-icons/workflow.svg" width="18" height="18" alt="" />&nbsp;&nbsp;
-  <strong>Agent 执行</strong> — 多 Skill 协调、Python / 命令执行、进度追踪与成果交付
+  <strong>Agent 执行</strong> — Skill 流程直达、多 Skill 协调、Python / 命令执行、进度追踪与成果交付
 </p>
 
 <p>
@@ -119,10 +129,23 @@ https://github.com/user-attachments/assets/eb3e6cdf-cda6-434b-a0a9-4cc0d37262f4
 
 1. **准备 Skill**：导入 ZIP，按需准备运行环境并完成审核发布。
 2. **发起任务**：选择一个或多个 Skill，输入目标并添加附件。
-3. **跟踪执行**：查看计划、进度与日志；交互任务缺少关键信息时可随时补充。
-4. **获取成果**：下载验证通过的文件；失败或取消时可查看原因并重试。
+3. **跟踪执行**：查看进度与工具日志；任务无人值守运行，信息不足时采用合理假设，无法继续时明确报告原因。
+4. **获取成果**：下载已保存的文件，查看所用验收策略；失败或取消时可查看原因并重试。
 
 同一任务由一个 Agent 协调所选 Skill，共享该任务工作区；不同任务使用独立工作卷。详细格式和示例参见 [Skill 包说明](docs/skill-packages.md) 与 [`examples/`](examples/)。
+
+### 执行策略由管理员按需开启
+
+| 设置 | 默认行为 | 适用方式 |
+| --- | --- | --- |
+| 沿用 Skill 既定流程 | 关闭 | 在 Skill 版本管理中开启；仅单 Skill 任务免除强制规划，模型仍可在必要时规划 |
+| 运行联网 | 关闭 | 按版本授权；与既定流程开关相互独立 |
+| 文件接收模式 | 关闭，使用完整验证 | `SKILLGO_ARTIFACT_DELIVERY_ONLY=true`，或配置 Skill ID 白名单 |
+| 最终工作流自动交付 | 关闭 | `SKILLGO_WORKFLOW_AUTO_DELIVERY_VERSION_IDS` 指定审核过的版本 UUID；目前仅支持匹配的 TCC 最终导出流程 |
+| 持久化快照 | 关闭 | `SKILLGO_DURABLE_CHECKPOINTS_ENABLED=true`，需要中断恢复时启用 |
+| 详细上下文观测 | 关闭 | `SKILLGO_CONTEXT_OBSERVABILITY=true`，排查时记录统计，不增加摘要模型调用 |
+
+这些是独立设置。既定流程开关不会自动开启联网、跳过 Skill 校验或开启自动交付；联网与既定流程设置在创建任务时复制，修改版本按钮不改变已有任务。文件接收成功只表示真实文件已安全保存，不等于业务内容或版式已通过审核。
 
 ## 快速开始
 
@@ -133,6 +156,7 @@ https://github.com/user-attachments/assets/eb3e6cdf-cda6-434b-a0a9-4cc0d37262f4
 ```bash
 git clone https://github.com/Max-cu/SkillGo.git
 cd SkillGo
+git checkout v1.0.0
 cp .env.example .env
 ```
 
@@ -193,6 +217,8 @@ curl "$SKILLGO_BASE_URL/api/v1/workflow-endpoints/your-slug/jobs" \
 
 请求成功后，查询任务状态并下载产物。`Idempotency-Key` 可避免同一 Endpoint 下重复提交相同请求键时重复创建任务。外部任务无人值守执行，不会中途追问；信息不足时，Agent 会采用合理假设并在结果中说明。
 
+Endpoint 绑定具体 Skill 版本。每个新 API 任务都会继承该版本的联网授权和“沿用 Skill 既定流程”设置；调用方无需额外传入这两个开关。
+
 [完整 API 文档](docs/workflow-api.md) · [Python 客户端示例](examples/workflow_api_client.py) · 开发环境交互文档：`http://127.0.0.1:8000/api/docs`
 
 ## 架构与边界
@@ -208,6 +234,8 @@ SkillGo 由 **Web / FastAPI 控制面、PostgreSQL 与文件存储、可信 Work
 - **执行隔离**：每次任务尝试使用独立容器与工作卷；沙箱以非 root 身份运行，使用只读根文件系统和可配置资源预算，不注入平台密钥或挂载 Docker Socket。
 - **网络授权**：运行联网默认关闭。多 Skill 任务中，只要一个所选版本获得联网授权，整个任务沙箱就可联网；当前不限制目标域名。
 - **编排与恢复**：多 Skill 协调不等于通用并行 DAG 或多 Agent 调度；快照只恢复工作文件与 Agent 状态，不恢复进程内存。
+- **完成判定**：普通任务由 Agent 声明产物；自动交付仅支持明确审核的版本与命令序列，不以“目录里存在一个 PPT”作为完成依据。
+- **速度与质量**：平台减少重复规划和确定流程中的往返；实际耗时及内容质量仍取决于模型、Skill、输入和重试，不承诺固定耗时或全面快于其他框架。
 - **信任边界**：Worker 与环境准备服务属于可信控制面；gVisor 不能代替宿主机维护、权限治理与 HTTPS。
 
 更多细节见 [执行环境与隔离](docs/execution-and-isolation.md)；漏洞报告方式见 [SECURITY.md](SECURITY.md)。
@@ -223,6 +251,8 @@ SkillGo 由 **Web / FastAPI 控制面、PostgreSQL 与文件存储、可信 Work
 **架构与进阶**
 
 [执行环境与隔离](docs/execution-and-isolation.md) · [产品与技术架构](docs/PRODUCT_ARCHITECTURE.md) · [Agent 内核](docs/agent-kernel.md) · [文档索引](docs/README.md)
+
+[既定流程开关](docs/skill-flow-policy.md) · [自动交付条件](docs/workflow-auto-delivery.md) · [上下文观测](docs/context-observability.md) · [持久化快照](docs/durable-task-checkpoints.md)
 
 本文描述当前 `main`。生产部署请选择经过验证的提交或 [Release](https://github.com/Max-cu/SkillGo/releases)，并参考对应版本文档；历史设计记录不代表当前功能开关或部署状态。
 

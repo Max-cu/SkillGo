@@ -9,6 +9,10 @@
 - [产品与技术架构](PRODUCT_ARCHITECTURE.md)：产品边界、执行分层、隔离模型和演进方向。
 - [Agent 内核](agent-kernel.md)：计划、工具、上下文、验证和产物门禁。
 - [工作流 API](workflow-api.md)：异步 Endpoint、幂等、状态查询和产物下载。
+- [沿用 Skill 既定流程](skill-flow-policy.md)：版本开关、单 Skill 免强制规划和 API 继承规则。
+- [最终工作流自动交付](workflow-auto-delivery.md)：版本白名单、导出证据、文件一致性与回退条件。
+- [上下文观测](context-observability.md)：可选统计、记录范围和估算值边界。
+- [持久化快照](durable-task-checkpoints.md)：可选中断恢复及其限制。
 - [技术设计](technical-design.md)：数据模型、控制面、执行面和安全约束的详细设计。
 
 ## 历史规划材料
