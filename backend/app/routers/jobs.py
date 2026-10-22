@@ -21,6 +21,7 @@ from ..attachment_analysis import (
     run_attachment_analyses,
 )
 from ..config import settings
+from ..attachment_requests import parse_existing_file_ids
 from ..conversation_service import can_run_version
 from ..database import get_db
 from ..deps import current_user
@@ -161,21 +162,6 @@ def _parse_message_content(raw_content: str, instruction: str) -> list[dict]:
     if text_size > 20_000:
         raise HTTPException(status_code=422, detail={"code": "MESSAGE_TOO_LONG", "message": "任务描述不能超过 20,000 个字符"})
     return parts
-
-
-def _parse_existing_file_ids(raw: str) -> list[str]:
-    if not raw.strip():
-        return []
-    try:
-        decoded = json.loads(raw)
-    except json.JSONDecodeError as exc:
-        raise HTTPException(status_code=422, detail="历史附件参数格式无效") from exc
-    if not isinstance(decoded, list) or any(not isinstance(item, str) for item in decoded):
-        raise HTTPException(status_code=422, detail="历史附件参数必须是文件 ID 数组")
-    normalized = [item.strip() for item in decoded if item.strip()]
-    if len(normalized) != len(set(normalized)):
-        raise HTTPException(status_code=422, detail="不能重复选择同一个历史附件")
-    return normalized
 
 
 def _render_instruction(parts: list[dict]) -> str:
@@ -714,7 +700,7 @@ async def create_workflow_job(
             raise HTTPException(status_code=404, detail="工作台会话不存在")
 
     incoming_uploads = ([file] if file is not None else []) + list(files or [])
-    existing_ids = _parse_existing_file_ids(existing_file_ids)
+    existing_ids = parse_existing_file_ids(existing_file_ids)
     if existing_ids and agent_conversation is None:
         raise HTTPException(status_code=422, detail="复用历史附件时必须指定当前工作台会话")
     if len(incoming_uploads) + len(existing_ids) > MAX_JOB_FILES:

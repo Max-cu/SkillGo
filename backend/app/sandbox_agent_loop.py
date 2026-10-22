@@ -32,7 +32,6 @@ from .workflow_delivery import configured_export_command, export_baseline, captu
 from .visual_inspection import VisualInspectionCache
 from .deterministic_runtime import execute_fixed_skill
 from .artifact_validation import (
-    normalize_artifact_paths as _normalize_artifact_paths,
     snapshot_sandbox_artifacts,
 )
 from .config import settings

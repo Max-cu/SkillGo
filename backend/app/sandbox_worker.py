@@ -20,7 +20,6 @@ from sqlalchemy.orm import Session
 
 from .artifact_validation import (
     ARTIFACT_FILENAME_MAX,
-    normalize_artifact_paths as _normalize_artifact_paths,
     unique_artifact_filenames as _unique_artifact_filenames,
     validate_artifact_content as _validate_artifact_content,
 )
@@ -36,20 +35,14 @@ from .execution_runtime import (
     ensure_job_run,
     fail_run,
 )
-from .model_gateway import ModelGatewayError, OpenAICompatibleGateway, get_model_gateway
+from .model_gateway import ModelGatewayError, get_model_gateway
 from .models import AgentRun, Artifact, JobStatus, JobStepStatus, RunStatus, User, WorkflowJob, WorkflowJobMemory, utcnow
 from .runtime_profile import version_runtime_profile
 from .environment_capabilities import preflight_environment
 from .sandbox_agent_loop import (
     AgentNeedsInput,
     AgentJobCancelled as JobCancelled,
-    _action_skill_context,
-    _agent_messages,
-    _append_tool_result,
-    _finish_tool_event,
     _run_agent_loop,
-    _safe_tool_event,
-    _trim_messages,
 )
 from .sandbox_runtime import (
     DockerSandbox,
@@ -58,9 +51,6 @@ from .sandbox_runtime import (
     cleanup_stale_sandboxes,
     docker_client,
     package_skill_root,
-)
-from .sandbox_tool_registry import (
-    validate_agent_action as _validate_agent_action,
 )
 from .services import add_audit
 from .skill_execution_spec import fixed_execution_spec

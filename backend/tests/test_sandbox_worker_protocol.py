@@ -8,19 +8,20 @@ import pytest
 
 from app.model_gateway import ModelResult
 from app.sandbox_runtime import SandboxRuntimeError
-from app.sandbox_worker import (
+from app.artifact_validation import (
+    normalize_artifact_paths as _normalize_artifact_paths,
+    validate_artifact_content as _validate_artifact_content,
+)
+from app.sandbox_agent_loop import (
     _action_skill_context,
     _agent_messages,
     _append_tool_result,
     _finish_tool_event,
-    _normalize_artifact_paths,
-    _preflight_sandbox_binaries,
-    _required_sandbox_binaries,
     _safe_tool_event,
     _trim_messages,
-    _validate_artifact_content,
-    _validate_agent_action,
 )
+from app.sandbox_tool_registry import validate_agent_action as _validate_agent_action
+from app.sandbox_worker import _preflight_sandbox_binaries, _required_sandbox_binaries
 
 
 def test_required_sandbox_binaries_are_vendor_neutral_and_normalized():

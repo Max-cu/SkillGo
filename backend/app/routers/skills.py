@@ -12,7 +12,7 @@ from ..config import settings
 from ..database import get_db
 from ..deps import current_user
 from ..model_gateway import OpenAICompatibleGateway, get_model_gateway
-from ..models import AgentMessage, AgentRun, AgentRunEvent, Artifact, Conversation, ConversationMessage, Endpoint, Favorite, JobEvent, JobInputFile, JobStep, Role, Run, Skill, SkillVersion, User, VersionStatus, Visibility, WorkflowEndpointRequest, WorkflowJob, WorkflowJobModel, WorkflowJobPrompt, WorkflowJobSkill, WorkspaceFile, utcnow
+from ..models import AgentMessage, AgentRun, AgentRunEvent, Artifact, Conversation, ConversationMessage, Endpoint, Favorite, JobEvent, JobInputFile, JobStep, Role, Run, Skill, SkillVersion, User, VersionStatus, Visibility, WorkflowEndpointRequest, WorkflowJob, WorkflowJobModel, WorkflowJobPrompt, WorkflowJobSkill, WorkspaceFile
 from ..schemas import Message, SkillCreate, SkillDetail, SkillPackageAnalysis, SkillRead, SkillVisibilityUpdate, VersionRead
 from ..services import add_audit, get_skill_or_none, latest_version, skill_read
 from ..skill_analysis import analyze_package

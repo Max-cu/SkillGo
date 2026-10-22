@@ -168,30 +168,3 @@ def active_model_connections() -> dict[str, ModelConnection]:
             item.model_name: _row_connection(item, available_chat_models=available)
             for item in rows
         }
-
-
-def connection_for_model(db: Session, model_name: str | None) -> ModelConnection:
-    requested = (model_name or "").strip()
-    if requested:
-        row = db.scalar(
-            select(ModelConnectionConfig).where(
-                ModelConnectionConfig.model_name == requested,
-                ModelConnectionConfig.enabled.is_(True),
-            )
-        )
-        if row is not None:
-            enabled_rows = list(
-                db.scalars(
-                    select(ModelConnectionConfig)
-                    .where(ModelConnectionConfig.enabled.is_(True))
-                    .order_by(ModelConnectionConfig.is_default.desc(), ModelConnectionConfig.created_at)
-                )
-            )
-            available = tuple(
-                item.model_name
-                for item in enabled_rows
-                if "chat" in normalize_capabilities(item.capabilities)
-            )
-            return _row_connection(row, available_chat_models=available)
-    connection, _, _ = model_connection_from_db(db)
-    return connection

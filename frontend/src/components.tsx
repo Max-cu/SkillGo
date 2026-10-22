@@ -9,7 +9,6 @@ import {
   Gauge,
   Heart,
   HardDrive,
-  House,
   KeyRound,
   LayoutDashboard,
   Library,

@@ -213,9 +213,3 @@ async def snapshot_sandbox_artifacts(
             validate_artifact_content(PurePosixPath(path).name, data)
         snapshot[path] = hashlib.sha256(data).hexdigest()
     return snapshot
-
-
-# Transitional aliases keep the existing internal/test imports stable while
-# the worker is split into focused modules.
-_normalize_artifact_paths = normalize_artifact_paths
-_validate_artifact_content = validate_artifact_content
