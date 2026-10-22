@@ -110,8 +110,10 @@ def test_snapshot_rejects_empty_artifact_in_both_modes(validate_content):
 
 @pytest.mark.parametrize("tracking", [True, False])
 @pytest.mark.parametrize("global_delivery", [True, False])
-def test_agent_finish_collects_exports_without_verifier_and_recovers_bad_path(client,user_headers,owner_headers,monkeypatch,tracking,global_delivery):
+@pytest.mark.parametrize("observability", [True, False])
+def test_agent_finish_collects_exports_without_verifier_and_recovers_bad_path(client,user_headers,owner_headers,monkeypatch,tracking,global_delivery,observability):
     from app import config
+    from app import sandbox_agent_loop as loop
     from app.database import SessionLocal
     from app.models import WorkflowJob
     from app.model_gateway import ModelResult
@@ -120,6 +122,7 @@ def test_agent_finish_collects_exports_without_verifier_and_recovers_bad_path(cl
     from test_workflow_endpoints import publish_sandbox_skill,deploy_endpoint
 
     monkeypatch.setattr(config,'settings',replace(config.settings,sandbox_worker_enabled=True))
+    monkeypatch.setattr(loop,'settings',replace(loop.settings,context_observability_enabled=observability))
     _,version=publish_sandbox_skill(client,user_headers,owner_headers,slug='delivery-only-ppt')
     endpoint=deploy_endpoint(client,user_headers,version,slug='delivery-only-ppt-v1')
     response=client.post(f"/api/v1/workflow-endpoints/{endpoint['slug']}/jobs",
@@ -168,6 +171,16 @@ def test_agent_finish_collects_exports_without_verifier_and_recovers_bad_path(cl
         assert result[0]=='PPT completed'
         assert len(result[1])==1
         assert sandbox.files[result[1][0]]==b'PPT file bytes'
+        reasoning=[event for event in job.events if event.event_type=='reasoning']
+        assert len(reasoning)==2
+        for event in reasoning:
+            assert ('context_observation' in event.data) is observability
+            if observability:
+                assert event.data['context_observation']['scope']=='agent_projection_before_gateway'
+                assert event.data['turn_timing']['snapshot_status']=='disabled'
+                assert event.data['turn_timing']['model_call_ms']>=0
+                assert event.data['provider_usage']['available'] is False
+                assert event.data['provider_usage']['input_tokens'] is None
         from app.models import AgentRunEvent
         checkpoints=db.query(AgentRunEvent).filter(AgentRunEvent.run_id==job.agent_run.id,
                                                    AgentRunEvent.event_type=='agent.checkpoint').all()

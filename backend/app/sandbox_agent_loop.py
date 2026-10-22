@@ -24,6 +24,7 @@ from .durable_checkpoint import (
 from .agent_kernel import AgentSession, ToolCallContext, ToolPipeline
 from .agent_policy import AgentExecutionState, PRE_PLAN_INSPECTION_HINT, action_fingerprint, is_reference_path
 from .agent_context import project_context, estimate_tokens
+from .context_observation import safe_observe_context, provider_usage
 from .skill_phase_contracts import stage_contracts, available_reference_paths, expand_reference_actions
 from .workflow_tools import run_verifier, snapshot_step_files, effective_instruction
 from .artifact_collection import receive_declared_artifacts, delivery_only_job
@@ -740,6 +741,7 @@ async def _run_agent_loop(
     messages: list[dict] | None = None
     connection = getattr(gateway, 'connection', None)
     input_budget = getattr(connection, 'context_tokens', 48000)
+    observe_context_enabled = settings.context_observability_enabled
     options = getattr(connection, 'agent_options', None) or {}
     budget_snapshot = {
         'model_name': job.model_name,
@@ -855,6 +857,8 @@ async def _run_agent_loop(
                     db.commit()
                     raise AgentJobCancelled('Workflow job was cancelled')
             db.commit()
+        turn_timing = {'snapshot_status': 'disabled', 'snapshot_ms': 0} if observe_context_enabled else {}
+        snapshot_started = time.perf_counter() if observe_context_enabled else 0
         if durable:
             try:
                 await save_checkpoint(db, job, sandbox, {
@@ -867,6 +871,9 @@ async def _run_agent_loop(
                     'fixed_executed': [bool(c.get('fixed_executed')) for c in skill_contexts],
                     'memory': {k: v for k, v in job.memory.data.items() if k != 'durable_checkpoint'},
                 }, fence)
+                if observe_context_enabled:
+                    turn_timing['snapshot_status'] = 'saved'
+                    turn_timing['snapshot_bytes'] = job.memory.data.get('durable_checkpoint', {}).get('size')
             except CheckpointUnavailable as exc:
                 # Durable snapshots are crash-recovery insurance, not part of
                 # task execution: a workspace over the 256 MiB / 10k-file cap
@@ -874,6 +881,8 @@ async def _run_agent_loop(
                 # whose actual work is succeeding. Stop trying for the rest of
                 # this attempt; the previous snapshot (if any) stays valid.
                 durable = False
+                if observe_context_enabled:
+                    turn_timing['snapshot_status'] = 'unavailable'
                 logger.warning(
                     "Durable checkpoint unavailable, skipping for the rest of the run "
                     "job_id=%s turn=%s: %s", job.id, turn_number, exc)
@@ -886,6 +895,8 @@ async def _run_agent_loop(
                           "reason": str(exc)[:300]},
                 )
                 db.commit()
+            if observe_context_enabled:
+                turn_timing['snapshot_ms'] = _event_duration_ms(snapshot_started)
         agent_session.start_turn(turn_number)
         agent_session.start_step(turn_number)
         set_step(
@@ -906,6 +917,7 @@ async def _run_agent_loop(
         )
         db.commit()
         reasoning_started_at = time.perf_counter()
+        projection_started = time.perf_counter() if observe_context_enabled else 0
         budget_diagnostics: dict[str, Any] = {}
         tool_tokens = (estimate_tokens(SANDBOX_AGENT_TOOLS)
                        if getattr(gateway, '_native_tools_available', False) else 0)
@@ -921,15 +933,26 @@ async def _run_agent_loop(
             reasoning_event.data = {**(reasoning_event.data or {}),
                 'duration_ms': _event_duration_ms(reasoning_started_at),
                 'error_code': 'AGENT_CONTEXT_LIMIT', 'context_budget': budget_diagnostics}
+            if observe_context_enabled:
+                turn_timing['context_projection_ms'] = _event_duration_ms(projection_started)
+                reasoning_event.data = {**reasoning_event.data, 'turn_timing': turn_timing}
             db.commit()
             raise SandboxRuntimeError("AGENT_CONTEXT_LIMIT", str(exc)) from exc
+        observation = None
+        if observe_context_enabled:
+            turn_timing['context_projection_ms'] = _event_duration_ms(projection_started)
+            observation_started = time.perf_counter()
+            observation = safe_observe_context(messages, model_messages, skill_contexts=skill_contexts)
+            turn_timing['context_observation_ms'] = _event_duration_ms(observation_started)
         reasoning_event.data = {
             **(reasoning_event.data or {}),
             "input_estimated_tokens": estimate_tokens(model_messages),
             "message_count": len(model_messages),
             "context_budget": budget_diagnostics,
+            **({'context_observation': observation, 'turn_timing': turn_timing} if observe_context_enabled else {}),
         }
         db.commit()
+        model_started = time.perf_counter() if observe_context_enabled else 0
         try:
             result = await _await_model_with_cancellation(
                 gateway.agent_step(messages=model_messages), job_cancelled)
@@ -941,11 +964,16 @@ async def _run_agent_loop(
                 "duration_ms": _event_duration_ms(reasoning_started_at),
                 "error_code": exc.code,
             }
+            if observe_context_enabled:
+                turn_timing['model_call_ms'] = _event_duration_ms(model_started)
+                reasoning_event.data = {**reasoning_event.data, 'turn_timing': dict(turn_timing)}
             if exc.details:
                 diagnostic_key = "model_http" if "http_status" in exc.details else "model_transport"
                 reasoning_event.data[diagnostic_key] = exc.details
             db.commit()
             raise
+        if observe_context_enabled:
+            turn_timing['model_call_ms'] = _event_duration_ms(model_started)
         if job_cancelled():
             raise AgentJobCancelled("Workflow job was cancelled")
 
@@ -1055,6 +1083,9 @@ async def _run_agent_loop(
         transport_stats = getattr(result, "transport_stats", None)
         if transport_stats:
             reasoning_event.data["model_transport"] = transport_stats
+        if observe_context_enabled:
+            reasoning_event.data = {**reasoning_event.data, 'turn_timing': dict(turn_timing),
+                                    'provider_usage': provider_usage(result.token_usage)}
 
         if result.assistant_message is not None:
             messages.append(result.assistant_message)
