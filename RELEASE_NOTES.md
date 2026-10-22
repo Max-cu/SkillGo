@@ -62,6 +62,8 @@ sudo SKILLGO_INSTALL_ROOT=/opt/skillgo \
   bash deploy/upgrade-skillgo.sh v1.0.0
 ```
 
+若启用了独立 `environment-worker`，还需在同一空闲维护窗口按原 Compose 配置重建并更新该服务；升级脚本的默认启动路径只覆盖常规 API、Web 与任务 Worker。
+
 相对 v0.4.9，包含增量迁移 `20261022_0009_skill_flow_policy`，新增版本与任务的 `follow_skill_flow` 字段，默认 `false`，不删除已有记录。已经位于 0009 的实例无需重复迁移。服务按现有机制初始化/迁移数据库。
 
 回退到只认识 0008 的旧代码前需要按部署流程处理数据库回退或恢复备份；降级会移除这两个策略字段，不能只替换镜像。
