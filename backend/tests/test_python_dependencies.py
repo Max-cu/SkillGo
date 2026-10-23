@@ -369,3 +369,36 @@ def test_runtime_request_rejects_invalid_requirement_without_building(monkeypatc
 
     payload = asyncio.run(scenario())
     assert payload['ok'] is False and payload['error_code'] == 'ENVIRONMENT_DEPENDENCY_INVALID'
+
+
+@pytest.mark.parametrize('option', ['-r requirements.txt', '-r ./requirements.txt',
+    '-rrequirements.txt', '--requirement requirements.txt', '--requirement=requirements.txt'])
+def test_pip_requirements_reference_reads_packaged_file(option):
+    skill_md = 'pip install -U ' + option + ' openpyxl>=3.1'
+    out = io.BytesIO()
+    with zipfile.ZipFile(out, 'w') as z:
+        z.writestr('example/SKILL.md', skill_md)
+        z.writestr('example/requirements.txt', '# deps\npymupdf>=1.24\nnumpy>=1.26\nopencv-python>=4.8\n')
+    result = analyze_python_dependencies(skill_md, {}, out.getvalue())
+    assert result['python_requirements'] == ['numpy>=1.26', 'opencv-python>=4.8', 'openpyxl>=3.1', 'pymupdf>=1.24']
+    assert any(e['source'] == 'requirements.txt' for e in result['python_evidence'])
+    # Profile detection runs before package bytes are available.
+    assert analyze_python_dependencies(skill_md, {})['python_requirements'] == ['openpyxl>=3.1']
+
+
+@pytest.mark.parametrize('option', ['-r', '--requirement', '-r ../requirements.txt',
+    '-r https://example.com/deps.txt', '-r /etc/requirements.txt', '--requirement='])
+def test_pip_requirements_reference_rejects_missing_or_external_paths(option):
+    with pytest.raises(ValueError):
+        analyze_python_dependencies('pip install ' + option, {})
+
+
+def test_pip_requirements_reference_requires_packaged_file_and_rejects_nested_directives():
+    for body in [None, '-r nested.txt', 'pkg @ https://example.com/pkg.whl']:
+        out = io.BytesIO()
+        with zipfile.ZipFile(out, 'w') as z:
+            z.writestr('example/SKILL.md', 'pip install -r requirements.txt')
+            if body is not None:
+                z.writestr('example/requirements.txt', body)
+        with pytest.raises(ValueError):
+            analyze_python_dependencies('pip install -r requirements.txt', {}, out.getvalue())

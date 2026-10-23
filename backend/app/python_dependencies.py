@@ -39,7 +39,7 @@ def normalize_imports(values):
 
 
 def analyze_python_dependencies(skill_md, manifest, package=None):
-    requirements=[]; imports=set(); evidence=[]
+    requirements=[]; imports=set(); evidence=[]; requirements_file_requested=False
     front=parse_skill_frontmatter(skill_md)
     spec=manifest.get('spec',{})
     for source in (front,spec if isinstance(spec,dict) else {}):
@@ -57,19 +57,47 @@ def analyze_python_dependencies(skill_md, manifest, package=None):
         if match:
             # Read declarative package arguments only; never run the command.
             args=shlex.split(match.group(1),comments=True)
-            args=[x for x in args if x not in ('-U','--upgrade','--no-cache-dir')]
+            packages=[]
+            index=0
+            while index<len(args):
+                value=args[index]
+                if value in ('-U','--upgrade','--no-cache-dir'):
+                    index+=1
+                    continue
+                if value in ('-r','--requirement'):
+                    index+=1
+                    if index>=len(args):
+                        raise ValueError('Missing requirements file after '+value)
+                    reference=args[index]
+                elif value.startswith('--requirement='):
+                    reference=value.split('=',1)[1]
+                elif value.startswith('-r'):
+                    reference=value[2:]
+                else:
+                    packages.append(value)
+                    index+=1
+                    continue
+                if reference not in ('requirements.txt','./requirements.txt'):
+                    raise ValueError('Only requirements.txt beside SKILL.md is supported for pip -r examples')
+                requirements_file_requested=True
+                index+=1
+            args=packages
             requirements.extend(normalize_requirements(args))
             evidence.extend({'requirement':v,'source':'install_example','line':number} for v in args)
     if package:
+        requirements_file_found=False
         with zipfile.ZipFile(io.BytesIO(package)) as z:
             roots={str(PurePosixPath(i.filename).parent) for i in z.infolist() if PurePosixPath(i.filename).name=='SKILL.md'}
             for i in z.infolist():
                 if PurePosixPath(i.filename).name=='requirements.txt' and str(PurePosixPath(i.filename).parent) in roots:
+                    requirements_file_found=True
                     if i.file_size>32768: raise ValueError('requirements.txt exceeds 32 KiB')
                     values=[s.split('#',1)[0].strip() for s in z.read(i).decode('utf-8-sig').splitlines()]
                     values=[s for s in values if s]
                     requirements.extend(normalize_requirements(values))
                     evidence.extend({'requirement':v,'source':'requirements.txt'} for v in values)
+        if requirements_file_requested and not requirements_file_found:
+            raise ValueError('requirements.txt referenced by pip install is missing beside SKILL.md')
     imports-=sys.stdlib_module_names
     declared_names={canonicalize_name(Requirement(r).name) for r in requirements}
     for module in sorted(imports):
