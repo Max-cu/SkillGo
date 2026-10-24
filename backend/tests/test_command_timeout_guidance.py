@@ -41,9 +41,9 @@ def test_run_python_schema_documents_600_ceiling():
 
 
 def test_system_prompt_contains_timeout_alignment_rule():
-    from app import sandbox_agent_loop
+    from app import agent_protocol
 
-    source = inspect.getsource(sandbox_agent_loop)
+    source = inspect.getsource(agent_protocol)
     assert "--budget 240" in source
     assert "budget + 30" in source
     # The ceiling is rendered from settings (no hardcoded 900 in the prompt).
