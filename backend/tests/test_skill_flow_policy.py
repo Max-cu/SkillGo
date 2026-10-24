@@ -68,8 +68,8 @@ def test_single_skill_can_write_and_finish_without_forced_plan_only_when_enabled
             if self.count == 1:
                 prompt = messages[0]['content']
                 assert ('Administrator-selected Skill flow mode' in prompt) == enabled
-                assert ('In the first reasoning turn call update_plan' in prompt) != enabled
-                assert ('but call update_plan once' in prompt) != enabled
+                assert ('call update_plan before producing files' in prompt) != enabled
+                assert ('Planning is optional: use update_plan only when coordination or recovery needs it' in prompt) == enabled
                 assert context['skill_md'] in prompt
                 return ModelResult({'action': 'write_file', 'path': '/workspace/output/answer.txt',
                                     'content': '42', 'reason': 'Follow Skill'}, 'test', {})
@@ -108,7 +108,7 @@ def test_multiple_skill_prompt_keeps_planning_even_with_job_flag(monkeypatch):
     job = SimpleNamespace(instruction='Combine Skills', follow_skill_flow=True, input_files=[], memory=None)
     context = {'root': '/workspace/one', 'name': 'One', 'version': '1', 'skill_md': 'Rules', 'runtime_requirements': {}}
     prompt = _agent_messages(job, [context, {**context, 'root': '/workspace/two'}], [])[0]['content']
-    assert 'In the first reasoning turn call update_plan' in prompt
+    assert 'call update_plan before producing files' in prompt
     assert 'Administrator-selected Skill flow mode' not in prompt
 
 

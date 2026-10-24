@@ -472,8 +472,8 @@ def test_multi_skill_agent_prompt_includes_every_root_and_coordination_rules():
     system = messages[0]["content"]
     assert "内容审查" in system and "格式规范" in system
     assert contexts[0]["root"] in system and contexts[1]["root"] in system
-    assert "Do not silently ignore a selected Skill" in system
-    assert "one coherent execution plan" in system
+    assert "preserves explicit skill_ref order" in system
+    assert "later Skills may consume earlier files and findings" in system
     assert "Find contradictions." not in system
     assert "Normalize Word styles." not in system
     assert "call read_skill before using this Skill" in system
@@ -500,7 +500,7 @@ def test_single_skill_agent_prompt_keeps_full_instructions_without_plan_overhead
     system = _agent_messages(job, [context], [])[0]["content"]
 
     assert "Unique approved procedure." in system
-    assert "In the first reasoning turn call update_plan" in system
+    assert "call update_plan before producing files" in system
     assert "There is no fixed turn target" in system
     assert "A file that merely exists or opens proves only existence" in system
     assert "tool names from another Agent platform" in system
