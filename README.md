@@ -245,6 +245,7 @@ SkillGo 由 **Web / FastAPI 控制面、PostgreSQL 与文件存储、可信 Work
 **部署与接入**
 
 [部署指南](deploy/README.md) · [开发指南](docs/development.md) · [Skill 包说明](docs/skill-packages.md) · [任务 API](docs/workflow-api.md)
+部署过程中，我们也推荐你把我们的项目交由AI来部署。
 
 **架构与进阶**
 
