@@ -7,12 +7,44 @@ import ast
 import io
 import zipfile
 import sys
+from datetime import timedelta
+from sqlalchemy import update
 from sqlalchemy.exc import IntegrityError
 from .config import settings
 from .environment_capabilities import CAPABILITIES, capability_requirements
-from .models import PreparedEnvironment, SkillEnvironmentBinding
+from .models import PreparedEnvironment, SkillEnvironmentBinding, utcnow
+from .environment_failures import transient_build_failure
 
 POLICY_VERSION = 1
+
+# Shared digests must not pin later requests to a temporary infrastructure
+# failure forever. Retry on renewed demand after a cooldown, preserving
+# permanent spec/probe failures for explicit administrator action.
+ENVIRONMENT_FAILED_REQUEUE_COOLDOWN_SECONDS = 300
+
+
+def requeue_failed_environment(db, env):
+    """Requeue an unchanged transient failure; leave commits to the caller."""
+    if not settings.environment_preparation_enabled or env.status != 'failed':
+        return env
+    retryable = (env.inventory or {}).get('build_failure_retryable')
+    if retryable is not True and not (
+        retryable is None and transient_build_failure(env.error_message or '')
+    ):
+        return env
+    db.execute(update(PreparedEnvironment).where(
+        PreparedEnvironment.digest == env.digest,
+        PreparedEnvironment.status == 'failed',
+        PreparedEnvironment.updated_at == env.updated_at,
+        PreparedEnvironment.updated_at <= utcnow() - timedelta(
+            seconds=ENVIRONMENT_FAILED_REQUEUE_COOLDOWN_SECONDS),
+    ).values(status='queued', error_message=None, attempt=None,
+             lease_until=None, image_id=None, inventory={}),
+        execution_options={'synchronize_session': False})
+    db.refresh(env)
+    return env
+
+
 EXTENSIONS = {
     'text.markdown': {'wheels': [{'name': 'Markdown', 'version': '3.10.3', 'filename': 'markdown-3.10.3-py3-none-any.whl', 'url': 'https://files.pythonhosted.org/packages/64/69/4a5af2bc115a9a33fefe51709749de8262be3f9ba063d1753a837cdbc49c/markdown-3.10.3-py3-none-any.whl', 'sha256': 'fa6c92a00a4a3c98b22728c64a935ae1928250ae65058a6ded814d2cc29a4cea'}], 'probe': "import markdown; assert markdown.markdown('# probe') == '<h1>probe</h1>'"},
     'image.barcode': {'wheels': [{'name': 'python-barcode', 'version': '0.16.1', 'filename': 'python_barcode-0.16.1-py3-none-any.whl', 'url': 'https://files.pythonhosted.org/packages/b2/34/810885dca784b02e5ad0f71ced9c06ba5e9d33a6493bc886f7470ce82a39/python_barcode-0.16.1-py3-none-any.whl', 'sha256': '5776567478c9a0dae473374bb86631ba0b5ea99aaf302763b364e367ac51f367'}], 'probe': "import io,barcode; b=io.BytesIO(); barcode.get('code128','SkillGo').write(b); assert b'<svg' in b.getvalue()"},
@@ -143,17 +175,18 @@ def enqueue_environment(db, spec, error=None):
         try:
             with db.begin_nested():
                 env = PreparedEnvironment(digest=digest, spec=spec, status='failed' if error else 'queued',
-                                          error_message=error, inventory={})
+                                          error_message=error,
+                                          inventory={'build_failure_retryable': False} if error else {})
                 db.add(env)
                 db.flush()
         except IntegrityError:
             env = db.get(PreparedEnvironment, digest)
-    return env
+    return requeue_failed_environment(db, env) if error is None else env
 
 
 def bind_version_environment(db, version, *, package=None):
     if version.environment_binding is not None:
-        return version.environment_binding.environment
+        return requeue_failed_environment(db, version.environment_binding.environment)
     if not settings.environment_preparation_enabled or version.execution_mode != 'sandbox_required':
         return None
     analysis = analyze_capabilities(version.skill_md, version.manifest or {})

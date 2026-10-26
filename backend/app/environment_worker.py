@@ -17,8 +17,33 @@ from .config import settings
 from .database import SessionLocal, initialize_schema
 from .models import PreparedEnvironment, utcnow
 from .environment_builder import build_environment
+from .environment_failures import transient_build_failure
 
 logger = logging.getLogger(__name__)
+
+# Bound retries for temporary daemon/network failures within a claimed build.
+MAX_TRANSIENT_RETRIES = 2
+TRANSIENT_RETRY_DELAY_SECONDS = 5
+
+
+class EnvironmentBuildLeaseLost(RuntimeError):
+    pass
+
+
+def renew_lease(digest, attempt) -> None:
+    """Extend the build lease for an in-process retry so claim cleanup cannot
+    reap the replacement containers as an expired attempt."""
+    with SessionLocal() as db:
+        result = db.execute(update(PreparedEnvironment).where(
+            PreparedEnvironment.digest == digest,
+            PreparedEnvironment.attempt == attempt,
+            PreparedEnvironment.status.in_(['building', 'probing']),
+            PreparedEnvironment.lease_until > utcnow(),
+        ).values(status='building', lease_until=utcnow() + timedelta(
+            seconds=settings.environment_build_seconds + 60)))
+        db.commit()
+        if not result.rowcount:
+            raise EnvironmentBuildLeaseLost('Environment build lease lost')
 
 
 def claim_environment():
@@ -45,7 +70,7 @@ def finish_attempt(digest, attempt, **values):
             PreparedEnvironment.lease_until > utcnow()).values(**values))
         db.commit()
         if not result.rowcount:
-            raise RuntimeError('Environment build lease lost')
+            raise EnvironmentBuildLeaseLost('Environment build lease lost')
 
 
 def process_one(client):
@@ -53,15 +78,35 @@ def process_one(client):
     if claimed is None:
         return False
     digest, spec, attempt = claimed
-    try:
-        image, inventory = build_environment(client, spec, attempt,
-            on_probing=lambda: finish_attempt(digest, attempt, status='probing'))
-        finish_attempt(digest, attempt, status='ready', image_id=image, inventory=inventory, error_message=None)
-    except Exception as exc:
-        logger.exception('Environment preparation failed digest=%s', digest)
-        try: finish_attempt(digest, attempt, status='failed', error_message=str(exc)[:4000])
-        except RuntimeError: logger.warning('Discarded stale build completion digest=%s', digest)
-    return True
+    transient_attempts = 0
+    while True:
+        try:
+            image, inventory = build_environment(client, spec, attempt,
+                on_probing=lambda: finish_attempt(digest, attempt, status='probing'))
+            finish_attempt(digest, attempt, status='ready', image_id=image, inventory=inventory, error_message=None)
+            return True
+        except Exception as exc:
+            if isinstance(exc, EnvironmentBuildLeaseLost):
+                logger.warning('Discarded stale build completion digest=%s', digest)
+                return True
+            retryable = transient_build_failure(exc)
+            if retryable and transient_attempts < MAX_TRANSIENT_RETRIES:
+                transient_attempts += 1
+                logger.warning(
+                    'Transient environment build failure digest=%s attempt=%s retry=%d/%d: %s',
+                    digest, attempt, transient_attempts, MAX_TRANSIENT_RETRIES, exc)
+                time.sleep(TRANSIENT_RETRY_DELAY_SECONDS)
+                try:
+                    renew_lease(digest, attempt)
+                except Exception:
+                    logger.exception('Could not renew build lease digest=%s', digest)
+                    return True
+                continue
+            logger.exception('Environment preparation failed digest=%s', digest)
+            try: finish_attempt(digest, attempt, status='failed', error_message=str(exc)[:4000],
+                                image_id=None, inventory={'build_failure_retryable': retryable})
+            except RuntimeError: logger.warning('Discarded stale build completion digest=%s', digest)
+            return True
 
 
 def cleanup_expired_builds(client):
