@@ -7,7 +7,7 @@ budget alignment rule impossible to miss.
 """
 from __future__ import annotations
 
-import inspect
+from types import SimpleNamespace
 
 from app.config import settings
 from app.model_gateway import SANDBOX_AGENT_TOOLS
@@ -41,14 +41,16 @@ def test_run_python_schema_documents_600_ceiling():
 
 
 def test_system_prompt_contains_timeout_alignment_rule():
-    from app import agent_protocol
+    from app.agent_protocol import build_execution_protocol
 
-    source = inspect.getsource(agent_protocol)
+    source = build_execution_protocol(SimpleNamespace(), [{
+        'name': 'Example', 'version': '1', 'root': '/workspace/skill', 'skill_md': 'Run scripts.',
+    }], delivery_only=True)
     assert "--budget 240" in source
     assert "budget + 30" in source
     # The ceiling is rendered from settings (no hardcoded 900 in the prompt).
     assert "command hard limit " in source
-    assert "{settings.sandbox_command_timeout_seconds}" in source
+    assert str(BUDGET) in source
     assert "up to 600" in source
     assert "--workers" in source
     assert "without" in source.lower() and "destroying the sandbox" in source.lower()

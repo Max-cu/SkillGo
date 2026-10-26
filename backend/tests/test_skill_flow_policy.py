@@ -77,6 +77,10 @@ def test_single_skill_can_write_and_finish_without_forced_plan_only_when_enabled
                 assert 'PLAN_REQUIRED' in str(messages)
                 raise Observed
             assert 'PLAN_REQUIRED' not in str(messages)
+            if self.count == 2:
+                return ModelResult({'action': 'write_file', 'path': '/workspace/work/notes.txt',
+                                    'content': 'Checked answer', 'reason': 'Save findings'}, 'test', {})
+            assert 'Efficiency checkpoint:' not in str(messages)
             return ModelResult({'action': 'finish', 'summary': 'Done',
                                 'artifacts': ['/workspace/output/answer.txt']}, 'test', {})
     with SessionLocal() as db:
@@ -85,7 +89,7 @@ def test_single_skill_can_write_and_finish_without_forced_plan_only_when_enabled
         run = _run_agent_loop(db, job, sandbox, skill_contexts=[context], gateway=gateway, job_cancelled=lambda: False)
         if enabled:
             result = asyncio.run(run)
-            assert gateway.count == 2 and result[1] == ['/workspace/output/answer.txt']
+            assert gateway.count == 3 and result[1] == ['/workspace/output/answer.txt']
             assert job.memory.data.get('plan') is None
             assert any(e.data.get('planning_mode') == 'skill_flow' for e in job.events)
         else:
