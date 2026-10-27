@@ -53,7 +53,12 @@ def analyze_python_dependencies(skill_md, manifest, package=None):
             for node in ast.walk(tree):
                 if isinstance(node,ast.Import): imports.update(a.name.split('.')[0] for a in node.names)
                 elif isinstance(node,ast.ImportFrom) and node.level==0 and node.module: imports.add(node.module.split('.')[0])
-        match=re.match(r'^\s*(?:\$\s*)?(?:python(?:3)?\s+-m\s+)?pip(?:3)?\s+install\s+(.+)$',line)
+        # Markdown quotes/whole-line code spans are presentation, not shell
+        # syntax. Recommended combined install commands often live here.
+        install_line=re.sub(r'^\s*(?:>\s*)+', '', line).strip()
+        if install_line.startswith('`') and install_line.endswith('`') and install_line.count('`')==2:
+            install_line=install_line[1:-1]
+        match=re.match(r'^\s*(?:\$\s*)?(?:python(?:3)?\s+-m\s+)?pip(?:3)?\s+install\s+(.+)$',install_line)
         if match:
             # Read declarative package arguments only; never run the command.
             args=shlex.split(match.group(1),comments=True)
@@ -62,6 +67,18 @@ def analyze_python_dependencies(skill_md, manifest, package=None):
             while index<len(args):
                 value=args[index]
                 if value in ('-U','--upgrade','--no-cache-dir'):
+                    index+=1
+                    continue
+                if value in ('-i','--index-url','--extra-index-url'):
+                    # Manual mirror hints never change the builder's trusted
+                    # public-PyPI resolver. Extract package names only.
+                    if index+1>=len(args):
+                        raise ValueError('Missing index URL after '+value)
+                    index+=2
+                    continue
+                if value.startswith(('--index-url=','--extra-index-url=')):
+                    if not value.split('=',1)[1]:
+                        raise ValueError('Missing index URL after '+value.split('=',1)[0])
                     index+=1
                     continue
                 if value in ('-r','--requirement'):
