@@ -5,6 +5,7 @@ from typing import Any
 import json
 
 from .config import settings
+from .dependency_policy import INSTALLATION_ERROR, installation_command, python_installs_dependencies
 
 
 BINARY_DOCUMENT_SUFFIXES = frozenset(
@@ -256,22 +257,8 @@ def validate_agent_action(action: dict[str, Any]) -> str | None:
                 "one command argument exceeds 4096 characters; write long code or content "
                 "to a workspace file first, then run the file"
             )
-        program = PurePosixPath(argv[0]).name.casefold()
-        command_words = [item.casefold() for item in argv[1:4]]
-        package_manager = program in {'pip', 'pip3', 'npm', 'pnpm', 'yarn', 'uv'} or (
-            program.startswith('python') and argv[1:3] == ['-m', 'pip'])
-        if (package_manager and any(word in {'install', 'add', 'i', 'ci', 'sync', 'update', 'upgrade'} for word in argv[1:])) or program in {'npx', 'pnpx', 'uvx'}:
-            return 'Dependency installation is managed by the platform; use an available capability or report the missing capability. Business network access does not grant installation permission.'
-        system_package_install = (
-            program in {"apt", "apt-get", "apk"}
-            and bool(command_words)
-            and command_words[0] in {"add", "install"}
-        )
-        if system_package_install:
-            return (
-                "system package installation is disabled; use available platform capabilities "
-                "or ask the platform administrator to prepare a compatible runtime"
-            )
+        if installation_command(argv):
+            return INSTALLATION_ERROR
         shell_tokens = {
             "|",
             "||",
@@ -311,6 +298,8 @@ def validate_agent_action(action: dict[str, Any]) -> str | None:
             return "run_python code must be non-empty text"
         if len(code) > 60_000:
             return "run_python code may contain at most 60000 characters"
+        if python_installs_dependencies(code):
+            return INSTALLATION_ERROR
         args = action.get("args", [])
         if not isinstance(args, list) or not all(isinstance(item, str) for item in args):
             return "run_python args must be a string array"
