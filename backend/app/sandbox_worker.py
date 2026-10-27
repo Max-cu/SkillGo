@@ -39,6 +39,7 @@ from .model_gateway import ModelGatewayError, get_model_gateway
 from .models import AgentRun, Artifact, JobStatus, JobStepStatus, RunStatus, User, WorkflowJob, WorkflowJobMemory, utcnow
 from .runtime_profile import version_runtime_profile
 from .environment_capabilities import preflight_environment
+from .prepared_dependencies import annotate_prepared_dependencies
 from .sandbox_agent_loop import (
     AgentNeedsInput,
     AgentJobCancelled as JobCancelled,
@@ -495,6 +496,7 @@ async def execute_sandbox_job(
                     }
                 )
             prepared_image = None
+            prepared = None
             digest = (job.memory.data or {}).get('prepared_environment_digest') if job.memory else None
             if digest:
                 from .models import PreparedEnvironment
@@ -627,6 +629,7 @@ async def execute_sandbox_job(
                 sandbox.immutable_workspace_paths = frozenset(immutable_paths)
                 available_binaries = await _preflight_sandbox_binaries(sandbox, skill_contexts)
                 environment = await preflight_environment(sandbox, skill_contexts)
+                annotate_prepared_dependencies(environment, prepared)
                 if job.memory is None:
                     job.memory = WorkflowJobMemory(data={})
                 job.memory.data = {**(job.memory.data or {}), 'environment': environment}
@@ -634,6 +637,12 @@ async def execute_sandbox_job(
                 add_job_event(db, job, 'status', '运行环境已核验',
                               '可用能力：' + '、'.join(environment['capabilities']),
                               status='succeeded', data={'capabilities': environment['capabilities']})
+                dependencies = environment.get('prepared_dependencies') or {}
+                if dependencies.get('status') == 'ready':
+                    packages = dependencies['packages']
+                    add_job_event(db, job, 'status', '依赖已预加载',
+                                  f"已确认 {len(packages)} 个 Python 依赖；直接执行 Skill，无需再次安装",
+                                  status='succeeded', data={'packages': packages})
                 add_job_event(
                     db,
                     job,

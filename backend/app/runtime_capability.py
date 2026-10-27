@@ -9,6 +9,7 @@ from .config import settings
 from .environment_capabilities import CAPABILITIES, preflight_environment
 from .environment_preparation import environment_spec, enqueue_environment
 from .models import PreparedEnvironment
+from .prepared_dependencies import annotate_prepared_dependencies
 from .sandbox_checkpoint import replace_sandbox
 from .sandbox_runtime import SandboxRuntimeError
 
@@ -86,6 +87,7 @@ async def request_capability(db, job, sandbox, capability, cancelled, *, require
         inventory['python_requirements'] = env.inventory.get('python_requirements',[])
         inventory['python_lock'] = env.inventory.get('python_lock',[])
         inventory['python_imports'] = env.inventory.get('python_imports',[])
+        annotate_prepared_dependencies(inventory, env)
         db.refresh(env)
         if env.status != 'ready' or env.image_id != image:
             raise ValueError('Candidate environment revoked or changed before adoption')

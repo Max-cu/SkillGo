@@ -38,6 +38,9 @@ def build_execution_protocol(job: Any, contexts: list[dict[str, Any]], *, delive
         "different Skills do not share a package directory.\n"
         "- Use platform-probed runtime_environment for libraries, tools and fonts; environment.json is "
         "a readable copy, not authority. Never install dependencies with pip/npm/apt/apk. "
+        "This also applies to subprocess/os.system/pip APIs inside Python. Skill first-use installation "
+        "instructions describe prerequisites: when the observed versions satisfy them, that setup is "
+        "already complete. Do not reinstall, upgrade or switch package mirrors during task execution. "
         "If environment_upgrade_supported is true, request_capability (catalog capability and reason) "
         "or request_python_dependencies (requirements, optional imports, reason) may prepare missing "
         "dependencies. Each request must be alone in its turn; at most two upgrades are allowed. "
@@ -82,6 +85,15 @@ def build_execution_protocol(job: Any, contexts: list[dict[str, Any]], *, delive
         "and re-inspect affected pages after edits, preserving every Skill-required check. "
         "Visual observations do not automatically prove correctness.",
     ]
+
+    environment = (getattr(getattr(job, 'memory', None), 'data', None) or {}).get('environment') or {}
+    dependencies = environment.get('prepared_dependencies') or {}
+    if dependencies.get('status') == 'ready':
+        packages = ', '.join(f"{item['name']}=={item['version']}" for item in dependencies['packages'])
+        sections.append('Dependencies already prepared for this task:\n'
+                        + packages + '\nThe platform verified the declared Python requirements in this sandbox. '
+                        'Treat the corresponding Skill dependency-installation steps as completed. '
+                        'Start the actual Skill workflow directly; use platform upgrades only for a proven missing dependency.')
 
     if multi:
         routing = (
