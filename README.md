@@ -22,6 +22,15 @@
 </p>
 
 <p align="center">
+  <a href="https://hub.xerj.org/contributors/Max-cu">
+    <img alt="XERJ Corpus Hub contributor" src="https://hub.xerj.org/contributors/Max-cu/badge.svg" />
+  </a>
+  <br />
+  <sub>上下文精简实现入选 · SkillGo 仓库可供 AI 编程 Agent 检索</sub>
+  · <a href="https://hub.xerj.org/corpus/max-cu--skillgo">查看收录详情</a>
+</p>
+
+<p align="center">
   <a href="#产品演示">产品演示</a> ·
   <a href="#核心能力">核心能力</a> ·
   <a href="#使用流程">使用流程</a> ·
