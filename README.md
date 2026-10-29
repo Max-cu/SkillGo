@@ -17,18 +17,11 @@
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-6558d9" /></a>
   <a href="https://github.com/Max-cu/SkillGo/releases"><img alt="Release" src="https://img.shields.io/github/v/release/Max-cu/SkillGo?color=6558d9" /></a>
   <a href="https://github.com/Max-cu/SkillGo/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/Max-cu/SkillGo/actions/workflows/ci.yml/badge.svg" /></a>
+  <a href="https://hub.xerj.org/contributors/Max-cu"><img alt="XERJ Corpus Hub contributor" src="https://hub.xerj.org/contributors/Max-cu/badge.svg" /></a>
   <img alt="Python 3.12" src="https://img.shields.io/badge/Python-3.12-3776ab" />
   <img alt="Node.js 24" src="https://img.shields.io/badge/Node.js-24-339933" />
 </p>
 
-<p align="center">
-  <a href="https://hub.xerj.org/contributors/Max-cu">
-    <img alt="XERJ Corpus Hub contributor" src="https://hub.xerj.org/contributors/Max-cu/badge.svg" />
-  </a>
-  <br />
-  <sub>上下文精简实现入选 · SkillGo 仓库可供 AI 编程 Agent 检索</sub>
-  · <a href="https://hub.xerj.org/corpus/max-cu--skillgo">查看收录详情</a>
-</p>
 
 <p align="center">
   <a href="#产品演示">产品演示</a> ·
