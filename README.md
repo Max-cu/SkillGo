@@ -270,6 +270,12 @@ SkillGo 由 **Web / FastAPI 控制面、PostgreSQL 与文件存储、可信 Work
 
 </details>
 
+## Congratulations
+
+Oct 22nd. After several pre-testing version, we released official version 1.0.0
+Oct 29th. Our work was collcted by XERJ Corpus Hub, page was up https://hub.xerj.org/contributors/Max-cu
+Nov 2nd. SkillGo get 50 stars!
+
 ## 参与项目
 
 欢迎提交问题、改进建议与 Pull Request。如果你也认可 SkillGo ，欢迎点一个 Star⭐，这对我们很重要 ^_^
