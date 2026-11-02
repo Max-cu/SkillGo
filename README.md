@@ -270,11 +270,13 @@ SkillGo 由 **Web / FastAPI 控制面、PostgreSQL 与文件存储、可信 Work
 
 </details>
 
-## Congratulations
+## Project Highlights
 
-Oct 22nd. After several pre-testing version, we released official version 1.0.0
-Oct 29th. Our work was collcted by XERJ Corpus Hub, page was up https://hub.xerj.org/contributors/Max-cu
-Nov 2nd. SkillGo get 50 stars!
+- **Oct 22, 2026** — SkillGo v1.0.0 officially released after several rounds of testing and refinement.
+- **Oct 29, 2026** — Selected for the [XERJ Corpus Hub](https://hub.xerj.org/contributors/Max-cu), recognizing our work on agent skill execution and delivery.
+- **Nov 2, 2026** — Reached **50 GitHub stars**! Thanks to everyone who supports SkillGo.
+
+**More to come.** 🚀
 
 ## 参与项目
 
