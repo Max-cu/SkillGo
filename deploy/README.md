@@ -116,6 +116,18 @@ SKILLGO_DOCKER_GID=<上一步返回的数字>
 - 使用 HTTPS 时，必须写完整的 `https://...` Origin，不要带路径。
 - GID 错误会导致 Worker 持续重启或报 `permission denied`。
 
+### 5.4 沙箱任务执行上限
+
+沙箱 Worker 默认允许每个任务最多 150 轮模型调用和 480 次工具操作。一轮可以包含多次工具操作。
+在 Compose 使用的本地环境文件中，将对应变量设为 `0` 可独立关闭该上限：
+
+| 配置变量 | 设为 `0` 的效果 |
+| --- | --- |
+| `SKILLGO_SANDBOX_MAX_AGENT_TURNS` | 关闭模型轮次上限 |
+| `SKILLGO_SANDBOX_MAX_AGENT_TOOL_CALLS` | 关闭工具操作次数上限 |
+
+使用多个 `--env-file` 时，同名变量以后加载的文件为准。修改后在任务队列空闲时重建 Worker，使配置生效。
+
 ## 6. 构建并启动
 
 以拥有 Docker 权限的用户在项目根目录执行：

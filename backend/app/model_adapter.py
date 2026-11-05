@@ -226,6 +226,9 @@ async def _streamed_attempt(
     Returns None when the server answered with a retryable HTTP status.
     """
     request_headers = {**headers, "Accept": "text/event-stream"}
+    if httpx.URL(url).host == "api.deepseek.com":
+        # Avoid decoding failures on the official DeepSeek SSE endpoint.
+        request_headers["Accept-Encoding"] = "identity"
     progress = _ProgressBudget(connection, attempt_started, stats)
     # AsyncExitStack registers cleanup only after a successful, bounded enter.
     async with AsyncExitStack() as stack:
