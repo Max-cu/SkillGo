@@ -87,6 +87,29 @@ def test_exact_read_only_blocked_when_identical_content_is_available():
     assert state.register_observation_access(action,reused=True,payload=observed(action,'changed')) is None
 
 
+@pytest.mark.parametrize('follow_up', ['same', 'different_window', 'new_content', 'evicted', 'later', 'batch'])
+def test_stopping_requires_the_warned_window_and_evidence_on_the_next_standalone_turn(follow_up):
+    state = AgentExecutionState(skill_count=1)
+    action = read(offset=0, limit=10)
+    payload = observed(action)
+    for turn in (1, 2, 3):
+        warning = state.register_observation_access(action, reused=True, payload=payload, standalone_turn=turn)
+    assert warning['error_code'] == 'OBSERVATION_LOOP_BREAK'
+    if follow_up == 'different_window':
+        action = read(offset=10, limit=10)
+    if follow_up == 'new_content':
+        payload = observed(action, 'new rules')
+    result = state.register_observation_access(
+        {**action, 'reason': 'rephrased'}, reused=True, payload=payload,
+        content_available=follow_up != 'evicted',
+        standalone_turn=None if follow_up == 'batch' else 5 if follow_up == 'later' else 4,
+    )
+    if follow_up == 'same':
+        assert result['error_code'] == 'SANDBOX_OBSERVATION_STALLED'
+    else:
+        assert result is None or result['error_code'] == 'OBSERVATION_LOOP_BREAK'
+
+
 def test_context_availability_requires_the_full_result_not_an_excerpt():
     payload=observed(read())
     pinned=[{'role':'system','content':'rules'},{'role':'user','content':'request'}]
@@ -119,6 +142,21 @@ def test_failure_diagnostics_survive_projection_and_clear_on_success():
     state.record(action,{'exit_code':0,'stdout':'passed'})
     assert state.failure_recovery_hint(action) is None
     assert not json.loads(state.checkpoint())['unresolved_failures']
+
+
+def test_first_failure_survives_retries_and_checkpoint_until_its_operation_succeeds():
+    state = AgentExecutionState(skill_count=1)
+    action = {'action': 'command', 'argv': ['check']}
+    for sequence, error in ((10, 'original failure'), (11, 'retry failure')):
+        state.record(action, {'exit_code': 1, 'stderr': error})
+        state.remember_execution_failure(action, {'tool': 'command', 'diagnostic': error}, sequence)
+    state = state_from_json(json.loads(json.dumps(state_to_json(state))))
+    state.record(read(), observed(read()))
+    state.record({'action': 'command', 'argv': ['inspect']}, {'exit_code': 0})
+    assert state.first_unresolved_failure()['diagnostic'] == 'original failure'
+    assert state.first_unresolved_failure()['event_sequence'] == 10
+    state.record(action, {'exit_code': 0})
+    assert state.first_unresolved_failure() is None
 
 
 def test_verifier_retry_allowed_after_partial_failed_correction():
@@ -189,3 +227,62 @@ def test_repeated_read_batch_returns_one_error_reply_then_recovers(client,user_h
         assert result[0]=='answer 42' and result[2]==8
         assert job.memory.data['verification']['ok'] is True
         assert job.memory.data['verification']['validation_recorded'] is True
+
+
+def test_single_read_loop_stops_with_original_failure_in_job_events(client, user_headers):
+    from sqlalchemy import select
+
+    from app.database import SessionLocal
+    from app.models import JobEvent, WorkflowJob
+    from app.sandbox_runtime import SandboxRuntimeError
+    from test_workflow_jobs import create_version, sandbox_skill_zip
+
+    _, version = create_version(client, user_headers, slug='observation-stall', package=sandbox_skill_zip())
+    created = client.post('/api/v1/jobs', headers=user_headers,
+                          data={'version_id': version['id'], 'instruction': 'answer 42'}).json()
+
+    sandbox = MemorySandbox(failed=True)
+    sandbox.files['/workspace/work/a.txt'] = b'unchanged diagnostic code'
+
+    class Gateway:
+        connection = SimpleNamespace(context_tokens=48000)
+        turn = 0
+
+        async def agent_step(self, *, messages):
+            self.turn += 1
+            if self.turn == 1:
+                action = {'action': 'update_plan', 'goal': 'answer 42', 'steps': [
+                    {'id': 'work', 'title': 'Work'}, {'id': 'verify', 'title': 'Verify'}],
+                    'success_criteria': ['answer 42'], 'validation_step_id': 'verify'}
+            elif self.turn == 2:
+                action = {'action': 'command', 'argv': ['check'], 'reason': 'calculate'}
+            else:
+                assert self.turn <= 7
+                action = read('/workspace/work/a.txt', offset=0, limit=120)
+                if self.turn == 7:
+                    warning = next(m for m in messages if m.get('tool_call_id') == 'call-6')
+                    failure = json.loads(warning['content'])['payload']
+                    assert failure['error_code'] == 'OBSERVATION_LOOP_BREAK'
+                    assert 'wrong total' in failure['first_execution_failure']['diagnostic']
+            call_id = f'call-{self.turn}'
+            native = {'role': 'assistant', 'content': None, 'tool_calls': [
+                {'id': call_id, 'type': 'function', 'function': {'name': action['action'],
+                    'arguments': json.dumps({k: v for k, v in action.items() if k != 'action'})}}]}
+            return ModelResult(action, 'test', {}, assistant_message=native, tool_call_id=call_id)
+
+    gateway = Gateway()
+    with SessionLocal() as db:
+        job = db.get(WorkflowJob, created['id'])
+        with pytest.raises(SandboxRuntimeError, match='wrong total') as error:
+            asyncio.run(_run_agent_loop(db, job, sandbox, skill_contexts=[{'root': '/workspace/skills/test',
+                'name': 'test', 'version': '1', 'skill_md': '# Answer', 'runtime_requirements': {}}],
+                gateway=gateway, job_cancelled=lambda: False))
+        assert error.value.code == 'SANDBOX_OBSERVATION_STALLED'
+        assert gateway.turn == 7
+        assert not sandbox.closed
+        events = db.scalars(select(JobEvent).where(JobEvent.job_id == job.id).order_by(JobEvent.sequence)).all()
+        original = next(event for event in events if event.data.get('tool') == 'command')
+        stalled = next(event for event in events if event.data.get('error_code') == 'SANDBOX_OBSERVATION_STALLED')
+        assert stalled.status == 'failed' and stalled.data['recoverable'] is False
+        assert stalled.data['first_execution_failure']['event_sequence'] == original.sequence
+        assert original.data['failure_diagnostics']['stderr_tail'] == 'wrong total'

@@ -64,8 +64,11 @@ def build_execution_protocol(job: Any, contexts: list[dict[str, Any]], *, delive
         "tools when equivalent: file operations to list_files/read_file/write_file, scripts to command/run_python, "
         "Word/DOCX generation to run_python with python-docx, XLSX to openpyxl, PDF to reportlab, "
         "PPTX to python-pptx. Do not block solely because a vendor tool name differs.\n"
-        f"- Match timeout_seconds to wall-clock need. The default command budget and command hard limit "
-        f"are {settings.sandbox_command_timeout_seconds} seconds; run_python accepts up to 600. "
+        + (f"- Match timeout_seconds to wall-clock need. The default command budget and command hard limit "
+         f"are {settings.sandbox_command_timeout_seconds} seconds; "
+         if settings.sandbox_command_timeout_seconds > 0 else
+         "- Commands have no platform wall-clock deadline. Set command timeout_seconds=0 for unlimited execution. ")
+        + "run_python accepts up to 600. "
         "For a script with --budget 240, allow budget + 30 where the hard limit permits. Use --workers "
         "when the script supports independent I/O work. A normal command deadline stops the command "
         "without destroying the sandbox; resume saved progress rather than rerunning the whole batch. "

@@ -290,7 +290,9 @@ def validate_agent_action(action: dict[str, Any]) -> str | None:
         ):
             return "command timeout_seconds must be an integer"
         command_budget = settings.sandbox_command_timeout_seconds
-        if isinstance(timeout, int) and not 1 <= timeout <= command_budget:
+        if isinstance(timeout, int) and command_budget <= 0 and timeout < 0:
+            return "command timeout_seconds must be zero (unlimited) or positive"
+        if isinstance(timeout, int) and command_budget > 0 and not 1 <= timeout <= command_budget:
             return f"command timeout_seconds must be between 1 and {command_budget}"
     elif action_name == "run_python":
         code = action.get("code")

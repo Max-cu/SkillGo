@@ -23,6 +23,10 @@ class MemorySandbox:
         self.failed = failed
         self.mutate = mutate
         self.calls = []
+        self.closed = False
+
+    def close(self):
+        self.closed = True
 
     async def list_files(self, path):
         return [{'path': name, 'type': 'file', 'size': len(data)} for name, data in self.files.items() if name.startswith(path.rstrip('/') + '/')]

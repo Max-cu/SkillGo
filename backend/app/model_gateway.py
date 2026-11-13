@@ -446,20 +446,26 @@ SANDBOX_AGENT_TOOLS: list[dict[str, Any]] = [
                     "cwd": {"type": "string", "description": "Absolute working directory under /workspace."},
                     "timeout_seconds": {
                         "type": "integer",
-                        "minimum": 1,
-                        "maximum": settings.sandbox_command_timeout_seconds,
+                        **({"minimum": 1, "maximum": settings.sandbox_command_timeout_seconds}
+                           if settings.sandbox_command_timeout_seconds > 0 else {"minimum": 0}),
                         "description": (
+                            ("No platform command deadline. Set timeout_seconds=0 for unlimited execution. "
+                             "A positive value opts into a deadline for this call. "
+                             if settings.sandbox_command_timeout_seconds <= 0 else
                             f"Wall-clock limit for this single command, "
                             f"1-{settings.sandbox_command_timeout_seconds} seconds; "
-                            f"when omitted the platform applies {settings.sandbox_command_timeout_seconds}. "
+                            f"when omitted the platform applies {settings.sandbox_command_timeout_seconds}. ")
+                            +
                             "When the command runs a "
                             "Skill script that declares its own budget (for example --budget 240), "
                             "set this value to budget + 30. At the deadline the process is stopped "
                             "but the sandbox and /workspace (including saved batch progress) are "
                             "preserved, so resume the script from its saved state instead of "
                             "restarting it. For long per-file batches use the script's concurrency "
-                            "flag (for example --workers). Work needing more than the platform "
-                            "limit must be split into smaller resumable calls."
+                            "flag (for example --workers). "
+                            + ("Work needing more than the platform limit must be split into smaller resumable calls."
+                               if settings.sandbox_command_timeout_seconds > 0 else
+                               "Long commands may continue without a platform deadline.")
                         ),
                     },
                     "reason": {"type": "string", "description": "Short progress description."},

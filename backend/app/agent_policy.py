@@ -188,6 +188,7 @@ class AgentExecutionState:
     verifier_anchor_mutation_epoch: int = -1
     _stable_path_cache: dict[str, object] = field(default_factory=dict, repr=False)
     observation_accesses: dict[str, dict[str, Any]] = field(default_factory=dict)
+    observation_warning: dict[str, Any] = field(default_factory=dict)
     failed_operations: dict[str, dict[str, Any]] = field(default_factory=dict)
     managed_artifacts: dict[str, str] = field(default_factory=dict)
     artifact_sources: dict[str, str] = field(default_factory=dict)
@@ -804,13 +805,15 @@ class AgentExecutionState:
         return cached
 
     def register_observation_access(self, action: dict[str, Any], *, reused: bool,
-                                    payload: object = None, content_available: bool = True) -> dict[str, Any] | None:
+                                    payload: object = None, content_available: bool = True,
+                                    standalone_turn: int | None = None) -> dict[str, Any] | None:
         """Detect identical, available information, never ordinary pagination.
 
         Only proven cache hits can be blocked. If context projection removed
         the earlier full result, supply it again rather than deny recovery.
         """
         key = self._observation_path_key(action)
+        exact_key = key
         if key is None:
             self.duplicate_observation_streak = 0
             return None
@@ -840,9 +843,15 @@ class AgentExecutionState:
             self.observation_accesses.pop(next(iter(self.observation_accesses)))
         self.duplicate_observation_streak = count
         if self.duplicate_observation_streak >= 3:
+            stalled = False
+            if standalone_turn is not None and action.get("action") == "read_file":
+                warning = {"turn": standalone_turn, "key": exact_key,
+                           "signature": signature, "mutation_epoch": self.mutation_epoch}
+                stalled = self.observation_warning == {**warning, "turn": standalone_turn - 1}
+                self.observation_warning = warning
             return {
                 "ok": False,
-                "error_code": "OBSERVATION_LOOP_BREAK",
+                "error_code": "SANDBOX_OBSERVATION_STALLED" if stalled else "OBSERVATION_LOOP_BREAK",
                 "message": (
                     f"This exact unchanged read result for {path[:240]} is already in the model context. "
                     "Repeated requests do not provide additional information."
@@ -853,6 +862,8 @@ class AgentExecutionState:
                     "Use the retained result. If it reaches EOF, there is no next page. "
                     "Choose the next task operation, read a genuinely different window, "
                     "or finish only when the task and its checks are fulfilled."
+                    + (" Requesting this same unchanged read alone again in the next turn will stop execution."
+                       if standalone_turn is not None and action.get("action") == "read_file" and not stalled else "")
                 ),
             }
         return None
@@ -954,6 +965,32 @@ class AgentExecutionState:
             "For a transient external error, use its diagnosis to choose a bounded retry."
         )
 
+    def remember_execution_failure(self, action: dict[str, Any], event_data: dict[str, Any], sequence: int) -> None:
+        operation = self.failed_operations.get(action_fingerprint(action))
+        if operation is None or "first_failure" in operation:
+            return
+        evidence = event_data.get("failure_diagnostics", {})
+        stage_error = next((stage["error_tail"] for stage in evidence.get("stages", []) if stage["error_tail"]), "")
+        error = evidence.get("stderr_tail", "").strip() or stage_error.strip() or evidence.get("stdout_tail", "").strip()
+        diagnostic = event_data["diagnostic"][:1800]
+        if error:
+            summary = diagnostic.partition("\n\n")[0][:600]
+            diagnostic = f"{summary}\n{error[-1200:]}"
+        operation["first_failure"] = {
+            "tool": event_data["tool"],
+            "event_sequence": sequence,
+            **{key: event_data[key] for key in ("turn", "exit_code", "elapsed_seconds", "error_code")
+               if key in event_data},
+            "diagnostic": diagnostic,
+        }
+
+    def first_unresolved_failure(self) -> dict[str, Any] | None:
+        return min(
+            (item["first_failure"] for item in self.failed_operations.values() if "first_failure" in item),
+            key=lambda failure: failure["event_sequence"],
+            default=None,
+        )
+
     def cached_observation(self, action: dict[str, Any]) -> object | None:
         if action.get("action") not in OBSERVATION_TOOLS:
             return None
@@ -1033,6 +1070,8 @@ class AgentExecutionState:
                     'repeats': previous.get('repeats', 0) + 1 if previous.get('signature') == signature else 1,
                     'operation': operation or len(self.observations),
                 }
+                if "first_failure" in previous:
+                    self.failed_operations[fingerprint]["first_failure"] = previous["first_failure"]
                 while len(self.failed_operations) > 16:
                     self.failed_operations.pop(next(iter(self.failed_operations)))
 
@@ -1048,7 +1087,10 @@ class AgentExecutionState:
             "validation": {key: value for key, value in self.validation.items() if key != 'checks'} if self.validation else None,
             "loaded_skill_indexes": sorted(self.loaded_skills),
             "workflow_runs": self.workflow_runs,
-            "unresolved_failures": list(self.failed_operations.values())[-3:],
+            "unresolved_failures": [
+                {key: value for key, value in item.items() if key != "first_failure"}
+                for item in list(self.failed_operations.values())[-3:]
+            ],
             "completed_skill_indexes": sorted(self.completed_skill_indexes),
             "skill_evidence": self.skill_evidence,
             "requirements": self.requirements,
