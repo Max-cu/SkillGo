@@ -16,6 +16,10 @@ from test_agent_policy import _completed_plan
 class Sandbox:
     def __init__(self, files):
         self.files = dict(files)
+        self.closed = False
+
+    def close(self):
+        self.closed = True
 
     async def command(self, argv, **kwargs):
         for source, target in json.loads(argv[-2]):
