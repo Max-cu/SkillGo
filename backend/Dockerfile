@@ -5,7 +5,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 RUN groupadd --gid 10001 skillgo \
     && useradd --uid 10001 --gid 10001 --no-create-home --shell /usr/sbin/nologin skillgo \
-    && mkdir -p /app /var/lib/skillgo/storage \
+    && mkdir -p /app /var/lib/skillgo/storage /var/lib/skillgo/environment-build \
     && chown -R 10001:10001 /app /var/lib/skillgo
 
 WORKDIR /app

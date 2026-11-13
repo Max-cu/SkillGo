@@ -211,11 +211,14 @@ class _FakePath:
         return self.files[self.name]
 
 
-def _run_resolver(monkeypatch, capsys, report):
+def _run_resolver(monkeypatch, capsys, report, fail_first=False, requirements=None):
     """Execute the injected resolver script with pip/network stubbed; returns parsed stdout."""
     _FakePath.files.clear()
 
+    calls=[]
     def fake_main(args):
+        calls.append(list(args))
+        if fail_first and len(calls)==1:return 1
         _FakePath.files['/tmp/report.json'] = json.dumps(report)
         return 0
 
@@ -241,8 +244,9 @@ def _run_resolver(monkeypatch, capsys, report):
     }.items():
         monkeypatch.setitem(__import__('sys').modules, name, module)
 
-    ns = {'SPEC': {'requirements': ['scipy']}}
+    ns = {'SPEC': {'requirements': requirements or ['scipy']}}
     exec(compile(RESOLVER_SRC.read_text(encoding='utf-8-sig'), str(RESOLVER_SRC), 'exec'), ns)
+    ns['pip_calls']=calls
     return json.loads(capsys.readouterr().out), ns
 
 
@@ -280,6 +284,17 @@ def test_resolver_emits_verified_locks(monkeypatch, capsys):
     assert send(ns['PipSession'](), SimpleNamespace(url='https://pypi.org/simple/scipy/')) == 'sent'
 
 
+def test_resolver_resolves_skill_versions_without_base_pins(monkeypatch, capsys):
+    result, ns = _run_resolver(monkeypatch, capsys,
+                              {'install': [_wheel_item('pillow', '12.0.0')]},
+                              requirements=['pillow>=10,<13'])
+    args = ns['pip_calls'][0]
+    assert '--ignore-installed' not in args
+    assert '-c' not in args
+    assert 'pillow>=10,<13' in args
+    assert result['wheels'][0]['version'] == '12.0.0'
+
+
 @pytest.mark.parametrize('bad_report', [
     {'install': [{'metadata': {'name': 'x', 'version': '1'}, 'download_info': {
         'url': 'https://evil.example.com/x-1-py3-none-any.whl',
@@ -306,10 +321,12 @@ def _extension_tar():
         info.size = len(data)
         info.mode = 0o644
         t.addfile(info, io.BytesIO(data))
-    return base64.b64encode(buf.getvalue()).decode()
+    return buf.getvalue()
 
 
-def test_builder_generic_path_uses_guarded_resolver_then_offline_install_and_probes_imports(monkeypatch):
+@pytest.mark.parametrize('capability_only', [False, True])
+@pytest.mark.parametrize('office_conversion', [False, True])
+def test_builder_generic_path_uses_guarded_resolver_then_offline_install_and_probes_imports(monkeypatch, capability_only, office_conversion):
     monkeypatch.setattr(builder, 'settings', replace(builder.settings, environment_base_image=BASE,
                                                      environment_build_seconds=900))
     created = []
@@ -341,43 +358,75 @@ def test_builder_generic_path_uses_guarded_resolver_then_offline_install_and_pro
             code = self.argv[-1]
             if 'PipSession' in code:  # 联网解析器
                 assert self.network == 'bridge' and self.mem_limit == '1536m'
+                if capability_only:
+                    assert "'requirements': ['pandas']" in code
                 return json.dumps({'wheels': [wheel], 'base_distributions': {}}).encode()
-            if 'NoRedirect' in code:   # 固定主机下载器
+            if code.startswith('WHEELS='):   # 固定主机下载器
                 assert self.network == 'bridge'
-                payload = {wheel['filename']: base64.b64encode(b'wheel-bytes').decode()}
+                payload = [wheel['filename'], base64.b64encode(b'wheel-bytes').decode()]
                 return json.dumps(payload).encode()
-            if 'pip' in code and 'install' in code:  # 断网离线安装器
-                assert self.network == 'none' and self.writable and self.user == '0:0'
-                return _extension_tar().encode()
             # 功能探针：断网、只读、非 root
             assert self.network == 'none' and not self.writable and self.user == '10001:10001'
-            assert 'importlib.import_module' in code and "'scipy'" in code
-            return json.dumps({'schema_version': 1, 'providers': {}}).encode()
+            if not capability_only:
+                assert 'importlib.import_module' in code and "'scipy'" in code
+            return json.dumps({'schema_version': 1, 'providers': {
+                'pandas': {'available': True}, 'libreoffice': {'available': True}}}).encode()
 
         def put_archive(self, path, data):
             self.archive = (path, data)
+
+        def exec_run(self, argv):
+            assert argv == ['test', '-f', builder.INSTALL_MARKER]
+            assert self.network == 'none' and self.writable and self.user == '0:0'
+            return SimpleNamespace(exit_code=0)
 
         def remove(self, force=True):
             pass
 
     def create(image, command, **kw):
-        return Container(command, kw['network_mode'], kw['read_only'] is False, kw['user'], kw['mem_limit'])
+        container = Container(command, kw['network_mode'], kw['read_only'] is False, kw['user'], kw['mem_limit'])
+        if builder.INSTALL_MARKER in command[-1]:
+            container.reload = lambda: setattr(container, 'status', 'running')
+            container.id = 'installer'
+            container.client = SimpleNamespace(api=SimpleNamespace(
+                exec_create=lambda *args, **kwargs: {'Id': 'export'},
+                exec_start=lambda *args, **kwargs: (part for part in [_extension_tar()]),
+                exec_inspect=lambda execution: {'ExitCode': 0},
+            ))
+        return container
+
+    def build(**kwargs):
+        with tarfile.open(fileobj=kwargs['fileobj']) as archive:
+            dockerfile = archive.extractfile('Dockerfile').read().decode()
+            if 'libreoffice-writer' in dockerfile:
+                assert office_conversion and kwargs['network_mode'] == 'bridge'
+                assert archive.getnames() == ['Dockerfile']
+                assert 'USER 10001:10001' in dockerfile
+                return SimpleNamespace(id=NEW_IMAGE), iter([])
+            assert 'COPY extension/ /opt/skillgo/python/' in dockerfile
+            assert 'COPY extension/ /usr/local/lib/python3.12/site-packages/' not in dockerfile
+            hook = archive.extractfile('skillgo_environment.pth').read()
+            assert b"sys.path.insert(0, '/opt/skillgo/python')" in hook
+        return SimpleNamespace(id=NEW_IMAGE), iter([])
 
     client = SimpleNamespace(
         images=SimpleNamespace(
             get=lambda image_id: SimpleNamespace(id=BASE, attrs={'Architecture': 'amd64', 'Os': 'linux'}),
-            build=lambda **kw: (SimpleNamespace(id=NEW_IMAGE), iter([])),
+            build=build,
         ),
         containers=SimpleNamespace(create=create),
     )
 
-    spec = prep.environment_spec([], BASE, python_requirements=['scipy'], python_imports=['scipy'])
+    caps = ['office.convert'] if office_conversion else []
+    spec = (prep.environment_spec([*caps, 'data.tabular'], BASE) if capability_only else
+            prep.environment_spec(caps, BASE, python_requirements=['scipy'], python_imports=['scipy']))
     image_id, inventory = builder.build_environment(client, spec, attempt='test-generic')
 
     assert image_id == NEW_IMAGE
     assert inventory['python_imports_verified'] is True
+    assert inventory['python_dependency_layout'] == 'private-site-v1'
     assert inventory['python_lock'] == [wheel]
-    assert inventory['python_imports'] == ['scipy']
+    assert inventory['python_imports'] == ([] if capability_only else ['scipy'])
     assert inventory['image_id'] == NEW_IMAGE
     # 四个阶段容器都被调度过
     assert len(created) == 4
@@ -430,3 +479,22 @@ def test_pip_requirements_reference_requires_packaged_file_and_rejects_nested_di
                 z.writestr('example/requirements.txt', body)
         with pytest.raises(ValueError):
             analyze_python_dependencies('pip install -r requirements.txt', {}, out.getvalue())
+
+
+def test_resolver_mirror_lock_and_official_fallback(monkeypatch,capsys):
+    item=_wheel_item('scipy','1.11.0',sha='a'*64)
+    item['download_info']['url']='https://mirrors.tuna.tsinghua.edu.cn/pypi/web/packages/ab/cd/scipy-1.11.0-py3-none-any.whl'
+    result,ns=_run_resolver(monkeypatch,capsys,{'install':[item]},fail_first=True)
+    calls=ns['pip_calls']
+    assert calls[0][calls[0].index('--index-url')+1].startswith('https://mirrors.tuna')
+    assert calls[1][calls[1].index('--index-url')+1]=='https://pypi.org/simple'
+    assert result['wheels'][0]['sha256']=='a'*64
+
+
+def test_headless_cv2_requirement_preserves_version_constraint(monkeypatch,capsys):
+    report={'install':[_wheel_item('opencv-python-headless','4.13.0',sha='b'*64)]}
+    result,ns=_run_resolver(monkeypatch,capsys,report,requirements=['opencv-python>=4.8','numpy>=1.26'])
+    assert 'opencv-python-headless>=4.8' in ns['pip_calls'][0]
+    assert 'opencv-python>=4.8' not in ns['pip_calls'][0]
+    assert 'numpy>=1.26' in ns['pip_calls'][0]
+    assert result['wheels'][0]['name']=='opencv-python-headless'

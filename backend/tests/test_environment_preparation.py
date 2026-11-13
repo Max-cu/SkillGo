@@ -12,6 +12,40 @@ from app.environment_builder import run_container
 
 BASE = 'sha256:' + 'a'*64
 
+
+def test_wheel_cache_preserves_verified_downloads_after_partial_failure(tmp_path, monkeypatch):
+    import base64
+    import hashlib
+    import json
+    from app import environment_builder as builder
+
+    data = b'verified wheel contents'
+    wheel = {'filename': 'package.whl', 'sha256': hashlib.sha256(data).hexdigest()}
+    other = {'filename': 'other.whl', 'sha256': 'a' * 64}
+    output = json.dumps([wheel['filename'], base64.b64encode(data).decode()]).encode()
+    fetch = SimpleNamespace(start=lambda: None, logs=lambda **kwargs: output)
+    monkeypatch.setattr(builder, 'run_container', lambda *args, **kwargs: fetch)
+
+    def fail(*args):
+        raise TimeoutError('download timeout')
+
+    monkeypatch.setattr(builder, 'wait_container', fail)
+    with pytest.raises(TimeoutError, match='download timeout'):
+        builder.fetch_missing_wheels(None, SimpleNamespace(id='base'), [wheel, other], tmp_path,
+                                     {}, 'attempt', 1, [], True)
+    path = builder.wheel_cache_path(tmp_path, wheel)
+    assert builder.read_cached_wheel(path, wheel) == data
+    assert builder.read_cached_wheel(builder.wheel_cache_path(tmp_path, other), other) is None
+    path.write_bytes(b'corrupted wheel')
+    assert builder.read_cached_wheel(path, wheel) is None
+    assert not path.exists()
+
+
+def test_numpy_alone_does_not_require_pandas_capability():
+    analysis = prep.analyze_capabilities('import numpy as np', {})
+    assert 'data.tabular' not in analysis['inferred_capabilities']
+    assert 'data.tabular' in prep.analyze_capabilities('import pandas as pd', {})['inferred_capabilities']
+
 @pytest.mark.parametrize('text', [
     '严禁遮挡原文、数字、编号、签章、表格线、尺寸、二维码。',
     'Preserve existing QR codes. Do not generate QR codes.',
@@ -266,3 +300,23 @@ def test_archive_builder_only_copies_exported_files():
     with tarfile.open(fileobj=io.BytesIO(archive_files({'extension/pkg/module.py':b'pass'}))) as t:
         assert t.extractfile('extension/pkg/module.py').read()==b'pass'
         assert not any(m.issym() or m.islnk() for m in t.getmembers())
+def test_extension_export_validates_stream_size_and_content(monkeypatch):
+    import tarfile
+    from app import environment_builder as builder
+
+    data = builder.archive_files({'extension/pkg/module.py': b'pass'})
+    def stream(*args, **kwargs):
+        yield data[:100]
+        yield data[100:]
+
+    api = SimpleNamespace(exec_create=lambda *args, **kwargs: {'Id': 'export'},
+                          exec_start=stream, exec_inspect=lambda execution: {'ExitCode': 0})
+    installer = SimpleNamespace(id='installer', client=SimpleNamespace(api=api))
+    with builder.export_extension(installer, {'Dockerfile': b'FROM test'}) as archive:
+        with tarfile.open(fileobj=archive) as tar:
+            assert tar.extractfile('extension/pkg/module.py').read() == b'pass'
+            assert tar.extractfile('Dockerfile').read() == b'FROM test'
+    monkeypatch.setattr(builder, 'MAX_EXTENSION_BYTES', len(data) - 1)
+    with pytest.raises(ValueError, match='environment archive limit'):
+        with builder.export_extension(installer, {}):
+            pytest.fail('Oversized dependency archive was accepted')

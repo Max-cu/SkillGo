@@ -20,6 +20,7 @@ def _bool(name: str, default: bool) -> bool:
 class Settings:
     environment_preparation_enabled: bool = _bool("SKILLGO_ENVIRONMENT_PREPARATION_ENABLED", False)
     environment_base_image: str = os.getenv("SKILLGO_ENVIRONMENT_BASE_IMAGE", "")
+    environment_minimal_base_image: str = os.getenv("SKILLGO_ENVIRONMENT_MINIMAL_BASE_IMAGE", "")
     environment_queue_wait_seconds: int = int(os.getenv("SKILLGO_ENVIRONMENT_QUEUE_WAIT_SECONDS", "3600"))
     environment_build_seconds: int = int(os.getenv("SKILLGO_ENVIRONMENT_BUILD_SECONDS", "900"))
     environment: str = os.getenv("SKILLGO_ENVIRONMENT", "development")

@@ -40,10 +40,14 @@ async def request_capability(db, job, sandbox, capability, cancelled, *, require
         generic = bool(requirements or (previous and previous.spec.get('python_requirements')))
         spec = environment_spec(caps, current.get('image_id') if generic else (previous.spec['base_image'] if previous else None),
                                 python_requirements=requirements, python_imports=imports)
+        if previous and previous.spec.get('layout'):
+            spec = environment_spec(caps, previous.spec['base_image'], layout=previous.spec['layout'],
+                                    python_requirements=normalize_requirements(previous.spec.get('python_requirements', []) + requirements),
+                                    python_imports=normalize_imports(previous.spec.get('python_imports', []) + imports))
         if previous:
             if previous.status != 'ready':
                 raise ValueError('Current environment is no longer ready')
-            expected = environment_spec(previous.spec['capabilities'], previous.spec['base_image'], python_requirements=previous.spec.get('python_requirements'), python_imports=previous.spec.get('python_imports'))
+            expected = environment_spec(previous.spec['capabilities'], previous.spec['base_image'], python_requirements=previous.spec.get('python_requirements'), python_imports=previous.spec.get('python_imports'), layout=previous.spec.get('layout'))
             # Catalog/probe additions are compatible if the pinned dependencies,
             # base, platform and policy are unchanged. Candidate probes still
             # verify every capability before adopting the new environment.
@@ -59,7 +63,8 @@ async def request_capability(db, job, sandbox, capability, cancelled, *, require
     if attempts >= 2:
         return failure('ENVIRONMENT_UPGRADE_LIMIT', 'At most two upgrade attempts are allowed per task')
     env = enqueue_environment(db, spec)
-    job.memory.data = {**memory, 'environment_upgrade_attempts': attempts + 1}
+    job.memory.data = {**memory, 'environment_upgrade_attempts': attempts + 1,
+                       'pending_environment_digest': env.digest}
     db.commit()
     deadline = time.monotonic() + settings.environment_queue_wait_seconds
     while True:

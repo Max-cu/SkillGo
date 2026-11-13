@@ -60,6 +60,12 @@ def resolve_capabilities(providers: dict) -> list[str]:
 async def preflight_environment(sandbox, skill_contexts: list[dict]) -> dict:
     # -I excludes workspace/PYTHONPATH packages; only the platform image is probed.
     script = Path(__file__).with_name("environment_probe.py").read_text(encoding="utf-8")
+    requested = sorted({cap for ctx in skill_contexts
+                        for key in ('declared_capabilities', 'inferred_capabilities', 'prepared_capabilities')
+                        for cap in ctx.get('runtime_requirements', {}).get(key, [])})
+    if skill_contexts:
+        providers = sorted({p for cap in requested for group in CAPABILITIES.get(cap, []) for p in group})
+        script = 'SELECTED_PROVIDERS=' + repr(providers) + '\n' + script
     result = await sandbox.command(["python3", "-I", "-c", script], cwd="/workspace", timeout_seconds=90, allow_large_arguments=True)
     try:
         payload = json.loads(result.stdout)
@@ -75,6 +81,7 @@ async def preflight_environment(sandbox, skill_contexts: list[dict]) -> dict:
     payload["image_id"] = (getattr(container, "attrs", {}) or {}).get("Image")
     payload["inventory_digest"] = hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
     payload["capabilities"] = resolve_capabilities(payload["providers"])
+    payload["requested_capabilities"] = requested
     payload["requestable_capabilities"] = sorted(CAPABILITIES)
     payload["network_enabled"] = bool(sandbox.network_enabled)
     from .config import settings
