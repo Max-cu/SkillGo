@@ -65,9 +65,13 @@ def claim_environment():
 
 def finish_attempt(digest, attempt, **values):
     with SessionLocal() as db:
+        env = db.scalar(select(PreparedEnvironment).where(
+            PreparedEnvironment.digest == digest).with_for_update())
+        if env is not None and (env.inventory or {}).get('cleanup_requested') and 'inventory' in values:
+            values['inventory'] = {**values['inventory'], 'cleanup_requested': True}
         result = db.execute(update(PreparedEnvironment).where(PreparedEnvironment.digest==digest,
             PreparedEnvironment.attempt==attempt, PreparedEnvironment.status.in_(['building','probing']),
-            PreparedEnvironment.lease_until > utcnow()).values(**values))
+            PreparedEnvironment.lease_until > utcnow()).values(**values).execution_options(synchronize_session=False))
         db.commit()
         if not result.rowcount:
             raise EnvironmentBuildLeaseLost('Environment build lease lost')
@@ -134,7 +138,11 @@ def main():
         if time.monotonic() - last_cleanup > 60:
             cleanup_expired_builds(client)
             last_cleanup = time.monotonic()
-        if not process_one(client):
+        busy = process_one(client)
+        from .environment_cleanup import cleanup_released_environments
+        with SessionLocal() as db:
+            cleanup_released_environments(db, client)
+        if not busy:
             time.sleep(2)
 
 

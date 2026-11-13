@@ -24,6 +24,7 @@ def transient_build_failure(error: BaseException | str) -> bool:
         'no such container', 'container is not running',
         'context deadline exceeded', 'exceeded its total budget',
         'connection aborted', 'connection reset', 'read timed out',
+        'the read operation timed out', 'dependency download timed out',
         '500 server error', '502 bad gateway', '503 service unavailable',
         '504 gateway timeout', 'error while fetching server api version',
         'environment builder lease expired',

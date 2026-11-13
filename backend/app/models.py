@@ -171,7 +171,11 @@ class SkillVersion(TimestampMixin, Base):
             return {"status": "legacy", "capabilities": [], "message": "Uses platform runtime preflight"}
         env = binding.environment
         return {"status": env.status, "digest": env.digest, "capabilities": env.spec.get("capabilities", []),
-                "message": env.error_message, "analysis": binding.analysis}
+                "message": env.error_message, "analysis": binding.analysis,
+                "layout": env.spec.get("layout", "legacy"),
+                "base_image": env.spec.get("base_image"), "image_id": env.image_id,
+                "python_packages": [{"name": p["name"], "version": p["version"]}
+                                    for p in (env.inventory or {}).get("python_lock", [])]}
 
     @property
     def skill_name(self) -> str:

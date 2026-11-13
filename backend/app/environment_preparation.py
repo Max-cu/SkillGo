@@ -59,7 +59,23 @@ EXTENSIONS = {
 }
 IMPORT_CAPABILITIES = {'fitz': 'pdf.read', 'pymupdf': 'pdf.read', 'docx': 'office.docx',
     'openpyxl': 'office.xlsx', 'pptx': 'office.pptx', 'PIL': 'image.basic', 'pandas': 'data.tabular', 'qrcode': 'image.qr', 'markdown': 'text.markdown', 'barcode': 'image.barcode', 'defusedxml': 'data.xml',
-    'pypdf': 'pdf.read', 'pdfplumber': 'pdf.read', 'reportlab': 'pdf.write', 'numpy': 'data.tabular'}
+    'pypdf': 'pdf.read', 'pdfplumber': 'pdf.read', 'reportlab': 'pdf.write'}
+
+# Tested provider versions form part of each minimal environment's immutable recipe.
+CAPABILITY_PACKAGES = {
+    'pdf.read': ['PyMuPDF==1.26.4'], 'pdf.render': ['PyMuPDF==1.26.4'],
+    'pdf.write': ['reportlab==4.4.3'], 'pdf.annotate': ['pypdf==5.9.0', 'reportlab==4.4.3'],
+    'office.docx': ['python-docx==1.2.0'], 'office.xlsx': ['openpyxl==3.1.5'],
+    'office.pptx': ['python-pptx==1.0.2'], 'image.basic': ['Pillow>=10,<14'],
+    'data.tabular': ['pandas==2.3.2'], 'image.qr': ['qrcode==8.2', 'Pillow>=10,<14'],
+    'text.markdown': ['Markdown==3.10.3'], 'data.xml': ['defusedxml==0.7.1'],
+    'image.barcode': ['python-barcode==0.16.1'],
+}
+CAPABILITY_SYSTEM_PACKAGES = {
+    'fonts.cjk': ['fontconfig', 'fonts-noto-cjk'],
+    'media.convert': ['ffmpeg'],
+    'office.convert': ['libreoffice-writer', 'libreoffice-calc', 'libreoffice-impress'],
+}
 
 
 def import_evidence(skill_md):
@@ -141,8 +157,12 @@ def package_import_hints(package):
     return sorted({IMPORT_CAPABILITIES[name] for name in modules if name in IMPORT_CAPABILITIES})
 
 
-def environment_spec(capabilities, base_image=None, *, python_requirements=None, python_imports=None):
-    base = base_image or settings.environment_base_image
+def environment_spec(capabilities, base_image=None, *, python_requirements=None, python_imports=None, layout=None):
+    base = base_image or settings.environment_minimal_base_image or settings.environment_base_image
+    if layout is None and settings.environment_minimal_base_image and base == settings.environment_minimal_base_image:
+        layout = 'minimal-v1'
+    if layout not in (None, 'minimal-v1'):
+        raise ValueError('Unknown environment layout')
     if not re.fullmatch(r'sha256:[0-9a-f]{64}', base):
         raise ValueError('Platform environment base must be pinned to an immutable local image ID')
     caps = sorted(set(capabilities))
@@ -161,6 +181,11 @@ def environment_spec(capabilities, base_image=None, *, python_requirements=None,
     extension_digest = hashlib.sha256(json.dumps(EXTENSIONS, sort_keys=True).encode()).hexdigest()
     result = {'policy': POLICY_VERSION, 'probe_digest': probe_digest, 'extension_digest': extension_digest, 'base_image': base, 'platform': 'linux/amd64',
             'capabilities': caps, 'wheels': [wheels[k] for k in sorted(wheels)]}
+    if layout:
+        result.update(layout=layout,
+                      capability_packages=sorted({r for c in caps for r in CAPABILITY_PACKAGES.get(c, [])}),
+                      system_packages=sorted({r for c in caps for r in CAPABILITY_SYSTEM_PACKAGES.get(c, [])}))
+        result['wheels'] = []
     if python_requirements or python_imports:
         from .python_dependencies import normalize_requirements, normalize_imports
         result.update(python_requirements=normalize_requirements(python_requirements or []),
@@ -170,7 +195,8 @@ def environment_spec(capabilities, base_image=None, *, python_requirements=None,
 
 def enqueue_environment(db, spec, error=None):
     digest = hashlib.sha256(json.dumps(spec, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
-    env = db.get(PreparedEnvironment, digest)
+    from sqlalchemy import select
+    env = db.scalar(select(PreparedEnvironment).where(PreparedEnvironment.digest == digest).with_for_update())
     if env is None:
         try:
             with db.begin_nested():
@@ -181,6 +207,8 @@ def enqueue_environment(db, spec, error=None):
                 db.flush()
         except IntegrityError:
             env = db.get(PreparedEnvironment, digest)
+    if (env.inventory or {}).get('cleanup_requested'):
+        env.inventory = {k: v for k, v in env.inventory.items() if k != 'cleanup_requested'}
     return requeue_failed_environment(db, env) if error is None else env
 
 
@@ -226,7 +254,7 @@ def prepare_job_environment(db, versions):
     # Existing bindings remain authoritative after catalog/config changes.
     if len({e.digest for e in envs}) == 1:
         return envs[0]
-    common = [{k: v for k, v in e.spec.items() if k not in {'capabilities', 'wheels', 'python_requirements', 'python_imports', 'python_policy'}} for e in envs]
+    common = [{k: v for k, v in e.spec.items() if k not in {'capabilities', 'wheels', 'python_requirements', 'python_imports', 'python_policy', 'capability_packages', 'system_packages'}} for e in envs]
     if any(item != common[0] for item in common[1:]):
         from fastapi import HTTPException
         raise HTTPException(status_code=409, detail='所选 Skill 的基础环境或构建策略不兼容，无法安全组合')
@@ -244,4 +272,8 @@ def prepare_job_environment(db, versions):
         spec.update(python_policy=1,
             python_requirements=normalize_requirements([r for e in envs for r in e.spec.get('python_requirements',[])]),
             python_imports=normalize_imports([r for e in envs for r in e.spec.get('python_imports',[])]))
+    if spec.get('layout'):
+        spec = environment_spec(spec['capabilities'], spec['base_image'], layout=spec['layout'],
+                                python_requirements=spec.get('python_requirements'),
+                                python_imports=spec.get('python_imports'))
     return enqueue_environment(db, spec)

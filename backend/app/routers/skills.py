@@ -220,6 +220,10 @@ def delete_skill(
         db.scalars(select(SkillVersion.package_path).where(SkillVersion.skill_id == skill.id))
     )
     version_count = len(package_paths)
+    from ..environment_cleanup import request_environment_cleanup
+    from ..models import SkillEnvironmentBinding
+    environment_digests = list(db.scalars(select(SkillEnvironmentBinding.environment_digest).where(
+        SkillEnvironmentBinding.version_id.in_(select(SkillVersion.id).where(SkillVersion.skill_id == skill.id)))))
     run_count = len(list(db.scalars(select(Run.id).where(Run.skill_id == skill.id))))
     endpoint_count = len(
         list(db.scalars(select(Endpoint.id).where(Endpoint.skill_id == skill.id)))
@@ -242,6 +246,11 @@ def delete_skill(
         ).all()
     )
     workflow_job_ids = sorted(workflow_job_ids)
+    affected_jobs = list(db.scalars(select(WorkflowJob).where(
+        WorkflowJob.id.in_(workflow_job_ids)).with_for_update()))
+    if any(job.status in {'RUNNING', 'PREPARING', 'PRODUCING_ARTIFACTS', 'VERIFYING'}
+           for job in affected_jobs):
+        raise HTTPException(status_code=409, detail="该 Skill 有未结束的任务，请结束任务后删除")
     endpoint_ids = list(
         db.scalars(select(Endpoint.id).where(Endpoint.skill_id == skill.id)).all()
     )
@@ -295,6 +304,7 @@ def delete_skill(
     from ..models import SkillEnvironmentBinding
     db.execute(delete(SkillEnvironmentBinding).where(SkillEnvironmentBinding.version_id.in_(select(SkillVersion.id).where(SkillVersion.skill_id == skill.id))))
     db.execute(delete(SkillVersion).where(SkillVersion.skill_id == skill.id))
+    request_environment_cleanup(db, environment_digests)
     db.execute(delete(Skill).where(Skill.id == skill.id))
     add_audit(
         db,
@@ -508,12 +518,19 @@ def retry_environment(skill_id: str, version_id: str, user: User = Depends(curre
         raise HTTPException(status_code=404, detail="Version not found")
     env = bind_version_environment(db, version)
     if env is not None and env.status == 'failed':
-        from ..environment_preparation import environment_spec
+        from ..environment_preparation import environment_spec, enqueue_environment
+        from ..environment_cleanup import request_environment_cleanup
         try:
-            if env.spec != environment_spec(env.spec['capabilities'], env.spec.get('base_image')):
-                raise ValueError('Platform catalog changed; upload a new version to resolve again')
+            spec = environment_spec(env.spec['capabilities'],
+                                    python_requirements=env.spec.get('python_requirements'),
+                                    python_imports=env.spec.get('python_imports'))
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
+        replacement = enqueue_environment(db, spec)
+        if replacement.digest != env.digest:
+            version.environment_binding.environment = replacement
+            request_environment_cleanup(db, [env.digest])
+        env = replacement
         from sqlalchemy import update
         from ..models import PreparedEnvironment
         db.execute(update(PreparedEnvironment).where(PreparedEnvironment.digest == env.digest, PreparedEnvironment.status == 'failed').values(status='queued', error_message=None, attempt=None))

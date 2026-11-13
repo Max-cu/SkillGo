@@ -4,6 +4,7 @@ Probe code is platform owned; do not accept executable probe definitions from Sk
 import importlib.metadata
 import json
 import platform
+import re
 import shutil
 import subprocess
 import sys
@@ -26,12 +27,14 @@ PROBES = {
     "pandas": "import pandas as pd; assert pd.DataFrame({'x':[1,2]}).x.sum()==3",
 }
 
-def probe():
+def probe(selected_providers=None):
     providers = {}
     imports = {'pymupdf': ['pymupdf', 'fitz'], 'pypdf': ['pypdf'], 'pdfplumber': ['pdfplumber'],
                'reportlab': ['reportlab'], 'python-docx': ['docx'], 'openpyxl': ['openpyxl'],
                'python-pptx': ['pptx'], 'Pillow': ['PIL'], 'pandas': ['pandas'], 'qrcode': ['qrcode'], 'markdown': ['markdown'], 'python-barcode': ['barcode'], 'defusedxml': ['defusedxml']}
     for package, code in PROBES.items():
+        if selected_providers is not None and package not in selected_providers:
+            continue
         try:
             version = importlib.metadata.version(package)
             result = subprocess.run([sys.executable, '-I', '-c', code], capture_output=True, timeout=6)
@@ -43,6 +46,8 @@ def probe():
             providers[package] = {'available': False, 'probe': 'timeout'}
         providers[package]['imports'] = imports[package]
     for name in ('pdftoppm', 'libreoffice', 'ffmpeg'):
+        if selected_providers is not None and name not in selected_providers:
+            continue
         path = shutil.which(name)
         try:
             result = subprocess.run([path, '-v' if name == 'pdftoppm' else '--version' if name == 'libreoffice' else '-version'], capture_output=True, timeout=6) if path else None
@@ -50,7 +55,7 @@ def probe():
         except (OSError, subprocess.TimeoutExpired):
             providers[name] = {'available': False, 'path': path, 'probe': 'failed'}
     fonts = []
-    if shutil.which('fc-match'):
+    if (selected_providers is None or 'fonts.cjk' in selected_providers) and shutil.which('fc-match'):
         for family in ('Noto Sans CJK SC', 'Noto Serif CJK SC'):
             try:
                 result = subprocess.run(['fc-match', '-f', '%{family}|%{file}\n', family], capture_output=True, text=True, timeout=3)
@@ -62,7 +67,13 @@ def probe():
             except subprocess.TimeoutExpired:
                 pass
     providers['fonts.cjk'] = {'available': bool(fonts), 'fonts': fonts, 'probe': 'fontconfig_match'}
-    return {'schema_version': 1, 'python': platform.python_version(), 'architecture': platform.machine(), 'providers': providers, 'python_distributions': {d.metadata['Name']: d.version for d in importlib.metadata.distributions() if d.metadata['Name']}}
+    distributions = {}
+    for distribution in importlib.metadata.distributions():
+        name = distribution.metadata['Name']
+        if name:
+            # Match import precedence when a private package shadows a base package.
+            distributions.setdefault(re.sub(r'[-_.]+', '-', name).lower(), distribution.version)
+    return {'schema_version': 1, 'python': platform.python_version(), 'architecture': platform.machine(), 'providers': providers, 'python_distributions': distributions}
 
 if __name__ == '__main__':
-    print(json.dumps(probe(), ensure_ascii=False))
+    print(json.dumps(probe(globals().get('SELECTED_PROVIDERS')), ensure_ascii=False))

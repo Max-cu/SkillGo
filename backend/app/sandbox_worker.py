@@ -459,6 +459,9 @@ async def execute_sandbox_job(
                 runtime_requirements = (
                     version_runtime_profile(version).get("requirements") or {}
                 )
+                if version.environment_binding:
+                    runtime_requirements = {**runtime_requirements, 'prepared_capabilities':
+                        version.environment_binding.environment.spec.get('capabilities', [])}
                 dependency_files = [
                     name
                     for name in names
@@ -635,8 +638,11 @@ async def execute_sandbox_job(
                 job.memory.data = {**(job.memory.data or {}), 'environment': environment}
                 await sandbox.write_text('/workspace/work/environment.json', json.dumps(environment, ensure_ascii=False, indent=2))
                 add_job_event(db, job, 'status', '运行环境已核验',
-                              '可用能力：' + '、'.join(environment['capabilities']),
-                              status='succeeded', data={'capabilities': environment['capabilities']})
+                              '本次所需能力：' + ('、'.join(cap for cap in environment.get('requested_capabilities', environment['capabilities'])
+                                                      if cap in environment['capabilities']) or '基础 Python 环境'),
+                              status='succeeded', data={'capabilities': environment['capabilities'],
+                                                       'requested_capabilities': environment.get('requested_capabilities', []),
+                                                       'image_id': environment.get('image_id')})
                 dependencies = environment.get('prepared_dependencies') or {}
                 if dependencies.get('status') == 'ready':
                     packages = dependencies['packages']
