@@ -15,6 +15,7 @@ compose --profile sandbox ps
 wait_for_service_health db
 wait_for_service_health api
 wait_for_service_health worker
+verify_worker_execution_limits
 verify_web_routes 15 2
 
 echo WORKER_LOG

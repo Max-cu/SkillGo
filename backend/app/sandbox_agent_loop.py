@@ -47,6 +47,13 @@ from .sandbox_tool_registry import (
     normalize_agent_action,
 )
 from .workflow_execution import add_job_event, set_step
+from .failure_diagnostics import (
+    attach as capture_failure_diagnostics,
+    gateway_secrets as diagnostic_gateway_secrets,
+    durable_evidence,
+    display_diagnostic,
+    redact as redact_diagnostic,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -56,7 +63,7 @@ class AgentJobCancelled(RuntimeError):
     pass
 
 
-async def _await_model_with_cancellation(operation, job_cancelled, *, poll_seconds=1.0):
+async def _await_model_with_cancellation(operation, job_cancelled, *, poll_seconds=1.0, on_cancel=None):
     task = asyncio.create_task(operation)
     try:
         while not task.done():
@@ -69,6 +76,8 @@ async def _await_model_with_cancellation(operation, job_cancelled, *, poll_secon
     finally:
         if not task.done():
             task.cancel()
+            if on_cancel is not None:
+                await asyncio.to_thread(on_cancel)
         # Await transport cleanup before the worker reclaims the sandbox.
         await asyncio.gather(task, return_exceptions=True)
 
@@ -130,7 +139,7 @@ def _safe_tool_event(action_name: str, action: dict[str, Any]) -> tuple[str, str
     return "调用运行工具", action_name or "正在执行", {"tool": action_name or "unknown"}
 
 
-def _finish_tool_event(event: JobEvent, payload: object) -> None:
+def _finish_tool_event(event: JobEvent, payload: object, *, secrets=()) -> None:
     failed = isinstance(payload, dict) and (
         payload.get("ok") is False
         or (isinstance(payload.get("exit_code"), int) and payload.get("exit_code") != 0)
@@ -150,12 +159,15 @@ def _finish_tool_event(event: JobEvent, payload: object) -> None:
             fallback = "工具执行未完成"
             if fallback_facts:
                 fallback += f"（{', '.join(fallback_facts)}）"
-            diagnostic = str(payload.get("message") or payload.get("stderr") or fallback)[:1600]
+            evidence = durable_evidence(payload, secrets)
+            summary = redact_diagnostic(str(payload.get("message") or fallback), secrets)[:1600]
+            diagnostic = display_diagnostic(summary, evidence)
             event.data = {
                 **(event.data or {}),
                 "recoverable": True,
                 "error_code": payload.get("error_code"),
                 "diagnostic": diagnostic,
+                "failure_diagnostics": evidence,
             }
             for key in ("exit_code", "elapsed_seconds"):
                 if key in payload:
@@ -205,10 +217,23 @@ def _command_result_payload(command_result, *, timeout_seconds: int) -> dict[str
     survive, so the agent resumes instead of losing the whole task.
     """
 
+    output_metadata = {}
+    if getattr(command_result, 'output_files', None):
+        output_metadata = {
+            'output_files': command_result.output_files,
+            'output_bytes': command_result.output_bytes,
+        }
+    if getattr(command_result, 'output_excerpt', False):
+        output_metadata.update({
+            'output_excerpt': True,
+            'output_notice': 'Complete output is saved in these workspace logs. Read relevant windows and inspect deliverables before deciding whether to retry; the command has already executed.',
+        })
     if getattr(command_result, "timed_out", False):
         return {
+            **output_metadata,
             "ok": False,
             "exit_code": command_result.exit_code,
+            "elapsed_seconds": round(float(getattr(command_result, "elapsed_seconds", 0.0) or 0.0), 1),
             "stdout": command_result.stdout,
             "stderr": command_result.stderr,
             "error_code": "SANDBOX_COMMAND_TIMEOUT",
@@ -219,8 +244,10 @@ def _command_result_payload(command_result, *, timeout_seconds: int) -> dict[str
             "hint": (
                 "Resume the script from its own resumable batch/checkpoint state "
                 "(skip files it already completed); never restart the whole batch. "
-                f"Work that genuinely exceeds {settings.sandbox_command_timeout_seconds} "
-                "seconds must be split into smaller resumable per-file batches."
+                + (f"Work that genuinely exceeds {settings.sandbox_command_timeout_seconds} "
+                   "seconds must be split into smaller resumable per-file batches."
+                   if settings.sandbox_command_timeout_seconds > 0 else
+                   "Use timeout_seconds=0 to continue without a platform command deadline.")
             ),
         }
     if command_result.exit_code != 0:
@@ -228,15 +255,14 @@ def _command_result_payload(command_result, *, timeout_seconds: int) -> dict[str
         # budget, and whether the process said anything at all. No cause
         # attribution — the model interprets; the platform reports.
         elapsed = float(getattr(command_result, "elapsed_seconds", 0.0) or 0.0)
-        message = (
-            f"Command exited with code {command_result.exit_code} after "
-            f"{elapsed:.1f}s of its {timeout_seconds}s budget; the deadline "
-            "was not reached, so this is not a timeout."
-        )
+        message = f"Command exited with code {command_result.exit_code} after {elapsed:.1f}s."
+        if timeout_seconds > 0:
+            message += f" The {timeout_seconds}s deadline was not reached, so this is not a timeout."
         if not command_result.stdout.strip() and not command_result.stderr.strip():
             message += " The command produced no stdout/stderr output."
         message += " The sandbox and /workspace are intact."
         return {
+            **output_metadata,
             "ok": False,
             "exit_code": command_result.exit_code,
             "stdout": command_result.stdout,
@@ -247,6 +273,7 @@ def _command_result_payload(command_result, *, timeout_seconds: int) -> dict[str
             "message": message,
         }
     return {
+        **output_metadata,
         "exit_code": command_result.exit_code,
         "stdout": command_result.stdout,
         "stderr": command_result.stderr,
@@ -586,6 +613,7 @@ async def _run_agent_loop(
     file_tree: list[dict] = []
     messages: list[dict] | None = None
     connection = getattr(gateway, 'connection', None)
+    diagnostic_secrets = diagnostic_gateway_secrets(gateway)
     input_budget = getattr(connection, 'context_tokens', 48000)
     observe_context_enabled = settings.context_observability_enabled
     options = getattr(connection, 'agent_options', None) or {}
@@ -1100,12 +1128,18 @@ async def _run_agent_loop(
                     action, allow_eof=action.get('path') not in required_reference_paths)
                 stable_reused = cached_payload is not None
             read_cache_hit = cached_payload is not None
+            observation_stalled = False
             if not validation_error and action_name in {"list_files", "read_file"}:
                 loop_block = execution_state.register_observation_access(
                     action, reused=bool(cached_payload is not None), payload=cached_payload,
                     content_available=_observation_in_context(cached_payload, model_messages),
+                    standalone_turn=turn_number if native_call_count == len(calls) == 1 else None,
                 )
                 if loop_block is not None:
+                    observation_stalled = loop_block["error_code"] == "SANDBOX_OBSERVATION_STALLED"
+                    first_failure = execution_state.first_unresolved_failure()
+                    if first_failure is not None:
+                        loop_block["first_execution_failure"] = first_failure
                     validation_error = loop_block["message"]
                     precondition_error = loop_block
                     cached_payload = None
@@ -1113,6 +1147,7 @@ async def _run_agent_loop(
                         **(tool_event.data or {}),
                         "anti_loop": "observation",
                         "duplicate_streak": execution_state.duplicate_observation_streak,
+                        **({"first_execution_failure": first_failure} if first_failure is not None else {}),
                     }
                     nudge = execution_state.observation_loop_nudge()
                     if nudge:
@@ -1135,7 +1170,9 @@ async def _run_agent_loop(
                     tool_call_id=tool_call_id,
                 )
                 progress_detail = "缺少有效执行计划，Agent 正在补充" if precondition_error else "Agent 工具参数无效，正在自动纠正"
-                if precondition_error and precondition_error.get('error_code') == 'OBSERVATION_LOOP_BREAK':
+                if observation_stalled:
+                    progress_detail = "提醒后仍在读取同一窗口，任务停止"
+                elif precondition_error and precondition_error.get('error_code') == 'OBSERVATION_LOOP_BREAK':
                     progress_detail = "重复窗口已在上下文中，正在选择下一步"
             elif cached_payload is not None:
                 payload = cached_payload
@@ -1526,14 +1563,16 @@ async def _run_agent_loop(
                     or settings.sandbox_command_timeout_seconds
                 )
                 try:
-                    command_result = await sandbox.command(
+                    command_result = await _await_model_with_cancellation(sandbox.command(
                         argv,
                         cwd=str(action.get("cwd") or skill_root),
                         timeout_seconds=command_timeout,
-                    )
+                    ), job_cancelled, on_cancel=sandbox.close)
                     payload = _command_result_payload(
                         command_result, timeout_seconds=command_timeout
                     )
+                    payload = await capture_failure_diagnostics(payload, sandbox=sandbox,
+                        cwd=str(action.get('cwd') or skill_root), secrets=diagnostic_secrets)
                     if command_result.timed_out:
                         progress_detail = "命令达到时限被停止（沙箱保留），Agent 正在从断点续跑"
                     elif command_result.exit_code != 0:
@@ -1579,14 +1618,16 @@ async def _run_agent_loop(
                         action.get("timeout_seconds")
                         or settings.sandbox_command_timeout_seconds
                     )
-                    command_result = await sandbox.command(
+                    command_result = await _await_model_with_cancellation(sandbox.command(
                         ["python3", script_path, *(action.get("args") or [])],
                         cwd=str(action.get("cwd") or skill_root),
                         timeout_seconds=python_timeout,
-                    )
+                    ), job_cancelled, on_cancel=sandbox.close)
                     payload = _command_result_payload(
                         command_result, timeout_seconds=python_timeout
                     )
+                    payload = await capture_failure_diagnostics(payload, sandbox=sandbox,
+                        cwd=str(action.get('cwd') or skill_root), secrets=diagnostic_secrets)
                     payload["script_path"] = script_path
                     if command_result.timed_out:
                         progress_detail = "Python 工作流达到时限被停止（沙箱保留），Agent 正在续跑"
@@ -1815,12 +1856,12 @@ async def _run_agent_loop(
                 if memory.get('verification') and execution_state.verification is None:
                     memory['verification'] = {**memory['verification'], 'stale': True}
                 job.memory.data = memory
-            if recoverable_errors > 8:
-                raise SandboxRuntimeError(
-                    "SANDBOX_TOOL_ERROR_LIMIT",
-                    "Agent could not recover after repeated tool errors",
-                )
-            _finish_tool_event(tool_event, payload)
+            _finish_tool_event(tool_event, payload, secrets=diagnostic_secrets)
+            if tool_event.status == "failed" and not validation_error:
+                execution_state.remember_execution_failure(action, tool_event.data, tool_event.sequence)
+            if observation_stalled:
+                tool_event.detail = progress_detail
+                tool_event.data = {**tool_event.data, "recoverable": False}
             tool_event.data = {
                 **(tool_event.data or {}),
                 "duration_ms": _event_duration_ms(tool_started_at),
@@ -1838,6 +1879,19 @@ async def _run_agent_loop(
                 f"{progress_detail} · 第 {turn_number} 轮 · 工具操作 {tool_operation_count}",
             )
             db.commit()
+
+            if observation_stalled:
+                message = f"Agent 在收到提醒后再次读取同一段未变化的内容，任务已停止。文件 {action['path']}"
+                if first_failure is not None:
+                    message += (f"\n最早尚未解决的执行错误（第 {first_failure['turn']} 轮，"
+                                f"事件 {first_failure['event_sequence']}）\n{first_failure['diagnostic']}")
+                raise SandboxRuntimeError("SANDBOX_OBSERVATION_STALLED", message)
+
+            if recoverable_errors > 8:
+                raise SandboxRuntimeError(
+                    "SANDBOX_TOOL_ERROR_LIMIT",
+                    "Agent could not recover after repeated tool errors",
+                )
 
             if delivery_request and (not isinstance(payload, dict) or payload.get('ok') is False
                     or payload.get('exit_code', 0) != 0 or payload.get('timed_out')):

@@ -3,6 +3,30 @@
 # Shared deployment helpers. Callers must provide a `compose` function that
 # invokes Docker Compose with the correct env files and profiles.
 
+verify_worker_execution_limits() {
+  local worker_id expected actual
+  local -a keys=(
+    SKILLGO_SANDBOX_COMMAND_TIMEOUT_SECONDS
+    SKILLGO_SANDBOX_JOB_TIMEOUT_SECONDS
+    SKILLGO_SANDBOX_MAX_AGENT_TURNS
+    SKILLGO_SANDBOX_MAX_AGENT_TOOL_CALLS
+  )
+  local workers key
+  workers="$(compose --profile sandbox ps --status running -q worker)" || return 1
+  [ -n "$workers" ] || return 1
+  for key in "${keys[@]}"; do
+    expected="$(compose --profile sandbox config --environment | sed -n "s/^$key=//p")" || return 1
+    [ -n "$expected" ] || continue
+    while IFS= read -r worker_id; do
+      actual="$(docker exec "$worker_id" printenv "$key")" || return 1
+      if [ "$actual" != "$expected" ]; then
+        echo "Worker $worker_id does not match deployment configuration for $key" >&2
+        return 1
+      fi
+    done <<< "$workers"
+  done
+}
+
 wait_for_service_health() {
   local service="$1"
   local attempts="${2:-60}"

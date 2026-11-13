@@ -15,6 +15,7 @@ from docker.errors import DockerException, ImageNotFound, NotFound
 from requests.exceptions import RequestException
 
 from .config import settings
+from .command_output import CAPTURE_PROGRAM, INLINE_OUTPUT_BYTES, decode_capture
 
 
 WORKSPACE_ROOT = PurePosixPath("/workspace")
@@ -46,11 +47,15 @@ def wrap_argv_with_timeout(argv: list[str], timeout: int) -> list[str]:
     status the agent can recover from instead of losing the whole sandbox.
     """
 
+    if timeout <= 0:
+        return list(argv)
     return ["timeout", f"--kill-after={TIMEOUT_KILL_GRACE_SECONDS}",
             str(int(timeout)), *argv]
 
 
 def exit_means_timeout(exit_code: int, elapsed_seconds: float, timeout: int) -> bool:
+    if timeout <= 0:
+        return False
     if exit_code == TIMEOUT_TERM_EXIT_CODE:
         return True
     # 137 is ambiguous (KILL after grace vs. external OOM kill); only treat
@@ -74,6 +79,9 @@ class SandboxCommandResult:
     # distinguish "died instantly" (bad args/missing dependency) from
     # "died mid-work" (killed/resource exhaustion).
     elapsed_seconds: float = 0.0
+    output_files: dict[str, str] | None = None
+    output_bytes: dict[str, int] | None = None
+    output_excerpt: bool = False
 
 
 def _workspace_path(value: str, *, allow_root: bool = True) -> str:
@@ -314,15 +322,15 @@ class DockerSandbox:
                 ),
             )
         workdir = _workspace_path(cwd)
-        timeout = min(
-            max(int(timeout_seconds or settings.sandbox_command_timeout_seconds), 1),
-            settings.sandbox_command_timeout_seconds,
-        )
+        budget = settings.sandbox_command_timeout_seconds
+        timeout = int(timeout_seconds if timeout_seconds is not None else budget)
+        timeout = min(max(timeout or budget, 1), budget) if budget > 0 else max(timeout, 0)
         bounded_argv = wrap_argv_with_timeout(argv, timeout)
+        captured_argv = ["python3", "-I", "-c", CAPTURE_PROGRAM, str(INLINE_OUTPUT_BYTES), *bounded_argv]
 
         def execute() -> object:
             return self.container.exec_run(
-                bounded_argv,
+                captured_argv,
                 workdir=workdir,
                 user="10001:10001",
                 demux=True,
@@ -333,7 +341,7 @@ class DockerSandbox:
         try:
             result = await asyncio.wait_for(
                 asyncio.to_thread(execute),
-                timeout=timeout + COMMAND_TRANSPORT_GRACE_SECONDS,
+                timeout=timeout + COMMAND_TRANSPORT_GRACE_SECONDS if timeout > 0 else None,
             )
         except TimeoutError as exc:
             # Only a wedged docker exec transport reaches here; a normal
@@ -349,15 +357,23 @@ class DockerSandbox:
             raise SandboxRuntimeError("SANDBOX_COMMAND_FAILED", f"Command transport failed: {exc}") from exc
         elapsed = time.monotonic() - started
         stdout, stderr = result.output if isinstance(result.output, tuple) else (result.output, b"")
-        if len(stdout or b'') + len(stderr or b'') > 8 * 1024 * 1024:
-            raise SandboxRuntimeError('SANDBOX_OUTPUT_TOO_LARGE', 'Command output exceeds 8 MiB; write large observations to workspace files instead.')
-        timed_out = exit_means_timeout(int(result.exit_code), elapsed, timeout)
+        if result.exit_code != 0:
+            return SandboxCommandResult(int(result.exit_code), _decode(stdout), _decode(stderr),
+                                        elapsed_seconds=elapsed)
+        try:
+            captured = decode_capture(stdout)
+        except (ValueError, TypeError, KeyError) as exc:
+            raise SandboxRuntimeError('SANDBOX_COMMAND_FAILED', 'Invalid command capture response') from exc
+        timed_out = exit_means_timeout(int(captured['exit_code']), elapsed, timeout)
         return SandboxCommandResult(
-            exit_code=int(result.exit_code),
-            stdout=_decode(stdout),
-            stderr=_decode(stderr),
+            exit_code=int(captured['exit_code']),
+            stdout=_decode(captured['stdout']),
+            stderr=_decode(captured['stderr']),
             timed_out=timed_out,
             elapsed_seconds=elapsed,
+            output_files=captured['output_files'],
+            output_bytes=captured['output_bytes'],
+            output_excerpt=captured['inline_excerpt'],
         )
 
     async def list_files(self, path: str = "/workspace") -> list[dict]:
@@ -381,12 +397,15 @@ if not path.is_dir():
 # thousands of files (and os.walk would stat every one under gVisor). Package
 # internals are discovered via read_skill/tool calls against the skill root;
 # listing that root directly still walks normally.
-skip_roots = []
+skip_roots = set()
 if path == root:
     skills_dir = root / "skills"
     if skills_dir.is_dir():
         skip_roots = [skills_dir / name for name in os.listdir(skills_dir)]
     skip_roots = {p.resolve() for p in skip_roots}
+capture_root = root / "work" / "command-output"
+if path != capture_root and capture_root not in path.parents:
+    skip_roots.add(capture_root.resolve())
 items = []
 dirs_walked = 0
 for current, dirnames, filenames in os.walk(path, followlinks=False):
