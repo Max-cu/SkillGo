@@ -14,6 +14,7 @@ import httpx
 logger = logging.getLogger(__name__)
 
 RETRYABLE_STATUS = frozenset({429, 502, 503, 504})
+MAX_TRANSPORT_ATTEMPTS = 10
 
 
 class ModelFirstResponseTimeout(httpx.ReadTimeout):
@@ -286,7 +287,7 @@ async def post_json(connection, url: str, *, headers: dict, body: dict):
         pool=connection.connect_timeout_seconds,
     )
     async with httpx.AsyncClient(timeout=timeout, verify=connection.tls_verify) as client:
-        for attempt in range(3):
+        for attempt in range(MAX_TRANSPORT_ATTEMPTS):
             stats["attempts"] = attempt + 1
             _reset_attempt_stats(stats)
             started = time.monotonic()
@@ -305,7 +306,7 @@ async def post_json(connection, url: str, *, headers: dict, body: dict):
                 logger.warning('Model transport attempt=%d duration_ms=%d error=%s first_chunk_ms=%s chunks=%d bytes=%d',
                                attempt + 1, round((time.monotonic() - started) * 1000),
                                type(exc).__name__, stats["first_chunk_ms"], stats["chunks"], stats["bytes"])
-                if attempt == 2 or stats["progress_events"]:
+                if attempt == MAX_TRANSPORT_ATTEMPTS - 1 or stats["progress_events"]:
                     raise
             except TimeoutError as exc:
                 deadline_error = httpx.ReadTimeout('Model request deadline exceeded')
@@ -318,7 +319,8 @@ async def post_json(connection, url: str, *, headers: dict, body: dict):
                 if response is None:
                     logger.info('Model transport attempt=%d duration_ms=%d status=retryable',
                                 attempt + 1, round((time.monotonic() - started) * 1000))
-                    await asyncio.sleep(min(2 ** attempt, max(0, deadline - time.monotonic())))
+                    if attempt < MAX_TRANSPORT_ATTEMPTS - 1:
+                        await asyncio.sleep(min(2 ** attempt, max(0, deadline - time.monotonic())))
                     continue
                 logger.info('Model transport attempt=%d duration_ms=%d status=%d first_chunk_ms=%s chunks=%d bytes=%d',
                             attempt + 1, round((time.monotonic() - started) * 1000), response.status_code,
