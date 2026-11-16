@@ -178,18 +178,18 @@ def test_sse_tool_call_deltas_merge_into_native_payload(monkeypatch):
 
 
 def test_first_response_timeout_is_classified_with_diagnostics(monkeypatch):
-    client = StreamClient([FakeStreamResponse(hang_after_lines=True)] * 3)
+    client = StreamClient([FakeStreamResponse(hang_after_lines=True)] * 10)
     monkeypatch.setattr(model_adapter.httpx, 'AsyncClient', lambda **kwargs: client)
     monkeypatch.setattr(model_adapter.asyncio, 'sleep', _no_sleep)
-    connection = _connection(timeout_seconds=0.5, agent_options={'first_chunk_timeout_seconds': 0.05})
+    connection = _connection(timeout_seconds=5, agent_options={'first_chunk_timeout_seconds': 0.05})
 
     with pytest.raises(ModelFirstResponseTimeout) as excinfo:
         asyncio.run(model_adapter.post_json(connection, 'https://model.test', headers={}, body={}))
 
-    assert excinfo.value.diagnostics['attempts'] == 3
-    error = _transport_error(excinfo.value, 0.5)
+    assert excinfo.value.diagnostics['attempts'] == 10
+    error = _transport_error(excinfo.value, 5)
     assert error.code == 'MODEL_FIRST_RESPONSE_TIMEOUT'
-    assert error.details['attempts'] == 3
+    assert error.details['attempts'] == 10
     assert error.details['first_chunk_ms'] is None
 
 
@@ -314,7 +314,7 @@ def test_zero_total_budget_disables_transport_deadline(monkeypatch):
 
 
 def test_zero_total_budget_still_enforces_first_response_timeout(monkeypatch):
-    client = StreamClient([FakeStreamResponse(hang_after_lines=True)] * 3)
+    client = StreamClient([FakeStreamResponse(hang_after_lines=True)] * 10)
     monkeypatch.setattr(model_adapter.httpx, 'AsyncClient', lambda **kwargs: client)
     monkeypatch.setattr(model_adapter.asyncio, 'sleep', _no_sleep)
     connection = _connection(timeout_seconds=0, agent_options={'first_chunk_timeout_seconds': 0.05})
@@ -324,7 +324,7 @@ def test_zero_total_budget_still_enforces_first_response_timeout(monkeypatch):
 
     error = _transport_error(excinfo.value, 0)
     assert error.code == 'MODEL_FIRST_RESPONSE_TIMEOUT'
-    assert excinfo.value.diagnostics['attempts'] == 3
+    assert excinfo.value.diagnostics['attempts'] == 10
 
 
 def test_zero_total_budget_still_enforces_stream_stall(monkeypatch):
