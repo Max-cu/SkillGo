@@ -52,7 +52,13 @@ def claim_environment():
         db.execute(update(PreparedEnvironment).where(
             PreparedEnvironment.status.in_(['building','probing']), PreparedEnvironment.lease_until < utcnow()
         ).values(status='failed', error_message='Environment builder lease expired; retry preparation', attempt=None))
-        row = db.scalar(select(PreparedEnvironment).where(PreparedEnvironment.status=='queued').order_by(PreparedEnvironment.created_at).with_for_update(skip_locked=True))
+        row = db.scalar(
+            select(PreparedEnvironment)
+            .where(PreparedEnvironment.status == 'queued')
+            .order_by(PreparedEnvironment.created_at)
+            .limit(1)
+            .with_for_update(skip_locked=True)
+        )
         if row is None:
             db.commit()
             return None

@@ -593,6 +593,59 @@ def _endpoint_job(db: Session, endpoint: Endpoint, job_id: str) -> WorkflowJob:
     return job
 
 
+def _workflow_request_fingerprint(
+    instruction: str, filename: str | None, content_type: str | None, attachment_sha256: str | None
+) -> str:
+    payload = json.dumps(
+        [instruction.strip(), filename, content_type, attachment_sha256],
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _replay_workflow_request(
+    db: Session,
+    endpoint: Endpoint,
+    response: Response,
+    key_hash: str | None,
+    fingerprint: str | None,
+) -> WorkflowJobRead | None:
+    if key_hash is None:
+        return None
+    existing = db.scalar(
+        select(WorkflowEndpointRequest).where(
+            WorkflowEndpointRequest.endpoint_id == endpoint.id,
+            WorkflowEndpointRequest.idempotency_key_hash == key_hash,
+        )
+    )
+    if existing is None:
+        return None
+
+    job = _endpoint_job(db, endpoint, existing.job_id)
+    expected = existing.request_fingerprint
+    if expected is None and len(job.input_files) <= 1:
+        # Pre-migration requests retain the original input metadata even after file purging.
+        attachment = job.input_files[0] if job.input_files else None
+        expected = _workflow_request_fingerprint(
+            job.instruction,
+            attachment.filename if attachment else None,
+            attachment.content_type if attachment else None,
+            attachment.sha256 if attachment else None,
+        )
+    if expected is None or expected != fingerprint:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "IDEMPOTENCY_KEY_CONFLICT",
+                "message": "This Idempotency-Key was already used with a different request",
+            },
+        )
+    response.headers["Location"] = f"/api/v1/workflow-endpoints/{endpoint.slug}/jobs/{job.id}"
+    response.headers["X-Idempotent-Replay"] = "true"
+    return _job_read(job)
+
+
 def _cancel_job(
     db: Session,
     job: WorkflowJob,
@@ -1055,14 +1108,6 @@ async def invoke_workflow_endpoint(
                 "message": "This Skill uses the synchronous /invoke endpoint",
             },
         )
-    if not profile.get("runnable"):
-        raise HTTPException(
-            status_code=503,
-            detail={
-                "code": str(profile.get("runtime_status", "RUNTIME_UNAVAILABLE")).upper(),
-                "message": str(profile.get("block_reason") or "Runtime is unavailable"),
-            },
-        )
 
     normalized_idempotency_key = (idempotency_key or "").strip()
     if len(normalized_idempotency_key) > 200:
@@ -1072,28 +1117,38 @@ async def invoke_workflow_endpoint(
         if normalized_idempotency_key
         else None
     )
-    if idempotency_hash:
-        existing = db.scalar(
-            select(WorkflowEndpointRequest).where(
-                WorkflowEndpointRequest.endpoint_id == endpoint.id,
-                WorkflowEndpointRequest.idempotency_key_hash == idempotency_hash,
-            )
-        )
-        if existing is not None:
-            job = _endpoint_job(db, endpoint, existing.job_id)
-            response.headers["Location"] = (
-                f"/api/v1/workflow-endpoints/{endpoint.slug}/jobs/{job.id}"
-            )
-            response.headers["X-Idempotent-Replay"] = "true"
-            return _job_read(job)
-
     data = None
+    filename = None
+    content_type = None
     if file is not None:
         data = await file.read(settings.workspace_max_file_bytes + 1)
         if not data or len(data) > settings.workspace_max_file_bytes:
             raise HTTPException(status_code=422, detail="Input file is empty or exceeds the limit")
-    elif not instruction.strip():
+        try:
+            filename = safe_workspace_filename(file.filename)
+        except WorkspaceFileError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        content_type = safe_content_type(file.content_type)
+
+    request_fingerprint = None
+    if idempotency_hash is not None:
+        request_fingerprint = _workflow_request_fingerprint(
+            instruction, filename, content_type, file_sha256(data) if data is not None else None
+        )
+        replay = _replay_workflow_request(db, endpoint, response, idempotency_hash, request_fingerprint)
+        if replay is not None:
+            return replay
+    if not profile.get("runnable"):
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": str(profile.get("runtime_status", "RUNTIME_UNAVAILABLE")).upper(),
+                "message": str(profile.get("block_reason") or "Runtime is unavailable"),
+            },
+        )
+    if data is None and not instruction.strip():
         raise HTTPException(status_code=422, detail="Provide an instruction or an input file")
+
     owner = db.get(User, endpoint.owner_id)
     if owner is None or not owner.is_active:
         raise HTTPException(status_code=409, detail="Endpoint owner is unavailable")
@@ -1102,8 +1157,8 @@ async def invoke_workflow_endpoint(
         version=version,
         user=owner,
         data=data,
-        original_filename=file.filename if file else None,
-        content_type=file.content_type if file else None,
+        original_filename=filename,
+        content_type=content_type,
         instruction=instruction,
         trigger="api",
         actor=None,
@@ -1133,6 +1188,7 @@ async def invoke_workflow_endpoint(
             endpoint_id=endpoint.id,
             job_id=job.id,
             idempotency_key_hash=idempotency_hash,
+            request_fingerprint=request_fingerprint,
         )
     )
     try:
@@ -1144,20 +1200,9 @@ async def invoke_workflow_endpoint(
                 storage.delete(input_storage_path)
             except OSError:
                 pass
-        if idempotency_hash:
-            existing = db.scalar(
-                select(WorkflowEndpointRequest).where(
-                    WorkflowEndpointRequest.endpoint_id == endpoint.id,
-                    WorkflowEndpointRequest.idempotency_key_hash == idempotency_hash,
-                )
-            )
-            if existing is not None:
-                replayed_job = _endpoint_job(db, endpoint, existing.job_id)
-                response.headers["Location"] = (
-                    f"/api/v1/workflow-endpoints/{endpoint.slug}/jobs/{replayed_job.id}"
-                )
-                response.headers["X-Idempotent-Replay"] = "true"
-                return _job_read(replayed_job)
+        replay = _replay_workflow_request(db, endpoint, response, idempotency_hash, request_fingerprint)
+        if replay is not None:
+            return replay
         raise HTTPException(status_code=409, detail="Workflow request could not be created") from exc
     db.refresh(job)
     response.headers["Location"] = (

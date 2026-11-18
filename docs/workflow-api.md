@@ -67,7 +67,7 @@ Idempotency-Key: your-request-id
 
 纯文本请求省略 `file`，平台只保留任务指令，不创建 ZIP 或占位文本附件；文件与非空指令不能同时缺失。纯文本任务支持取消和重试。
 
-`Idempotency-Key` 为可选请求头，最长 **200 字符**，强烈建议设置：同一 Endpoint 下重复提交相同键时，平台返回第一次创建的任务，并在响应头加 `X-Idempotent-Replay: true`，不会重复执行、重复计费。
+`Idempotency-Key` 为可选请求头，最长 **200 字符**。同一 Endpoint 下使用相同键和相同请求内容时，API 返回原任务，并在响应头加 `X-Idempotent-Replay: true`。API 比较去除首尾空白的指令、附件文件名、内容类型和文件内容。相同键对应的请求内容发生变化时，API 返回 `409 IDEMPOTENCY_KEY_CONFLICT`。提交新任务时使用新的键。
 
 成功响应：`202 Accepted`，响应体为任务对象（见第 4 节），响应头 `Location` 指向任务查询地址。
 
@@ -164,7 +164,7 @@ Content-Type: application/json
 | --- | --- |
 | `401` | 缺少或错误的 `X-SkillGo-Key` |
 | `404` | Endpoint 不存在或已停用（故意不区分，避免探测 slug） |
-| `409` | Endpoint 类型与调用方式不匹配；slug 冲突；终态任务再取消 |
+| `409` | Endpoint 类型与调用方式不匹配；slug 冲突；终态任务再取消；同一幂等键用于不同请求 |
 | `422` | 文件与非空指令均缺失、文件为空/超限、`instruction` 超长、Idempotency-Key 超 200 字符、同步输入不符合契约 |
 | `502` | 同步调用执行失败（携带 run_id 与错误码） |
 | `503` | 沙箱运行环境暂不可用（`RUNTIME_UNAVAILABLE`） |

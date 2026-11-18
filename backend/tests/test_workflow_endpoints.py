@@ -2,10 +2,15 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import replace
+from unittest.mock import DEFAULT, Mock
+
+import pytest
+from sqlalchemy import select
 
 from app import config
 from app.database import SessionLocal
-from app.models import Artifact
+from app.models import Artifact, WorkflowEndpointRequest
+from app.routers import jobs as jobs_router
 from app.storage import storage
 from conftest import make_email, make_password
 from test_workflow_jobs import create_version, sandbox_skill_zip
@@ -118,7 +123,8 @@ def test_workflow_endpoint_auth_idempotency_lifecycle_and_isolation(
             "X-SkillGo-Key": endpoint_key,
             "Idempotency-Key": "customer-request-42",
         },
-        files={"file": ("different.txt", b"different content", "text/plain")},
+        data={"instruction": "重点检查日期和金额"},
+        files={"file": ("document.txt", b"document content", "text/plain")},
     )
     assert replayed.status_code == 202, replayed.text
     assert replayed.json()["id"] == job["id"]
@@ -204,6 +210,56 @@ def test_workflow_endpoint_auth_idempotency_lifecycle_and_isolation(
         f"{status_path}/artifacts/{artifact_id}/download",
         headers={"X-SkillGo-Key": other_endpoint["api_key"]},
     ).status_code == 401
+
+
+@pytest.mark.parametrize("mode", ["stored", "legacy", "commit_race"])
+def test_workflow_idempotency_compares_original_request(
+    client, user_headers, owner_headers, monkeypatch, mode
+):
+    monkeypatch.setattr(
+        config, "settings", replace(config.settings, sandbox_worker_enabled=True)
+    )
+    _, version = publish_sandbox_skill(client, user_headers, owner_headers, slug="fingerprint")
+    endpoint = deploy_endpoint(client, user_headers, version, slug="fingerprint-api")
+    path = "/api/v1/workflow-endpoints/fingerprint-api/jobs"
+    headers = {"X-SkillGo-Key": endpoint["api_key"], "Idempotency-Key": "request-1"}
+    file = ("report.txt", b"original", "text/plain")
+    created = client.post(path, headers=headers, data={"instruction": "Summarize"}, files={"file": file})
+    assert created.status_code == 202, created.text
+    job_id = created.json()["id"]
+    with SessionLocal() as db:
+        binding = db.scalar(select(WorkflowEndpointRequest).where(WorkflowEndpointRequest.job_id == job_id))
+        assert len(binding.request_fingerprint) == 64
+        if mode == "legacy":
+            binding.request_fingerprint = None
+            db.commit()
+
+    def submit(instruction, attachment):
+        with monkeypatch.context() as patch:
+            if mode == "commit_race":
+                # Force a first lookup miss so the real unique constraint is
+                # hit at commit, as when another request wins concurrently.
+                replay = Mock(wraps=jobs_router._replay_workflow_request)
+                replay.side_effect = [None, DEFAULT]
+                patch.setattr(jobs_router, "_replay_workflow_request", replay)
+            return client.post(path, headers=headers, data={"instruction": instruction}, files={"file": attachment})
+
+    replayed = submit("  Summarize  ", file)
+    assert replayed.status_code == 202, replayed.text
+    assert replayed.json()["id"] == job_id
+    assert replayed.headers["x-idempotent-replay"] == "true"
+    for instruction, attachment in [
+        ("Translate", file),
+        ("Summarize", ("report.txt", b"changed", "text/plain")),
+        ("Summarize", ("other.txt", b"original", "text/plain")),
+        ("Summarize", ("report.txt", b"original", "application/octet-stream")),
+    ]:
+        conflict = submit(instruction, attachment)
+        assert conflict.status_code == 409, conflict.text
+        assert conflict.json()["detail"]["code"] == "IDEMPOTENCY_KEY_CONFLICT"
+        assert "x-idempotent-replay" not in conflict.headers
+    with SessionLocal() as db:
+        assert list(db.scalars(select(WorkflowEndpointRequest.job_id))) == [job_id]
 
 
 def test_deleting_skill_removes_workflow_endpoint_bindings(
