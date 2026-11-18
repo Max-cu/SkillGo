@@ -48,6 +48,7 @@ POST_BASELINE_COLUMNS = {
     "artifacts": {"purged_at"},
     "skill_versions": {"network_enabled", "follow_skill_flow"},
     "workflow_jobs": {"network_enabled", "network_enabled_by", "follow_skill_flow"},
+    "workflow_endpoint_requests": {"request_fingerprint"},
 }
 
 

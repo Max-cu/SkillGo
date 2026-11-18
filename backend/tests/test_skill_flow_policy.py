@@ -137,7 +137,7 @@ def test_old_database_migration_adds_disabled_flags_and_keeps_rows():
     initialize_schema(engine)
     with engine.connect() as c:
         assert c.execute(text('select count(*) from users')).scalar() == 1
-        assert c.execute(text('select version_num from alembic_version')).scalar() == '20261022_0009'
+        assert c.execute(text('select version_num from alembic_version')).scalar() == '20261118_0010'
         assert c.execute(text("select follow_skill_flow from skill_versions where id='version-kept'")).scalar() == 0
         assert c.execute(text("select follow_skill_flow from workflow_jobs where id='job-kept'")).scalar() == 0
         assert c.execute(text("select instruction from workflow_jobs where id='job-kept'")).scalar() == 'Original request'

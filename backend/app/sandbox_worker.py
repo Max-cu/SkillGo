@@ -113,6 +113,7 @@ def _claim_job(worker_id: str = WORKER_ID) -> JobLease | None:
                     WorkflowJob.created_at < utcnow() - timedelta(seconds=settings.environment_queue_wait_seconds)),
             )
             .order_by(WorkflowJob.created_at)
+            .limit(1)
             .with_for_update(of=WorkflowJob, skip_locked=True)
         )
         job = db.scalars(statement).first()

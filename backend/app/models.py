@@ -687,6 +687,7 @@ class WorkflowEndpointRequest(Base):
     endpoint_id: Mapped[str] = mapped_column(ForeignKey("endpoints.id"), index=True)
     job_id: Mapped[str] = mapped_column(ForeignKey("workflow_jobs.id"), index=True)
     idempotency_key_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    request_fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, index=True
     )
