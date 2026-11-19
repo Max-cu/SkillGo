@@ -493,6 +493,8 @@ def download_version(
     )
     if not allowed:
         raise HTTPException(status_code=404, detail="Version not found")
+    if not settings.skill_package_download_enabled:
+        raise HTTPException(status_code=403, detail="Skill package download is disabled")
     data = storage.read(version.package_path)
     add_audit(
         db,

@@ -486,7 +486,7 @@ def test_resolver_mirror_lock_and_official_fallback(monkeypatch,capsys):
     item['download_info']['url']='https://mirrors.tuna.tsinghua.edu.cn/pypi/web/packages/ab/cd/scipy-1.11.0-py3-none-any.whl'
     result,ns=_run_resolver(monkeypatch,capsys,{'install':[item]},fail_first=True)
     calls=ns['pip_calls']
-    assert calls[0][calls[0].index('--index-url')+1].startswith('https://mirrors.tuna')
+    assert calls[0][calls[0].index('--index-url')+1] == 'https://mirrors.aliyun.com/pypi/simple'
     assert calls[1][calls[1].index('--index-url')+1]=='https://pypi.org/simple'
     assert result['wheels'][0]['sha256']=='a'*64
 

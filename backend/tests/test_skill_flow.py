@@ -294,6 +294,25 @@ def test_standard_package_upload_gets_platform_versions(client, user_headers):
     assert second.json()["version"] == "0.1.1"
 
 
+def test_source_package_download_switch(client, user_headers, monkeypatch):
+    from dataclasses import replace
+    from app.routers import skills
+
+    skill = client.post("/api/v1/skills", headers=user_headers, json={
+        "slug": "download-switch", "name": "Download Switch",
+        "summary": "Verify source package delivery.", "visibility": "private",
+    }).json()
+    package = standard_skill_zip()
+    versions = f"/api/v1/skills/{skill['id']}/versions"
+    response = client.post(versions, headers=user_headers,
+                           files={"package": ("standard.zip", package, "application/zip")})
+    assert response.status_code == 201
+    url = f"{versions}/{response.json()['id']}/download"
+    assert client.get(url, headers=user_headers).content == package
+    monkeypatch.setattr(skills, "settings", replace(skills.settings, skill_package_download_enabled=False))
+    assert client.get(url, headers=user_headers).status_code == 403
+
+
 def test_upload_submit_approve_and_community(client, user_headers, owner_headers):
     created = client.post(
         "/api/v1/skills",

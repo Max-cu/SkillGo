@@ -20,11 +20,19 @@ def transient_build_failure(error: BaseException | str) -> bool:
             'no such container', 'container is not running',
         ))
     message = str(error).lower()
+    if any(marker in message for marker in (
+        'resolutionimpossible', 'conflicting dependencies', 'sha256 mismatch',
+        'certificate verify failed', 'tls verification failed', 'invalid python dependency',
+    )):
+        return False
     return any(marker in message for marker in (
         'no such container', 'container is not running',
         'context deadline exceeded', 'exceeded its total budget',
         'connection aborted', 'connection reset', 'read timed out',
         'the read operation timed out', 'dependency download timed out',
+        'connection timed out', 'could not connect', 'network is unreachable',
+        'temporary failure resolving', 'temporary failure in name resolution',
+        'failed to establish a new connection',
         '500 server error', '502 bad gateway', '503 service unavailable',
         '504 gateway timeout', 'error while fetching server api version',
         'environment builder lease expired',

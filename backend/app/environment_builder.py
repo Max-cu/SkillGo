@@ -248,23 +248,10 @@ def build_environment(client, spec, attempt, on_probing=lambda: None):
         if 'office.convert' in spec['capabilities'] or system_packages:
             # Platform-owned packages only; no Skill files enter this build.
             packages = system_packages or ['libreoffice-writer', 'libreoffice-calc', 'libreoffice-impress']
-            office_dockerfile = (
-                f'FROM {base.id}\nUSER 0:0\n'
-                "RUN if [ -f /etc/apt/sources.list.d/debian.sources ]; then "
-                "sed -i 's|http://deb.debian.org|https://mirrors.tuna.tsinghua.edu.cn|g; "
-                "s|https://deb.debian.org|https://mirrors.tuna.tsinghua.edu.cn|g' "
-                "/etc/apt/sources.list.d/debian.sources; fi && "
-                'apt-get -o Acquire::Retries=3 update && '
-                'DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends '
-                + ' '.join(packages) + ' && rm -rf /var/lib/apt/lists/*\n'
-                'USER 10001:10001\n'
-            )
-            base, _ = client.images.build(
-                fileobj=io.BytesIO(archive_files({'Dockerfile': office_dockerfile.encode()})),
-                custom_context=True, rm=True, forcerm=True, pull=False, network_mode='bridge',
-                timeout=max(1, int(deadline-time.monotonic())),
-                labels={'skillgo.platform_office': 'true'},
-            )
+            from .system_package_build import system_dockerfile, build_system_image
+            office_dockerfile = system_dockerfile(base.id, packages)
+            base = build_system_image(client, archive_files({'Dockerfile': office_dockerfile.encode()}),
+                                      deadline)
         files = {}
         generic = bool(spec.get('python_requirements') or spec.get('python_imports')
                        or spec.get('capability_packages') or 'data.tabular' in spec['capabilities'])
@@ -272,24 +259,33 @@ def build_environment(client, spec, attempt, on_probing=lambda: None):
         if generic:
             resolver = Path(__file__).with_name('python_dependency_resolver.py').read_text(encoding='utf-8-sig')
             requests = spec.get('python_requirements',[]) + [w['name']+'=='+w['version'] for w in wheels]
-            from packaging.requirements import Requirement
-            from packaging.utils import canonicalize_name
-            requested_names = {canonicalize_name(Requirement(r).name) for r in requests}
-            requests += [r for r in spec.get('capability_packages', [])
-                         if canonicalize_name(Requirement(r).name) not in requested_names]
+            from .environment_requests import preferred_requirements
+            requests = preferred_requirements(requests, spec.get('capability_packages', []))
             if 'data.tabular' in spec['capabilities'] and not spec.get('layout'):
                 requests.append('pandas')  # Required by the platform's functional capability probe.
-            resolver_code = 'SPEC=' + repr({'requirements':requests}) + '\n' + resolver
-            resolving = run_container(client, image=base.id, argv=['python3','-I','-c',resolver_code],
-                                      attempt=attempt, network=True, large=True)
-            containers.append(resolving)
-            resolving.start()
-            wait_container(resolving, deadline)
-            resolved = json.loads(resolving.logs(stdout=True,stderr=False).decode())
+            from .environment_resolution_cache import resolution_key, read_resolution, write_resolution
+            cache_root = os.environ.get('SKILLGO_WHEEL_CACHE_DIR')
+            key = resolution_key(base.id, requests, resolver)
+            resolved = read_resolution(cache_root, key)
+            if resolved is None:
+                logging.getLogger(__name__).info('Resolving environment dependencies attempt=%s', attempt)
+                resolver_code = 'SPEC=' + repr({'requirements':requests}) + '\n' + resolver
+                resolving = run_container(client, image=base.id, argv=['python3','-I','-c',resolver_code],
+                                          attempt=attempt, network=True, large=True)
+                containers.append(resolving)
+                resolving.start()
+                wait_container(resolving, deadline)
+                try:
+                    resolved = json.loads(resolving.logs(stdout=True,stderr=False).decode())
+                except (ValueError, UnicodeError) as exc:
+                    raise RuntimeError('Dependency resolver returned an invalid report: ' +
+                        resolving.logs(stdout=False, stderr=True, tail=15).decode(errors='replace')[-2000:]) from exc
+                write_resolution(cache_root, key, resolved)
+                resolving.remove(force=True)
+                containers.remove(resolving)
+            else:
+                logging.getLogger(__name__).info('Dependency resolution cache hit attempt=%s', attempt)
             wheels = resolved['wheels']
-            if len(wheels)>128: raise ValueError('Too many resolved dependencies')
-            resolving.remove(force=True)
-            containers.remove(resolving)
         if wheels:
             cache_root = os.environ.get('SKILLGO_WHEEL_CACHE_DIR')
             cache = Path(cache_root) if cache_root else None
@@ -374,7 +370,6 @@ subprocess.run(['sleep','infinity'],check=True)
             except Exception: pass
         raise
     finally:
-        import logging
         for container in containers:
             try: container.remove(force=True)
             except Exception: logging.getLogger(__name__).exception('Build container cleanup failed attempt=%s', attempt)
