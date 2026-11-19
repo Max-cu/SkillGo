@@ -715,8 +715,9 @@ class JobStep(Base):
 class JobEvent(Base):
     """Append-only, user-visible execution events for the Agent timeline.
 
-    Events deliberately contain operational summaries only. Hidden model
-    reasoning, uploaded file contents, and command output are not persisted.
+    Events contain operational summaries and bounded, redacted excerpts from
+    failed tools. Hidden model reasoning and full command transcripts are not
+    persisted here.
     """
 
     __tablename__ = "job_events"
